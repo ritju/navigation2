@@ -205,6 +205,9 @@ Costmap2DROS::on_configure(const rclcpp_lifecycle::State & /*state*/)
   executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
   executor_->add_callback_group(callback_group_, get_node_base_interface());
   executor_thread_ = std::make_unique<nav2_util::NodeThread>(executor_);
+  
+  auto_clear_costmap_timer = create_wall_timer(1s,std::bind(&Costmap2DROS::auto_clear_costmap_timer_callback, this),callback_group_);
+  
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
@@ -701,6 +704,14 @@ Costmap2DROS::dynamicParametersCallback(std::vector<rclcpp::Parameter> parameter
 
   result.successful = true;
   return result;
+}
+
+void
+Costmap2DROS::auto_clear_costmap_timer_callback(){
+  double reset_distance = std::max(map_width_meters_,map_height_meters_);
+  // std::cout << "当前地图为：" << this->getName() <<std::endl;
+  // std::cout << "map  宽为：" << map_width_meters_ << "   高为:" << map_height_meters_ << "   最大值为：" << reset_distance << std::endl;
+  clear_costmap_service_->clearRegion(reset_distance,true);
 }
 
 }  // namespace nav2_costmap_2d

@@ -303,11 +303,15 @@ public:
    */
   double getRobotRadius() {return robot_radius_;}
 
+  void auto_clear_costmap_timer_callback();
+
 protected:
   // Publishers and subscribers
   rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PolygonStamped>::SharedPtr
     footprint_pub_;
   std::unique_ptr<Costmap2DPublisher> costmap_publisher_{nullptr};
+
+  rclcpp::TimerBase::SharedPtr auto_clear_costmap_timer;
 
   rclcpp::Subscription<geometry_msgs::msg::Polygon>::SharedPtr footprint_sub_;
   rclcpp::Subscription<rcl_interfaces::msg::ParameterEvent>::SharedPtr parameter_sub_;
