@@ -59,9 +59,16 @@ double ObstacleAlignCritic::getobstaclemindist(double x, double y)
 double ObstacleAlignCritic::scoreTrajectory(const dwb_msgs::msg::Trajectory2D & traj)
 {
   double s;
-  if(getobstaclemindist(traj.poses[0].x, traj.poses[0].y) <= 0.3 && (getobstaclemindist(traj.poses[0].x, traj.poses[0].y) > getobstaclemindist(traj.poses[1].x, traj.poses[1].y) || getobstaclemindist(traj.poses[1].x, traj.poses[1].y) > getobstaclemindist(traj.poses[2].x, traj.poses[2].y)))
+  if(getobstaclemindist(traj.poses[0].x, traj.poses[0].y) <= 0.3)
   {
-    s=7.5;
+    if(getobstaclemindist(traj.poses[0].x, traj.poses[0].y) <= getobstaclemindist(traj.poses[1].x, traj.poses[1].y) 
+    && getobstaclemindist(traj.poses[1].x, traj.poses[1].y) <= getobstaclemindist(traj.poses[2].x, traj.poses[2].y)
+    && getobstaclemindist(traj.poses[2].x, traj.poses[2].y) <= getobstaclemindist(traj.poses[3].x, traj.poses[3].y))
+    {
+      s=0.0;
+    }
+    else
+      s=7.5;
   }
   else 
     s=0.0;
