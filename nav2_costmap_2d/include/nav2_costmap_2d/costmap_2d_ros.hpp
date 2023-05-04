@@ -311,8 +311,6 @@ protected:
     footprint_pub_;
   std::unique_ptr<Costmap2DPublisher> costmap_publisher_{nullptr};
 
-  rclcpp::TimerBase::SharedPtr auto_clear_costmap_timer;
-
   rclcpp::Subscription<geometry_msgs::msg::Polygon>::SharedPtr footprint_sub_;
   rclcpp::Subscription<rcl_interfaces::msg::ParameterEvent>::SharedPtr parameter_sub_;
 
@@ -385,6 +383,7 @@ protected:
    */
   rcl_interfaces::msg::SetParametersResult
   dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters);
+  std::shared_ptr<rclcpp::TimerBase> auto_clear_costmap_timer;
 };
 
 }  // namespace nav2_costmap_2d
