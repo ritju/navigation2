@@ -209,8 +209,6 @@ Costmap2DROS::on_configure(const rclcpp_lifecycle::State & /*state*/)
   executor_->add_callback_group(callback_group_, get_node_base_interface());
   executor_thread_ = std::make_unique<nav2_util::NodeThread>(executor_);
   
-  auto_clear_costmap_timer = create_wall_timer(1s,std::bind(&Costmap2DROS::auto_clear_costmap_timer_callback, this),callback_group_);
-  
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
@@ -229,6 +227,9 @@ Costmap2DROS::on_activate(const rclcpp_lifecycle::State & /*state*/)
 
   RCLCPP_INFO(get_logger(), "Checking transform");
   rclcpp::Rate r(2);
+
+  auto_clear_costmap_timer = create_wall_timer(1s,std::bind(&Costmap2DROS::auto_clear_costmap_timer_callback, this),callback_group_);
+
   while (rclcpp::ok() &&
     !tf_buffer_->canTransform(
       global_frame_, robot_base_frame_, tf2::TimePointZero, &tf_error))
