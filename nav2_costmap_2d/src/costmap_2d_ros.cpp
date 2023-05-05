@@ -710,9 +710,9 @@ Costmap2DROS::dynamicParametersCallback(std::vector<rclcpp::Parameter> parameter
 void
 Costmap2DROS::auto_clear_costmap_timer_callback(){
   double reset_distance = std::max(map_width_meters_,map_height_meters_);
-  RCLCPP_INFO(get_logger(), "开始清除地图......");
-  std::cout << "当前地图为：" << this->getName() <<std::endl;
-  std::cout << "map  宽为：" << map_width_meters_ << "   高为:" << map_height_meters_ << "   最大值为：" << reset_distance << std::endl;
+  RCLCPP_INFO(get_logger(), "clean %s costmap......",this->getName().c_str());
+  // std::cout << "当前地图为：" << this->getName() <<std::endl;
+  // std::cout << "map  宽为：" << map_width_meters_ << "   高为:" << map_height_meters_ << "   最大值为：" << reset_distance << std::endl;
   clear_costmap_service_->clearRegion(reset_distance,true);
 }
 
