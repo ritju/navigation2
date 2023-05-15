@@ -236,6 +236,9 @@ protected:
   std::string dwb_plugin_name_;
 
   bool short_circuit_trajectory_evaluation_;
+private:
+  double goal_x;
+  double goal_y;
 };
 
 }  // namespace dwb_core

@@ -168,7 +168,11 @@ protected:
   double forward_sampling_distance_, angular_dist_threshold_;
   double rotate_to_heading_angular_vel_, max_angular_accel_;
   double control_duration_, simulate_ahead_time_;
-
+  bool last_state_; // 判断上一个状态是旋转还是运行，"True" in rotate, "False" in velocity
+  double goal_distance_;
+  bool goal_update_;
+  geometry_msgs::msg::TwistStamped primary_cmd_vel_;
+  geometry_msgs::msg::TwistStamped rotate_shim_cmd_vel_;
   // Dynamic parameters handler
   std::mutex mutex_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;

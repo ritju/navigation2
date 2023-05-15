@@ -383,7 +383,7 @@ protected:
    */
   rcl_interfaces::msg::SetParametersResult
   dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters);
-  std::shared_ptr<rclcpp::TimerBase> auto_clear_costmap_timer;
+  // std::shared_ptr<rclcpp::TimerBase> auto_clear_costmap_timer;
 };
 
 }  // namespace nav2_costmap_2d

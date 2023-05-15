@@ -39,6 +39,7 @@
 #include <vector>
 #include <fstream>
 #include <iomanip>
+#include "angles/angles.h"
 
 #include "dwb_core/dwb_local_planner.hpp"
 #include "dwb_core/exceptions.hpp"
@@ -296,6 +297,8 @@ DWBLocalPlanner::computeVelocityCommands(
 
   nav2_costmap_2d::Costmap2D * costmap = costmap_ros_->getCostmap();
   std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*(costmap->getMutex()));
+  goal_x=goal_pose.pose.x;
+  goal_y=goal_pose.pose.y;
 
   for (TrajectoryCritic::Ptr & critic : critics_) {
     if (!critic->prepare(pose.pose, velocity, goal_pose.pose, transformed_plan)) {
@@ -355,6 +358,19 @@ DWBLocalPlanner::coreScoringAlgorithm(
   traj_generator_->startNewIteration(velocity);
   while (traj_generator_->hasMoreTwists()) {
     twist = traj_generator_->nextTwist();
+
+    // nav_2d_msgs::msg::Path2D transformed_plan;
+    double dy = goal_y-pose.y;
+    double dx = goal_x-pose.x;
+    while(twist.x <= 0.2 && dx * dx + dy * dy>=0.5 && fabs(angles::shortest_angular_distance(pose.theta, atan2(dy,dx)))<=0.5*M_PI){     
+      twist = traj_generator_->nextTwist();
+    }
+    // while(fabs(velocity.theta)<=0.01 && fabs(velocity.x)<=0.01 && fabs(twist.theta)>=0.02){
+    //   twist = traj_generator_->nextTwist();
+    // }
+   
+    // RCLCPP_INFO(rclcpp::get_logger("critics"),"theta: %f",twist.theta);
+
     traj = traj_generator_->generateTrajectory(pose, velocity, twist);
 
     try {

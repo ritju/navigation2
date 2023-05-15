@@ -225,7 +225,7 @@ Costmap2DROS::on_activate(const rclcpp_lifecycle::State & /*state*/)
   RCLCPP_INFO(get_logger(), "Checking transform");
   rclcpp::Rate r(2);
 
-  auto_clear_costmap_timer = create_wall_timer(1s,std::bind(&Costmap2DROS::auto_clear_costmap_timer_callback, this),callback_group_);
+  // auto_clear_costmap_timer = create_wall_timer(1s,std::bind(&Costmap2DROS::auto_clear_costmap_timer_callback, this),callback_group_);
 
   while (rclcpp::ok() &&
     !tf_buffer_->canTransform(
@@ -707,13 +707,13 @@ Costmap2DROS::dynamicParametersCallback(std::vector<rclcpp::Parameter> parameter
   return result;
 }
 
-void
-Costmap2DROS::auto_clear_costmap_timer_callback(){
-  double reset_distance = std::max(map_width_meters_,map_height_meters_);
-  RCLCPP_INFO(get_logger(), "clean %s costmap......",this->getName().c_str());
-  // std::cout << "当前地图为：" << this->getName() <<std::endl;
-  // std::cout << "map  宽为：" << map_width_meters_ << "   高为:" << map_height_meters_ << "   最大值为：" << reset_distance << std::endl;
-  clear_costmap_service_->clearRegion(reset_distance,true);
-}
+// void
+// Costmap2DROS::auto_clear_costmap_timer_callback(){
+//   double reset_distance = std::max(map_width_meters_,map_height_meters_);
+//   RCLCPP_INFO(get_logger(), "clean %s costmap......",this->getName().c_str());
+//   // std::cout << "当前地图为：" << this->getName() <<std::endl;
+//   // std::cout << "map  宽为：" << map_width_meters_ << "   高为:" << map_height_meters_ << "   最大值为：" << reset_distance << std::endl;
+//   clear_costmap_service_->clearRegion(reset_distance,true);
+// }
 
 }  // namespace nav2_costmap_2d

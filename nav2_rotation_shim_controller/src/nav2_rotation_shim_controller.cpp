@@ -147,15 +147,30 @@ geometry_msgs::msg::TwistStamped RotationShimController::computeVelocityCommands
 
       double angular_distance_to_heading =
         std::atan2(sampled_pt_base.position.y, sampled_pt_base.position.x);
-      if (fabs(angular_distance_to_heading) > angular_dist_threshold_) {
+      if ((fabs(angular_distance_to_heading) > angular_dist_threshold_)  && (fabs(velocity.linear.x) < 0.1)) {
         RCLCPP_DEBUG(
           logger_,
           "Robot is not within the new path's rough heading, rotating to heading...");
-        return computeRotateToHeadingCommand(angular_distance_to_heading, pose, velocity);
+        last_state_ = true;
+        rotate_shim_cmd_vel_ = computeRotateToHeadingCommand(angular_distance_to_heading, pose, velocity);
+        return rotate_shim_cmd_vel_;
       } else {
         RCLCPP_DEBUG(
           logger_,
           "Robot is at the new path's rough heading, passing to controller");
+        
+        //如果机器人在纯旋转过程结束后，转速不为0, 先将转速置为0
+        if (fabs(velocity.angular.z) > 0.1 && last_state_)
+          {
+            geometry_msgs::msg::TwistStamped cmd_vel;
+            cmd_vel.header = pose.header;
+            cmd_vel.twist.angular.z = 0;
+            return cmd_vel;
+          }
+        else
+        {
+          last_state_ = false;
+        }
         path_updated_ = false;
       }
     } catch (const std::runtime_error & e) {
@@ -167,10 +182,39 @@ geometry_msgs::msg::TwistStamped RotationShimController::computeVelocityCommands
       path_updated_ = false;
     }
   }
+    //机器人在未到达终点前，不减速
+    // if (goal_distance_ > forward_sampling_distance_ && goal_update_)
+    // {
+    //   last_state_ = false;
+    //   goal_update_ = false;
+    //   primary_cmd_vel_ = primary_controller_->computeVelocityCommands(pose, velocity, goal_checker);
+    //   geometry_msgs::msg::Pose sampled_pt_base = transformPoseToBaseFrame(getSampledPathPt());
+    //   double angular_distance_to_heading =
+    //       std::atan2(sampled_pt_base.position.y, sampled_pt_base.position.x);
+    //   if ((fabs(angular_distance_to_heading) < (M_PI*0.6)) && (fabs(primary_cmd_vel_.twist.linear.x) < 0.3))
+    //     {
+    //       if (fabs(angular_distance_to_heading) > (M_PI*0.4))
+    //         primary_cmd_vel_.twist.linear.x = 0.2;
+    //       else if ((M_PI*0.4) > (fabs(angular_distance_to_heading) > (M_PI*0.25)))
+    //         primary_cmd_vel_.twist.linear.x = 0.25;
+    //       else
+    //         primary_cmd_vel_.twist.linear.x = 0.3;
+    //       primary_cmd_vel_.twist.angular.z = 0;
+
+    //       return primary_cmd_vel_;
+    //     }
+        
+    //   primary_cmd_vel_.twist.angular.z = 0;
+    //   return primary_cmd_vel_;
+    // }
+    last_state_ = false;
+    primary_cmd_vel_ = primary_controller_->computeVelocityCommands(pose, velocity, goal_checker);
+    return primary_cmd_vel_;
+  }
 
   // If at this point, use the primary controller to path track
-  return primary_controller_->computeVelocityCommands(pose, velocity, goal_checker);
-}
+
+
 
 geometry_msgs::msg::PoseStamped RotationShimController::getSampledPathPt()
 {
@@ -189,6 +233,8 @@ geometry_msgs::msg::PoseStamped RotationShimController::getSampledPathPt()
     if (hypot(dx, dy) >= forward_sampling_distance_) {
       current_path_.poses[i].header.frame_id = current_path_.header.frame_id;
       current_path_.poses[i].header.stamp = clock_->now();  // Get current time transformation
+      goal_distance_ = hypot(dx, dy);
+      goal_update_ = true;
       return current_path_.poses[i];
     }
   }
