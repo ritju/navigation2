@@ -209,7 +209,7 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
     speed_limit_topic, rclcpp::QoS(10),
     std::bind(&ControllerServer::speedLimitCallback, this, std::placeholders::_1));
 
-  person_subscribe_ = create_subscription<capella_ros_msg::msg::DetectResult>("person_detected", 10, std::bind(&ControllerServer::personsubscribecallback, this, std::placeholders::_1));
+  // person_subscribe_ = create_subscription<capella_ros_msg::msg::DetectResult>("person_detected", 10, std::bind(&ControllerServer::personsubscribecallback, this, std::placeholders::_1));
 
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -280,7 +280,7 @@ ControllerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   odom_sub_.reset();
   vel_publisher_.reset();
   speed_limit_sub_.reset();
-  person_subscribe_.reset();
+  // person_subscribe_.reset();
 
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -386,9 +386,9 @@ void ControllerServer::computeControl()
         publishZeroVelocity();
         return;
       }
-      while (isclosepepole()) {
-        publishZeroVelocity();
-      }
+      // while (isclosepepole()) {
+      //   publishZeroVelocity();
+      // }
       // Don't compute a trajectory until costmap is valid (after clear costmap)
       rclcpp::Rate r(100);
       while (!costmap_ros_->isCurrent()) {
@@ -607,14 +607,14 @@ bool ControllerServer::getRobotPose(geometry_msgs::msg::PoseStamped & pose)
   return true;
 }
 
-bool ControllerServer::isclosepepole()
-{
-  if(icp > 0){
-      return true;
-  }
-  else
-      return false;  
-}
+// bool ControllerServer::isclosepepole()
+// {
+//   if(icp > 0){
+//       return true;
+//   }
+//   else
+//       return false;  
+// }
 
 void ControllerServer::speedLimitCallback(const nav2_msgs::msg::SpeedLimit::SharedPtr msg)
 {
