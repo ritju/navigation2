@@ -279,7 +279,11 @@ private:
   {
     icp=0;
     for(size_t i=0;i<msg->result.size();i++){
+<<<<<<< HEAD
       if(msg->result[i].x < 1.5 && fabs(msg->result[i].y) < 0.4){
+=======
+      if(fabs(msg->result[i].x) < 0.5 && msg->result[i].y < 1.5){
+>>>>>>> 9a34c767a13f463c9b343561711ac7b021a6687c
         icp += 1;
       }
       else
