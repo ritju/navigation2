@@ -160,6 +160,7 @@ void RangeSensorLayer::onInitialize()
       "topic %s", range_subs_.back()->get_topic_name());
   }
   global_frame_ = layered_costmap_->getGlobalFrameID();
+  
 }
 
 
@@ -302,7 +303,7 @@ void RangeSensorLayer::updateCostmap(
       global_frame_.c_str(), in.header.frame_id.c_str());
     return;
   }
-
+  // RCLCPP_INFO(logger_, "global frame is %s", global_frame_.c_str());
   tf_->transform(in, out, global_frame_, transform_tolerance_);
 
   double ox = out.point.x, oy = out.point.y;
@@ -413,10 +414,12 @@ void RangeSensorLayer::update_cell(
       sensor = sensor_model(r, phi, theta);
     }
     double prior = to_prob(getCost(x, y));
+    // double prior = 1.0;
     double prob_occ = sensor * prior;
     double prob_not = (1 - sensor) * (1 - prior);
     double new_prob = prob_occ / (prob_occ + prob_not);
-
+    // RCLCPP_INFO(logger_, "dx: %f %f | %f %f = %f", dx, dy, theta, phi, sensor);
+    // RCLCPP_INFO(logger_, "prior: %f | prob_occ: %f %f | %f", prior, prob_occ, prob_not, new_prob);
     RCLCPP_DEBUG(
       logger_,
       "%f %f | %f %f = %f", dx, dy, theta, phi, sensor);

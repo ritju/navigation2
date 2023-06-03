@@ -35,6 +35,8 @@
 #include "nav2_util/robot_utils.hpp"
 #include "pluginlib/class_loader.hpp"
 #include "pluginlib/class_list_macros.hpp"
+#include "capella_ros_msg/msg/single_detector.hpp"
+#include "capella_ros_msg/msg/detect_result.hpp"
 
 namespace nav2_controller
 {
@@ -263,6 +265,7 @@ protected:
 
   // Current path container
   nav_msgs::msg::Path current_path_;
+  bool isclosepepole();
 
 private:
   /**
@@ -270,6 +273,19 @@ private:
     * @param msg Shared pointer to nav2_msgs::msg::SpeedLimit
     */
   void speedLimitCallback(const nav2_msgs::msg::SpeedLimit::SharedPtr msg);
+  int icp;
+  rclcpp::Subscription<capella_ros_msg::msg::DetectResult>::SharedPtr person_subscribe_;
+  void personsubscribecallback(const capella_ros_msg::msg::DetectResult::SharedPtr msg)
+  {
+    icp=0;
+    for(size_t i=0;i<msg->result.size();i++){
+      if(msg->result[i].x < 1.5 && fabs(msg->result[i].y) < 0.4){
+        icp += 1;
+      }
+      else
+        icp += 0;
+    }
+  }
 };
 
 }  // namespace nav2_controller
