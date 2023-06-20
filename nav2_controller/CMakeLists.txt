@@ -14,11 +14,7 @@ find_package(nav2_msgs REQUIRED)
 find_package(nav_2d_utils REQUIRED)
 find_package(nav_2d_msgs REQUIRED)
 find_package(pluginlib REQUIRED)
-<<<<<<< HEAD
 find_package(capella_ros_msg REQUIRED)
-=======
-# find_package(capella_ros_msg REQUIRED)
->>>>>>> 9a34c767a13f463c9b343561711ac7b021a6687c
 
 nav2_package()
 
@@ -50,11 +46,7 @@ set(dependencies
   nav2_util
   nav2_core
   pluginlib
-<<<<<<< HEAD
   capella_ros_msg
-=======
-  # capella_ros_msg
->>>>>>> 9a34c767a13f463c9b343561711ac7b021a6687c
 )
 
 add_library(simple_progress_checker SHARED plugins/simple_progress_checker.cpp)
