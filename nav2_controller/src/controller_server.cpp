@@ -388,6 +388,7 @@ void ControllerServer::computeControl()
       }
       while (isclosepepole()) {
         publishZeroVelocity();
+        rclcpp::Rate(0.25).sleep();
       }
       // Don't compute a trajectory until costmap is valid (after clear costmap)
       rclcpp::Rate r(100);

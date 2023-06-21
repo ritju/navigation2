@@ -198,6 +198,7 @@ protected:
   nav_2d_msgs::msg::Twist2D getThresholdedTwist(const nav_2d_msgs::msg::Twist2D & twist)
   {
     nav_2d_msgs::msg::Twist2D twist_thresh;
+    cvt=twist.theta;
     twist_thresh.x = getThresholdedVelocity(twist.x, min_x_velocity_threshold_);
     twist_thresh.y = getThresholdedVelocity(twist.y, min_y_velocity_threshold_);
     twist_thresh.theta = getThresholdedVelocity(twist.theta, min_theta_velocity_threshold_);
@@ -274,12 +275,16 @@ private:
     */
   void speedLimitCallback(const nav2_msgs::msg::SpeedLimit::SharedPtr msg);
   int icp;
+  double cvt;
   rclcpp::Subscription<capella_ros_msg::msg::DetectResult>::SharedPtr person_subscribe_;
   void personsubscribecallback(const capella_ros_msg::msg::DetectResult::SharedPtr msg)
   {
     icp=0;
     for(size_t i=0;i<msg->result.size();i++){
-      if(msg->result[i].x < 1.5 && fabs(msg->result[i].y) < 0.4){
+      if(fabs(cvt)>=0.2 && msg->result[i].x < 0.6 && fabs(msg->result[i].y) < 0.6){
+        icp += 1;
+      }
+      else if(fabs(cvt)<0.2 && msg->result[i].x < 1.5 && fabs(msg->result[i].y) < 0.6){
         icp += 1;
       }
       else
