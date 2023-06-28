@@ -386,6 +386,7 @@ void ControllerServer::computeControl()
         publishZeroVelocity();
         return;
       }
+      stop = false;
       while (isclosepepole()) {
         publishZeroVelocity();
         stop = true;
