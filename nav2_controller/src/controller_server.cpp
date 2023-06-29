@@ -386,10 +386,11 @@ void ControllerServer::computeControl()
         publishZeroVelocity();
         return;
       }
-      stop = false;
-      while (isclosepepole()) {
+      if (isclosepepole()) {
         publishZeroVelocity();
         stop = true;
+        sleep(1);
+        continue;
       }
       if(stop){
         sleep(4);

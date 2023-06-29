@@ -276,7 +276,7 @@ private:
   void speedLimitCallback(const nav2_msgs::msg::SpeedLimit::SharedPtr msg);
   int icp;
   double cvt;
-  bool stop;
+  bool stop = false;
   rclcpp::Subscription<capella_ros_msg::msg::DetectResult>::SharedPtr person_subscribe_;
   void personsubscribecallback(const capella_ros_msg::msg::DetectResult::SharedPtr msg)
   {
