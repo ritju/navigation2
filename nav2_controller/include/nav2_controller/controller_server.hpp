@@ -282,7 +282,7 @@ private:
   {
     icp = 0;
     for(size_t i=0;i<msg->result.size();i++){
-      if(fabs(cvt)>=0.2 && msg->result[i].x < 0.6 && fabs(msg->result[i].y) < 0.6){
+      if(fabs(cvt)>=0.2 && msg->result[i].x < 0.8 && fabs(msg->result[i].y) < 0.6){
         icp += 1;
       }
       else if(fabs(cvt)<0.2 && msg->result[i].x < 1.5 && fabs(msg->result[i].y) < 0.6){
