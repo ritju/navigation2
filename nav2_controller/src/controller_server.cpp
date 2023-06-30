@@ -395,6 +395,7 @@ void ControllerServer::computeControl()
       if(stop){
         sleep(2);
       }
+      stop = false;
       // Don't compute a trajectory until costmap is valid (after clear costmap)
       rclcpp::Rate r(100);
       while (!costmap_ros_->isCurrent()) {
