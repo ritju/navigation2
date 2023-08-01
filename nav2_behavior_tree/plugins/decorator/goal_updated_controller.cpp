@@ -33,14 +33,16 @@ GoalUpdatedController::GoalUpdatedController(
 
 BT::NodeStatus GoalUpdatedController::tick()
 {
+  // RCLCPP_INFO(rclcpp::get_logger("goal_updated_controller"), "--------------------------- GoalUpdatedController ticked ---------------------------");
+  // RCLCPP_INFO(rclcpp::get_logger("goal_updated_controller"), "goal_updated_controller status(): %d ", (int)status());
   if (status() == BT::NodeStatus::IDLE) {
     // Reset since we're starting a new iteration of
     // the goal updated controller (moving from IDLE to RUNNING)
 
-    config().blackboard->get<std::vector<geometry_msgs::msg::PoseStamped>>("goals", goals_);
-    config().blackboard->get<geometry_msgs::msg::PoseStamped>("goal", goal_);
+    // config().blackboard->get<std::vector<geometry_msgs::msg::PoseStamped>>("goals", goals_);
+    // config().blackboard->get<geometry_msgs::msg::PoseStamped>("goal", goal_);
 
-    goal_was_updated_ = true;
+    goal_was_updated_ = false;
   }
 
   setStatus(BT::NodeStatus::RUNNING);
@@ -50,18 +52,28 @@ BT::NodeStatus GoalUpdatedController::tick()
   geometry_msgs::msg::PoseStamped current_goal;
   config().blackboard->get<geometry_msgs::msg::PoseStamped>("goal", current_goal);
 
+  // RCLCPP_INFO(rclcpp::get_logger("goal_updated_controller"), "goal_   => x: %f, y: %f: ", goal_.pose.position.x, goal_.pose.position.y);
+  // RCLCPP_INFO(rclcpp::get_logger("goal_updated_controller"), "current => x: %f, y: %f: ", current_goal.pose.position.x, current_goal.pose.position.y);
+  // RCLCPP_INFO(rclcpp::get_logger("goal_updated_controller"), "goal_ != current_goal: %d", goal_ != current_goal );
+  // RCLCPP_INFO(rclcpp::get_logger("goal_updated_controller"), "goal_was_updated_: %d", goal_was_updated_ );
+
   if (goal_ != current_goal || goals_ != current_goals) {
     goal_ = current_goal;
     goals_ = current_goals;
     goal_was_updated_ = true;
+    // RCLCPP_INFO(rclcpp::get_logger("goal_updated_controller"), "<<<<<<<<<<<<<<< goal_was_updated_: %d <<<<<<<<<<<<<<< ", goal_was_updated_ );
   }
+  // RCLCPP_INFO(rclcpp::get_logger("goal_updated_controller"), "child_node status: %d", (int)child_node_->status() ); // 0=idle,running=1,success=2,failure=3
 
   // The child gets ticked the first time through and any time the goal has
   // changed or preempted. In addition, once the child begins to run, it is ticked each time
   // 'til completion
   if ((child_node_->status() == BT::NodeStatus::RUNNING) || goal_was_updated_) {
     goal_was_updated_ = false;
+    // RCLCPP_INFO(rclcpp::get_logger("goal_updated_controller"), "------------------------ clear costmap ticked ------------------------");
     const BT::NodeStatus child_state = child_node_->executeTick();
+    // RCLCPP_INFO(rclcpp::get_logger("goal_updated_controller"), "goal_was_updated_: %d", goal_was_updated_ );
+
 
     switch (child_state) {
       case BT::NodeStatus::RUNNING:
@@ -76,7 +88,7 @@ BT::NodeStatus GoalUpdatedController::tick()
     }
   }
 
-  return status();
+  return BT::NodeStatus::SUCCESS;
 }
 
 }  // namespace nav2_behavior_tree

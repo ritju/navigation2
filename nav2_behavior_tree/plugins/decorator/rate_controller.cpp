@@ -16,6 +16,7 @@
 #include <string>
 
 #include "nav2_behavior_tree/plugins/decorator/rate_controller.hpp"
+#include "rclcpp/rclcpp.hpp"
 
 namespace nav2_behavior_tree
 {
@@ -24,7 +25,8 @@ RateController::RateController(
   const std::string & name,
   const BT::NodeConfiguration & conf)
 : BT::DecoratorNode(name, conf),
-  first_time_(false)
+  start_(std::chrono::high_resolution_clock::now()),
+  first_time_(true)
 {
   double hz = 1.0;
   getInput("hz", hz);
@@ -33,12 +35,14 @@ RateController::RateController(
 
 BT::NodeStatus RateController::tick()
 {
-  if (status() == BT::NodeStatus::IDLE) {
-    // Reset the starting point since we're starting a new iteration of
-    // the rate controller (moving from IDLE to RUNNING)
-    start_ = std::chrono::high_resolution_clock::now();
-    first_time_ = true;
-  }
+  // RCLCPP_INFO(rclcpp::get_logger("RateController"), "=================== RateController ticked ======================");
+  // RCLCPP_INFO(rclcpp::get_logger("RateController"), "RateController status(): %d ", (int)status());
+  // if (status() == BT::NodeStatus::IDLE) {
+  //   // Reset the starting point since we're starting a new iteration of
+  //   // the rate controller (moving from IDLE to RUNNING)
+  //   start_ = std::chrono::high_resolution_clock::now();
+  //   first_time_ = true;
+  // }
 
   setStatus(BT::NodeStatus::RUNNING);
 
@@ -53,18 +57,24 @@ BT::NodeStatus RateController::tick()
   // The child gets ticked the first time through and any time the period has
   // expired. In addition, once the child begins to run, it is ticked each time
   // 'til completion
+  // RCLCPP_INFO(rclcpp::get_logger("RateController"), "first_time: %d ", first_time_);
+  // RCLCPP_INFO(rclcpp::get_logger("RateController"), "child_node->status(): %d ", (int)child_node_->status());
+  // RCLCPP_INFO(rclcpp::get_logger("RateController"), "seconds: %f ", seconds.count());
   if (first_time_ || (child_node_->status() == BT::NodeStatus::RUNNING) ||
     seconds.count() >= period_)
   {
     first_time_ = false;
+    // RCLCPP_INFO(rclcpp::get_logger("RateController"), "tick computePathToPose");
     const BT::NodeStatus child_state = child_node_->executeTick();
 
     switch (child_state) {
       case BT::NodeStatus::RUNNING:
+      // RCLCPP_INFO(rclcpp::get_logger("RateController"), "tick child running");
         return BT::NodeStatus::RUNNING;
 
       case BT::NodeStatus::SUCCESS:
         start_ = std::chrono::high_resolution_clock::now();  // Reset the timer
+        // RCLCPP_INFO(rclcpp::get_logger("RateController"), "tick child success");
         return BT::NodeStatus::SUCCESS;
 
       case BT::NodeStatus::FAILURE:

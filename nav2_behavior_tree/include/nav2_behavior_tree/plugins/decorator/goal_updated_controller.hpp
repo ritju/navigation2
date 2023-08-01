@@ -59,8 +59,8 @@ private:
   BT::NodeStatus tick() override;
 
   bool goal_was_updated_;
-  geometry_msgs::msg::PoseStamped goal_;
-  std::vector<geometry_msgs::msg::PoseStamped> goals_;
+  geometry_msgs::msg::PoseStamped goal_{};
+  std::vector<geometry_msgs::msg::PoseStamped> goals_{};
 };
 
 }  // namespace nav2_behavior_tree
