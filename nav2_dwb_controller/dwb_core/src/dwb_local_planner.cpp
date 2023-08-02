@@ -445,10 +445,10 @@ DWBLocalPlanner::scoreTrajectory(
     cs.raw_score = critic_score;
     score.scores.push_back(cs);
     score.total += critic_score * cs.scale;
-    std::ofstream out;
-    out.open("critics.txt",std::ios::out|std::ios::app);
-    out<<cs.name.c_str()<<": "<<critic_score<<", scale: "<<cs.scale<<std::endl;
-    out.close();
+    // std::ofstream out;
+    // out.open("critics.txt",std::ios::out|std::ios::app);
+    // out<<cs.name.c_str()<<": "<<critic_score<<", scale: "<<cs.scale<<std::endl;
+    // out.close();
     //RCLCPP_INFO(rclcpp::get_logger("critics"),"%s : %f, scale: %f",cs.name.c_str(),critic_score,cs.scale);
     if (short_circuit_trajectory_evaluation_ && best_score > 0 && score.total > best_score) {
       // since we keep adding positives, once we are worse than the best, we will stay worse

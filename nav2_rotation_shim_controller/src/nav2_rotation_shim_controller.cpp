@@ -143,10 +143,13 @@ geometry_msgs::msg::TwistStamped RotationShimController::computeVelocityCommands
   if (path_updated_) {
     std::lock_guard<std::mutex> lock_reinit(mutex_);
     try {
-      geometry_msgs::msg::Pose sampled_pt_base = transformPoseToBaseFrame(getSampledPathPt());
+      double angular_distance_to_heading = 0.0;
+      if(velocity.linear.x < 0.2){
+        geometry_msgs::msg::Pose sampled_pt_base = transformPoseToBaseFrame(getSampledPathPt());
 
-      double angular_distance_to_heading =
+        angular_distance_to_heading =
         std::atan2(sampled_pt_base.position.y, sampled_pt_base.position.x);
+      }   
       if ((fabs(angular_distance_to_heading) > angular_dist_threshold_)  && (fabs(velocity.linear.x) < 0.1)) {
         RCLCPP_DEBUG(
           logger_,
@@ -165,6 +168,7 @@ geometry_msgs::msg::TwistStamped RotationShimController::computeVelocityCommands
             geometry_msgs::msg::TwistStamped cmd_vel;
             cmd_vel.header = pose.header;
             cmd_vel.twist.angular.z = 0;
+            sleep(3);
             return cmd_vel;
           }
         else
