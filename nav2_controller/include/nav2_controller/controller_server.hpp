@@ -266,7 +266,7 @@ protected:
 
   // Current path container
   nav_msgs::msg::Path current_path_;
-  bool isclosepepole();
+  void isclosepepole();
 
 private:
   /**
@@ -275,21 +275,40 @@ private:
     */
   void speedLimitCallback(const nav2_msgs::msg::SpeedLimit::SharedPtr msg);
   int icp;
+  int icf;
+  int stop_1;
   double cvt;
   bool stop = false;
-  rclcpp::Subscription<capella_ros_msg::msg::DetectResult>::SharedPtr person_subscribe_;
-  void personsubscribecallback(const capella_ros_msg::msg::DetectResult::SharedPtr msg)
+  int stop_ = 0;
+  rclcpp::Subscription<nav2_msgs::msg::DetectResult>::SharedPtr person_subscribe_;
+  void personsubscribecallback(const nav2_msgs::msg::DetectResult::SharedPtr msg)
   {
-    icp = 0;
+    icp=0;
+    icf=0;
+    stop_1 = 0;
+    //RCLCPP_INFO(rclcpp::get_logger("critics"),"theta: %f",cvt);
     for(size_t i=0;i<msg->result.size();i++){
-      if(fabs(cvt)>=0.2 && msg->result[i].x < 0.8 && fabs(msg->result[i].y) < 0.6){
+      if(fabs(cvt) >= 0.2 && msg->result[i].x < 1.5 && fabs(msg->result[i].y) < 0.6 && msg->result[i].part){
         icp += 1;
+        icf += 0;
       }
-      else if(fabs(cvt)<0.2 && msg->result[i].x < 1.5 && fabs(msg->result[i].y) < 0.6){
+      else if(fabs(cvt) < 0.2 && msg->result[i].x < 1.0 && fabs(msg->result[i].y) < 0.6 && msg->result[i].part){
         icp += 1;
+        icf += 0;
       }
-      else
+      else if(msg->result[i].x < 1.2 && fabs(msg->result[i].y) < 0.6 && !msg->result[i].part){
+        icf += 1;
         icp += 0;
+        if(msg->result[i].x < 0.8 && fabs(msg->result[i].y) < 0.5){
+          stop_1 += 1;
+        }
+        else
+          stop_1 += 0; 
+      }
+      else{
+        icp += 0;
+        icf += 0;
+      }       
     }
   }
 };

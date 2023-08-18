@@ -386,16 +386,46 @@ void ControllerServer::computeControl()
         publishZeroVelocity();
         return;
       }
-      if (isclosepepole()) {
+      isclosepepole();
+      if (icp > 0) {  
         publishZeroVelocity();
-        stop = true;
+        // publishZeroVelocity();
         sleep(1);
+        stop = true;
+        // RCLCPP_INFO(get_logger(), "test star2");
+        continue;
+      }
+      // RCLCPP_INFO(get_logger(), "test star3");
+      if(stop){
+        sleep(2);
+      }
+      stop = false;
+      //RCLCPP_INFO(rclcpp::get_logger("stop"), "stop_: %d", stop_);
+      if(stop_ == 1){
+        publishZeroVelocity();
+        sleep(1);
+        stop = true;
+        // RCLCPP_INFO(get_logger(), "test star2");
         continue;
       }
       if(stop){
         sleep(2);
       }
       stop = false;
+      // RCLCPP_INFO(rclcpp::get_logger("stop"), "stop_1: %d", stop_1);
+      if(stop_1 > 0){
+        geometry_msgs::msg::TwistStamped velocity;
+        velocity.twist.angular.x = 0;
+        velocity.twist.angular.y = 0;
+        velocity.twist.angular.z = 0;
+        velocity.twist.linear.x = -0.1;
+        velocity.twist.linear.y = 0;
+        velocity.twist.linear.z = 0;
+        velocity.header.frame_id = costmap_ros_->getBaseFrameID();
+        velocity.header.stamp = now();
+        publishVelocity(velocity);
+        continue;
+      }
       // Don't compute a trajectory until costmap is valid (after clear costmap)
       rclcpp::Rate r(100);
       while (!costmap_ros_->isCurrent()) {
@@ -614,13 +644,13 @@ bool ControllerServer::getRobotPose(geometry_msgs::msg::PoseStamped & pose)
   return true;
 }
 
-bool ControllerServer::isclosepepole()
+void ControllerServer::isclosepepole()
 {
-  if(icp > 0){
-      return true;
+  if(icf > 0)
+      stop_ += 1;  
+  else{
+    stop_ = 0;
   }
-  else
-      return false;  
 }
 
 void ControllerServer::speedLimitCallback(const nav2_msgs::msg::SpeedLimit::SharedPtr msg)
