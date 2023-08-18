@@ -400,19 +400,6 @@ void ControllerServer::computeControl()
         sleep(2);
       }
       stop = false;
-      //RCLCPP_INFO(rclcpp::get_logger("stop"), "stop_: %d", stop_);
-      if(stop_ == 1){
-        publishZeroVelocity();
-        sleep(1);
-        stop = true;
-        // RCLCPP_INFO(get_logger(), "test star2");
-        continue;
-      }
-      if(stop){
-        sleep(2);
-      }
-      stop = false;
-      // RCLCPP_INFO(rclcpp::get_logger("stop"), "stop_1: %d", stop_1);
       if(stop_1 > 0){
         geometry_msgs::msg::TwistStamped velocity;
         velocity.twist.angular.x = 0;
@@ -426,6 +413,20 @@ void ControllerServer::computeControl()
         publishVelocity(velocity);
         continue;
       }
+      //RCLCPP_INFO(rclcpp::get_logger("stop"), "stop_: %d", stop_);
+      // if(stop_ == 1){
+      //   publishZeroVelocity();
+      //   sleep(1);
+      //   stop = true;
+      //   // RCLCPP_INFO(get_logger(), "test star2");
+      //   continue;
+      // }
+      // if(stop){
+      //   sleep(2);
+      // }
+      // stop = false;
+      // RCLCPP_INFO(rclcpp::get_logger("stop"), "stop_1: %d", stop_1);
+      
       // Don't compute a trajectory until costmap is valid (after clear costmap)
       rclcpp::Rate r(100);
       while (!costmap_ros_->isCurrent()) {

@@ -299,7 +299,7 @@ private:
       else if(msg->result[i].x < 1.2 && fabs(msg->result[i].y) < 0.6 && !msg->result[i].part){
         icf += 1;
         icp += 0;
-        if(msg->result[i].x < 0.8 && fabs(msg->result[i].y) < 0.5){
+        if(hypot(msg->result[i].x, fabs(msg->result[i].y)) < 1.2){
           stop_1 += 1;
         }
         else
