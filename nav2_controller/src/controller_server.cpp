@@ -123,6 +123,7 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   get_parameter("failure_tolerance", failure_tolerance_);
 
   costmap_ros_->configure();
+  costmap_ = costmap_ros_->getCostmap();
 
   try {
     progress_checker_type_ = nav2_util::get_plugin_type_param(node, progress_checker_id_);
@@ -208,7 +209,8 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   speed_limit_sub_ = create_subscription<nav2_msgs::msg::SpeedLimit>(
     speed_limit_topic, rclcpp::QoS(10),
     std::bind(&ControllerServer::speedLimitCallback, this, std::placeholders::_1));
-
+  
+  localization_subscribe_ = create_subscription<std_msgs::msg::Float32>("localization_score", 10, std::bind(&ControllerServer::localizationsubscribecallback, this, std::placeholders::_1));
   person_subscribe_ = create_subscription<capella_ros_msg::msg::DetectResult>("person_detected", 10, std::bind(&ControllerServer::personsubscribecallback, this, std::placeholders::_1));
 
   return nav2_util::CallbackReturn::SUCCESS;
@@ -386,33 +388,56 @@ void ControllerServer::computeControl()
         publishZeroVelocity();
         return;
       }
-      isclosepepole();
+      // isclosepepole();
       if (icp > 0) {  
         publishZeroVelocity();
-        // publishZeroVelocity();
         sleep(1);
         stop = true;
         // RCLCPP_INFO(get_logger(), "test star2");
         continue;
       }
-      // RCLCPP_INFO(get_logger(), "test star3");
       if(stop){
         sleep(2);
       }
       stop = false;
-      if(stop_1 > 0){
-        geometry_msgs::msg::TwistStamped velocity;
-        velocity.twist.angular.x = 0;
-        velocity.twist.angular.y = 0;
-        velocity.twist.angular.z = 0;
-        velocity.twist.linear.x = -0.1;
-        velocity.twist.linear.y = 0;
-        velocity.twist.linear.z = 0;
-        velocity.header.frame_id = costmap_ros_->getBaseFrameID();
-        velocity.header.stamp = now();
-        publishVelocity(velocity);
-        continue;
-      }
+      // if(lcz == 1){
+      //   publishZeroVelocity();
+      //   sleep(5);
+      //   continue;
+      // }      
+      // if(lcz>=5){
+      //   geometry_msgs::msg::TwistStamped velocity;
+      //   velocity.twist.angular.x = 0;
+      //   velocity.twist.angular.y = 0;
+      //   velocity.twist.angular.z = 0.2;
+      //   velocity.twist.linear.x = 0;
+      //   velocity.twist.linear.y = 0;
+      //   velocity.twist.linear.z = 0;
+      //   velocity.header.frame_id = costmap_ros_->getBaseFrameID();
+      //   velocity.header.stamp = now();
+      //   publishVelocity(velocity);
+      //   continue;
+      // }
+      // if(stop_1 > 0){
+      //   // if(isobstacleback()){
+      //   //   publishZeroVelocity();
+      //   //   sleep(2);
+      //   //   continue;
+      //   // }
+      //   // else{
+      //   geometry_msgs::msg::TwistStamped velocity;
+      //   velocity.twist.angular.x = 0;
+      //   velocity.twist.angular.y = 0;
+      //   velocity.twist.angular.z = 0;
+      //   velocity.twist.linear.x = -0.1;
+      //   velocity.twist.linear.y = 0;
+      //   velocity.twist.linear.z = 0;
+      //   velocity.header.frame_id = costmap_ros_->getBaseFrameID();
+      //   velocity.header.stamp = now();
+      //   publishVelocity(velocity);
+      //   continue;
+              
+      // }
       //RCLCPP_INFO(rclcpp::get_logger("stop"), "stop_: %d", stop_);
       // if(stop_ == 1){
       //   publishZeroVelocity();

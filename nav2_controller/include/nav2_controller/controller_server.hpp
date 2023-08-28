@@ -37,6 +37,7 @@
 #include "pluginlib/class_list_macros.hpp"
 #include "capella_ros_msg/msg/single_detector.hpp"
 #include "capella_ros_msg/msg/detect_result.hpp"
+#include "std_msgs/msg/float32.hpp"
 
 namespace nav2_controller
 {
@@ -62,6 +63,25 @@ public:
    * @brief Destructor for nav2_controller::ControllerServer
    */
   ~ControllerServer();
+  bool isobstacleback(){
+    unsigned int size_x = costmap_->getSizeInCellsX();
+    unsigned int size_y = costmap_->getSizeInCellsY()/2;
+    // //RCLCPP_INFO(rclcpp::get_logger("critic"),"size: %d %d",size_x,size_y);
+    for(unsigned int j=0;j<size_y;j++) 
+    {
+      for(unsigned int k=0;k<size_x;k++)
+      {
+        if(costmap_->getCost(k,j) != nav2_costmap_2d::FREE_SPACE)
+        {
+          if(size_y - j < 20 && size_y - j > 0 && fabs(size_x/2 - k) < 10 ){
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+  
 
 protected:
   /**
@@ -267,6 +287,7 @@ protected:
   // Current path container
   nav_msgs::msg::Path current_path_;
   void isclosepepole();
+  nav2_costmap_2d::Costmap2D * costmap_;
 
 private:
   /**
@@ -280,31 +301,41 @@ private:
   double cvt;
   bool stop = false;
   int stop_ = 0;
-  rclcpp::Subscription<nav2_msgs::msg::DetectResult>::SharedPtr person_subscribe_;
-  void personsubscribecallback(const nav2_msgs::msg::DetectResult::SharedPtr msg)
+  int lcz = 0;
+  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr localization_subscribe_;
+  void localizationsubscribecallback(const std_msgs::msg::Float32::SharedPtr msg)
+  {
+    if(msg->data < 0.3){
+      lcz += 1;
+    }
+    else
+      lcz = 0;
+  }
+  rclcpp::Subscription<capella_ros_msg::msg::DetectResult>::SharedPtr person_subscribe_;
+  void personsubscribecallback(const capella_ros_msg::msg::DetectResult::SharedPtr msg)
   {
     icp=0;
     icf=0;
     stop_1 = 0;
     //RCLCPP_INFO(rclcpp::get_logger("critics"),"theta: %f",cvt);
     for(size_t i=0;i<msg->result.size();i++){
-      if(fabs(cvt) >= 0.2 && msg->result[i].x < 1.5 && fabs(msg->result[i].y) < 0.6 && msg->result[i].part){
+      if(fabs(cvt) >= 0.2 && msg->result[i].x < 0.8 && fabs(msg->result[i].y) < 0.6){
         icp += 1;
         icf += 0;
       }
-      else if(fabs(cvt) < 0.2 && msg->result[i].x < 1.0 && fabs(msg->result[i].y) < 0.6 && msg->result[i].part){
+      else if(fabs(cvt) < 0.2 && msg->result[i].x < 1.6 && fabs(msg->result[i].y) < 0.6){
         icp += 1;
         icf += 0;
       }
-      else if(msg->result[i].x < 1.2 && fabs(msg->result[i].y) < 0.6 && !msg->result[i].part){
-        icf += 1;
-        icp += 0;
-        if(hypot(msg->result[i].x, fabs(msg->result[i].y)) < 1.2){
-          stop_1 += 1;
-        }
-        else
-          stop_1 += 0; 
-      }
+      // else if(msg->result[i].x < 1.0 && fabs(msg->result[i].y) < 0.4 && !msg->result[i].part){
+      //   icf += 1;
+      //   icp += 0;
+      //   if(msg->result[i].x < 0.5){
+      //     stop_1 += 1;
+      //   }
+      //   else
+      //     stop_1 += 0; 
+      // }
       else{
         icp += 0;
         icf += 0;
