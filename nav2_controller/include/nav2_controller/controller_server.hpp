@@ -38,6 +38,7 @@
 #include "capella_ros_msg/msg/single_detector.hpp"
 #include "capella_ros_msg/msg/detect_result.hpp"
 #include "std_msgs/msg/float32.hpp"
+#include "std_msgs/msg/bool.hpp"
 
 namespace nav2_controller
 {
@@ -63,20 +64,95 @@ public:
    * @brief Destructor for nav2_controller::ControllerServer
    */
   ~ControllerServer();
-  bool isobstacleback(){
-    unsigned int size_x = costmap_->getSizeInCellsX();
-    unsigned int size_y = costmap_->getSizeInCellsY()/2;
-    // //RCLCPP_INFO(rclcpp::get_logger("critic"),"size: %d %d",size_x,size_y);
-    for(unsigned int j=0;j<size_y;j++) 
-    {
-      for(unsigned int k=0;k<size_x;k++)
-      {
-        if(costmap_->getCost(k,j) != nav2_costmap_2d::FREE_SPACE)
-        {
-          if(size_y - j < 20 && size_y - j > 0 && fabs(size_x/2 - k) < 10 ){
+    bool isobstacleultra()
+  {
+    std::vector<tf2::Vector3> footprint_pose;
+    tf2::Vector3 c1(1.5,1.5,0);
+    unsigned int s[3][2];
+    for (double x = 0.4; x <= 0.5; x += 0.05) {
+      // for (double y = -0.05; y <= 0.05; y += 0.05) {
+      footprint_pose.push_back(tf2::Vector3(x, 0, 0));
+      // }
+    }
+    std::vector<tf2::Vector3> odom_pose;
+    bool tferr = true;
+    while(tferr){
+      try {
+        tferr = false;
+        geometry_msgs::msg::TransformStamped transform_stamped;
+        transform_stamped = costmap_ros_->getTfBuffer()->lookupTransform("base_footprint", "odom", tf2::TimePointZero);
+        tf2::Matrix3x3 rotation_matrix(
+        tf2::Quaternion(
+        transform_stamped.transform.rotation.x,
+        transform_stamped.transform.rotation.y,
+        transform_stamped.transform.rotation.z,
+        transform_stamped.transform.rotation.w));
+        for(int i=0;i<3;i++){
+          odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[i] + c1);
+        }       
+        for(int i=0;i<3;i++){ 
+          s[i][0] = static_cast<unsigned int>(odom_pose[i][0] / 0.05);
+          s[i][1] = static_cast<unsigned int>(odom_pose[i][1] / 0.05);
+          // RCLCPP_INFO(rclcpp::get_logger("trans"), "cost in odom frame: %d", costmap_->getCost(s[i][0],s[i][1]));
+          if(costmap_->getCost(s[i][0],s[i][1]) >= 253 && fabs(cvt) < 0.2 ){
             return true;
           }
         }
+      }
+      catch (tf2::TransformException& e) {
+        RCLCPP_WARN(get_logger(), "Failed to transform base_footprint to odom: %s", e.what());
+        tferr = true;
+        continue;
+      }
+    }
+    return false;
+  }
+  bool isobstacleback()
+  {
+    // base_footprint
+    std::vector<tf2::Vector3> footprint_pose;
+    tf2::Vector3 c1(1.5,1.5,0);
+    unsigned int s[21][2];
+    // unsigned int m[441];
+    for (double x = -0.6; x <= -0.3; x += 0.05) {
+      for (double y = -0.05; y <= 0.05; y += 0.05) {
+        footprint_pose.push_back(tf2::Vector3(x, y, 0));
+      }
+    }
+    // odom
+    std::vector<tf2::Vector3> odom_pose;
+    bool tferr = true;
+    while(tferr){
+      try {
+        tferr = false;
+        // trans
+        geometry_msgs::msg::TransformStamped transform_stamped;
+        transform_stamped = costmap_ros_->getTfBuffer()->lookupTransform("base_footprint", "odom", tf2::TimePointZero);
+        tf2::Matrix3x3 rotation_matrix(
+        tf2::Quaternion(
+        transform_stamped.transform.rotation.x,
+        transform_stamped.transform.rotation.y,
+        transform_stamped.transform.rotation.z,
+        transform_stamped.transform.rotation.w));
+        // RCLCPP_INFO(rclcpp::get_logger("trans"), "Position in odom frame: %.2f, %.2f, %.2f", rotation_matrix[0][0], rotation_matrix[1][1], rotation_matrix[2][2]);
+        //index
+        for(int i=0;i<21;i++){
+          odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[i] + c1);
+        }       
+        // RCLCPP_INFO(rclcpp::get_logger("trans"), "Position in odom frame: %f, %f", odom_pose[10][0], odom_pose[10][1]);
+        for(int i=0;i<21;i++){ 
+          s[i][0] = static_cast<unsigned int>(odom_pose[i][0] / 0.05);
+          s[i][1] = static_cast<unsigned int>(odom_pose[i][1] / 0.05);
+          // m[i] = s[i][0] + 20 * s[i][1];
+          if(costmap_->getCost(s[i][0],s[i][1]) != nav2_costmap_2d::FREE_SPACE){
+            return true;
+          }
+        }
+      }
+      catch (tf2::TransformException& e) {
+        RCLCPP_WARN(get_logger(), "Failed to transform base_footprint to odom: %s", e.what());
+        tferr = true;
+        continue;
       }
     }
     return false;
@@ -286,7 +362,6 @@ protected:
 
   // Current path container
   nav_msgs::msg::Path current_path_;
-  void isclosepepole();
   nav2_costmap_2d::Costmap2D * costmap_;
 
 private:
@@ -296,16 +371,29 @@ private:
     */
   void speedLimitCallback(const nav2_msgs::msg::SpeedLimit::SharedPtr msg);
   int icp;
-  int icf;
+  // int icf;
   int stop_1;
   double cvt;
   bool stop = false;
-  int stop_ = 0;
+  // int stop_ = 0;
   int lcz = 0;
+  int stop_2;
+  std::queue<int> recent_messages;
+  std::queue<int> recent_messages1;
+  int drop_s = 0;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr dropsignal_subscribe_;
+  void dropsignalsubscribecallback(const std_msgs::msg::Bool::SharedPtr msg)
+  {
+    if(msg->data){
+      drop_s = 1;
+    }
+    else
+      drop_s = 0;
+  }
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr localization_subscribe_;
   void localizationsubscribecallback(const std_msgs::msg::Float32::SharedPtr msg)
   {
-    if(msg->data < 0.3){
+    if(msg->data < 0.33){
       lcz += 1;
     }
     else
@@ -315,32 +403,52 @@ private:
   void personsubscribecallback(const capella_ros_msg::msg::DetectResult::SharedPtr msg)
   {
     icp=0;
-    icf=0;
+    // icf=0;
     stop_1 = 0;
     //RCLCPP_INFO(rclcpp::get_logger("critics"),"theta: %f",cvt);
     for(size_t i=0;i<msg->result.size();i++){
-      if(fabs(cvt) >= 0.2 && msg->result[i].x < 0.8 && fabs(msg->result[i].y) < 0.6){
+      if(fabs(cvt) >= 0.2 && msg->result[i].x < 0.8 && fabs(msg->result[i].y) < 0.6 && msg->result[i].part){
         icp += 1;
-        icf += 0;
+        // icf += 0;
       }
-      else if(fabs(cvt) < 0.2 && msg->result[i].x < 1.6 && fabs(msg->result[i].y) < 0.6){
+      else if(fabs(cvt) < 0.2 && msg->result[i].x < 1.6 && fabs(msg->result[i].y) < 0.6 && msg->result[i].part){
         icp += 1;
-        icf += 0;
+        // icf += 0;
       }
-      // else if(msg->result[i].x < 1.0 && fabs(msg->result[i].y) < 0.4 && !msg->result[i].part){
-      //   icf += 1;
-      //   icp += 0;
-      //   if(msg->result[i].x < 0.5){
-      //     stop_1 += 1;
-      //   }
-      //   else
-      //     stop_1 += 0; 
-      // }
+      else if(msg->result[i].x < 1.5 && fabs(msg->result[i].y) < 0.4 && !msg->result[i].part){
+        // icf += 1;
+        icp += 0;
+        // if(msg->result[i].x < 1.5){
+        stop_1 += 1;
+        // }
+        // else
+          // stop_1 += 0; 
+      }
       else{
         icp += 0;
-        icf += 0;
+        // icf += 0;
+        stop_1 += 0;
       }       
     }
+    if(stop_1 == 0){
+      recent_messages1 = recent_messages;
+      for (int i = 0; i < 5; i++) {  
+        if (recent_messages1.front() > 0) {  
+          stop_2 = 1;
+          break;  
+        }  
+        recent_messages1.pop();  
+      }
+      stop_2 = 0;
+    }
+    else{
+      stop_2 = 1;
+    }
+    recent_messages.push(stop_1);
+    if(recent_messages.size()>5){
+      recent_messages.pop();
+    }
+    // RCLCPP_INFO(rclcpp::get_logger("back"),"recent stop1: %d",recent_messages.back());
   }
 };
 

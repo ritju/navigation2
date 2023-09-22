@@ -212,6 +212,7 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   
   localization_subscribe_ = create_subscription<std_msgs::msg::Float32>("localization_score", 10, std::bind(&ControllerServer::localizationsubscribecallback, this, std::placeholders::_1));
   person_subscribe_ = create_subscription<capella_ros_msg::msg::DetectResult>("person_detected", 10, std::bind(&ControllerServer::personsubscribecallback, this, std::placeholders::_1));
+  dropsignal_subscribe_ = create_subscription<std_msgs::msg::Bool>("drop_signal", 10, std::bind(&ControllerServer::dropsignalsubscribecallback, this, std::placeholders::_1));
 
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -283,6 +284,8 @@ ControllerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   vel_publisher_.reset();
   speed_limit_sub_.reset();
   person_subscribe_.reset();
+  localization_subscribe_.reset();
+  dropsignal_subscribe_.reset();
 
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -388,69 +391,72 @@ void ControllerServer::computeControl()
         publishZeroVelocity();
         return;
       }
-      // isclosepepole();
       if (icp > 0) {  
         publishZeroVelocity();
         sleep(1);
         stop = true;
-        // RCLCPP_INFO(get_logger(), "test star2");
+        continue;
+      }
+      if(stop){
+        sleep(3);
+      }
+      stop = false;
+      if(lcz == 1){
+        publishZeroVelocity();
+        sleep(1);
+        stop = true;
+        continue;
+      }   
+      if(stop){
+        sleep(4);
+      }
+      stop = false;   
+      if(lcz>=5){
+        geometry_msgs::msg::TwistStamped velocity;
+        velocity.twist.angular.x = 0;
+        velocity.twist.angular.y = 0;
+        velocity.twist.angular.z = 0.4;
+        velocity.twist.linear.x = 0;
+        velocity.twist.linear.y = 0;
+        velocity.twist.linear.z = 0;
+        velocity.header.frame_id = costmap_ros_->getBaseFrameID();
+        velocity.header.stamp = now();
+        publishVelocity(velocity);
+        continue;
+      }
+      if(stop_2 == 1 && isobstacleback()){
+        // RCLCPP_INFO(rclcpp::get_logger("stop"), "*************************");
+        publishZeroVelocity();
+        stop = true;
+        continue;         
+      }  
+      else if(stop_2 == 1 && !isobstacleback()){
+        geometry_msgs::msg::TwistStamped velocity;
+        velocity.twist.angular.x = 0;
+        velocity.twist.angular.y = 0;
+        velocity.twist.angular.z = 0;
+        velocity.twist.linear.x = -0.1;
+        velocity.twist.linear.y = 0;
+        velocity.twist.linear.z = 0;
+        velocity.header.frame_id = costmap_ros_->getBaseFrameID();
+        velocity.header.stamp = now();
+        publishVelocity(velocity);
+        continue;    
+      }   
+      if(isobstacleultra()){
+        publishZeroVelocity();
+        sleep(1);
+        stop = true;
         continue;
       }
       if(stop){
         sleep(2);
       }
-      stop = false;
-      // if(lcz == 1){
-      //   publishZeroVelocity();
-      //   sleep(5);
-      //   continue;
-      // }      
-      // if(lcz>=5){
-      //   geometry_msgs::msg::TwistStamped velocity;
-      //   velocity.twist.angular.x = 0;
-      //   velocity.twist.angular.y = 0;
-      //   velocity.twist.angular.z = 0.2;
-      //   velocity.twist.linear.x = 0;
-      //   velocity.twist.linear.y = 0;
-      //   velocity.twist.linear.z = 0;
-      //   velocity.header.frame_id = costmap_ros_->getBaseFrameID();
-      //   velocity.header.stamp = now();
-      //   publishVelocity(velocity);
-      //   continue;
-      // }
-      // if(stop_1 > 0){
-      //   // if(isobstacleback()){
-      //   //   publishZeroVelocity();
-      //   //   sleep(2);
-      //   //   continue;
-      //   // }
-      //   // else{
-      //   geometry_msgs::msg::TwistStamped velocity;
-      //   velocity.twist.angular.x = 0;
-      //   velocity.twist.angular.y = 0;
-      //   velocity.twist.angular.z = 0;
-      //   velocity.twist.linear.x = -0.1;
-      //   velocity.twist.linear.y = 0;
-      //   velocity.twist.linear.z = 0;
-      //   velocity.header.frame_id = costmap_ros_->getBaseFrameID();
-      //   velocity.header.stamp = now();
-      //   publishVelocity(velocity);
-      //   continue;
-              
-      // }
-      //RCLCPP_INFO(rclcpp::get_logger("stop"), "stop_: %d", stop_);
-      // if(stop_ == 1){
-      //   publishZeroVelocity();
-      //   sleep(1);
-      //   stop = true;
-      //   // RCLCPP_INFO(get_logger(), "test star2");
-      //   continue;
-      // }
-      // if(stop){
-      //   sleep(2);
-      // }
-      // stop = false;
-      // RCLCPP_INFO(rclcpp::get_logger("stop"), "stop_1: %d", stop_1);
+      stop = false;  
+      if(drop_s == 1){
+        publishZeroVelocity();
+        break;
+      }
       
       // Don't compute a trajectory until costmap is valid (after clear costmap)
       rclcpp::Rate r(100);
@@ -668,15 +674,6 @@ bool ControllerServer::getRobotPose(geometry_msgs::msg::PoseStamped & pose)
   }
   pose = current_pose;
   return true;
-}
-
-void ControllerServer::isclosepepole()
-{
-  if(icf > 0)
-      stop_ += 1;  
-  else{
-    stop_ = 0;
-  }
 }
 
 void ControllerServer::speedLimitCallback(const nav2_msgs::msg::SpeedLimit::SharedPtr msg)
