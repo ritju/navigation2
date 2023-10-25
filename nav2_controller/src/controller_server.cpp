@@ -391,6 +391,7 @@ void ControllerServer::computeControl()
         publishZeroVelocity();
         return;
       }
+      //face
       if (icp > 0) {  
         publishZeroVelocity();
         sleep(1);
@@ -401,6 +402,7 @@ void ControllerServer::computeControl()
         sleep(3);
       }
       stop = false;
+      //localization rotation
       if(lcz == 1){
         publishZeroVelocity();
         sleep(1);
@@ -424,8 +426,19 @@ void ControllerServer::computeControl()
         publishVelocity(velocity);
         continue;
       }
+      //localization stop
+      if(lcz_1 == 1){
+        publishZeroVelocity();
+        sleep(1);
+        stop = true;
+        continue;
+      }
+      if(stop){
+        sleep(1);
+      }
+      stop = false;
+      //person and check obstacle in back
       if(stop_2 == 1 && isobstacleback()){
-        // RCLCPP_INFO(rclcpp::get_logger("stop"), "*************************");
         publishZeroVelocity();
         stop = true;
         continue;         
@@ -442,7 +455,8 @@ void ControllerServer::computeControl()
         velocity.header.stamp = now();
         publishVelocity(velocity);
         continue;    
-      }   
+      }  
+      // check close proximity obstacles in front
       if(isobstacleultra()){
         publishZeroVelocity();
         sleep(1);
@@ -452,7 +466,8 @@ void ControllerServer::computeControl()
       if(stop){
         sleep(2);
       }
-      stop = false;  
+      stop = false; 
+      // Drop proof
       if(drop_s == 1){
         publishZeroVelocity();
         break;

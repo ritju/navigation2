@@ -377,9 +377,11 @@ private:
   bool stop = false;
   // int stop_ = 0;
   int lcz = 0;
+  int lcz_1;
   int stop_2;
   std::queue<int> recent_messages;
   std::queue<int> recent_messages1;
+  std::queue<int> lcz_messages;
   int drop_s = 0;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr dropsignal_subscribe_;
   void dropsignalsubscribecallback(const std_msgs::msg::Bool::SharedPtr msg)
@@ -398,6 +400,16 @@ private:
     }
     else
       lcz = 0;
+    if(lcz == 0 && lcz_messages.front() > 0){
+      lcz_1  = 1;
+    }
+    else{
+      lcz_1  = 0;
+    }
+    lcz_messages.push(lcz);
+    if(lcz_messages.size()>3){
+      lcz_messages.pop();
+    }
   }
   rclcpp::Subscription<capella_ros_msg::msg::DetectResult>::SharedPtr person_subscribe_;
   void personsubscribecallback(const capella_ros_msg::msg::DetectResult::SharedPtr msg)

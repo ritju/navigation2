@@ -39,7 +39,11 @@
       </description>
     </class>
     <class type="dwb_critics::ObstacleAlignCritic" base_class_type="dwb_core::TrajectoryCritic">
-      <description>ObstacleAlignCritic
+      <description>ObstacleAlign
+      </description>
+    </class>
+    <class type="dwb_critics::GoalThresholdCritic" base_class_type="dwb_core::TrajectoryCritic">
+      <description>GoalThreshold
       </description>
     </class>
   </library>
