@@ -64,6 +64,24 @@ public:
    * @brief Destructor for nav2_controller::ControllerServer
    */
   ~ControllerServer();
+  bool isGoalOccupied(){
+    geometry_msgs::msg::Point obstacle;
+    unsigned int size_x = costmap_->getSizeInCellsX();
+    unsigned int size_y = costmap_->getSizeInCellsY();
+    // RCLCPP_INFO(rclcpp::get_logger("trans"), "goal pose: %f, %f", goal_pose.pose.x,goal_pose.pose.y);
+    for(unsigned int j=0;j<size_y;j++){
+      for(unsigned int k=0;k<size_x;k++){
+        if(costmap_->getCost(k,j) >= 253){
+          costmap_->mapToWorld(k,j,obstacle.x,obstacle.y);
+          double distance = sqrt((obstacle.x - goal_x)*(obstacle.x - goal_x)+(obstacle.y - goal_y)*(obstacle.y - goal_y));
+          if(distance < 0.05){
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
     bool isobstacleultra()
   {
     std::vector<tf2::Vector3> footprint_pose;
@@ -377,12 +395,12 @@ private:
   bool stop = false;
   // int stop_ = 0;
   int lcz = 0;
-  int lcz_1;
+  bool above_threshold = false;
   int stop_2;
   std::queue<int> recent_messages;
   std::queue<int> recent_messages1;
-  std::queue<int> lcz_messages;
   int drop_s = 0;
+  double goal_x,goal_y;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr dropsignal_subscribe_;
   void dropsignalsubscribecallback(const std_msgs::msg::Bool::SharedPtr msg)
   {
@@ -396,19 +414,18 @@ private:
   void localizationsubscribecallback(const std_msgs::msg::Float32::SharedPtr msg)
   {
     if(msg->data < 0.33){
-      lcz += 1;
-    }
-    else
       lcz = 0;
-    if(lcz == 0 && lcz_messages.front() > 0){
-      lcz_1  = 1;
+      above_threshold = true;
+    }
+    else if(msg->data >= 0.33 && msg->data < 0.6 && above_threshold){
+      lcz = 0;
+    }
+    else if(msg->data >= 0.6 && above_threshold){
+      lcz = 2;
+      above_threshold = false;
     }
     else{
-      lcz_1  = 0;
-    }
-    lcz_messages.push(lcz);
-    if(lcz_messages.size()>3){
-      lcz_messages.pop();
+      lcz = 1;
     }
   }
   rclcpp::Subscription<capella_ros_msg::msg::DetectResult>::SharedPtr person_subscribe_;

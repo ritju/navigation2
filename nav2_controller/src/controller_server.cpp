@@ -380,6 +380,8 @@ void ControllerServer::computeControl()
     last_valid_cmd_time_ = now();
     rclcpp::WallRate loop_rate(controller_frequency_);
     while (rclcpp::ok()) {
+      goal_x = action_server_->get_current_goal()->path.poses.back().pose.position.x;
+      goal_y = action_server_->get_current_goal()->path.poses.back().pose.position.y;
       if (action_server_ == nullptr || !action_server_->is_server_active()) {
         RCLCPP_DEBUG(get_logger(), "Action server unavailable or inactive. Stopping.");
         return;
@@ -402,18 +404,8 @@ void ControllerServer::computeControl()
         sleep(3);
       }
       stop = false;
-      //localization rotation
-      if(lcz == 1){
-        publishZeroVelocity();
-        sleep(1);
-        stop = true;
-        continue;
-      }   
-      if(stop){
-        sleep(4);
-      }
-      stop = false;   
-      if(lcz>=5){
+      //localization rotation  
+      if(lcz == 0){
         geometry_msgs::msg::TwistStamped velocity;
         velocity.twist.angular.x = 0;
         velocity.twist.angular.y = 0;
@@ -427,7 +419,7 @@ void ControllerServer::computeControl()
         continue;
       }
       //localization stop
-      if(lcz_1 == 1){
+      if(lcz == 2){
         publishZeroVelocity();
         sleep(1);
         stop = true;
@@ -480,6 +472,11 @@ void ControllerServer::computeControl()
       }
 
       updateGlobalPath();
+      if(isGoalOccupied()){
+        publishZeroVelocity();
+        sleep(1);
+        continue;
+      }
 
       computeAndPublishVelocity();
 

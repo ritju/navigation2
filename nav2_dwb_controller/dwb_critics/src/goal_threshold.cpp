@@ -25,25 +25,17 @@ double GoalThresholdCritic::scoreTrajectory(const dwb_msgs::msg::Trajectory2D & 
 {
   double s;
   // RCLCPP_INFO(rclcpp::get_logger("distance"), "distance in goal threshold: %.2f", dxy);
-  if(dxy < 1 && dxy >= 0.25)
+  if(dxy < 0.36 && dxy >= 0.16)
   {
-    if(traj.velocity.x >= 0.2){
+    if(traj.velocity.x >= 0.2 && traj.velocity.x <= 0.21){
         s = 0.0;
     }
     else
-      s=10.0;
+      s=100.0;
   }
-  if(dxy < 0.25 && dxy >= 0.08)
+  else if(dxy <= 0.16)
   {
-    if(traj.velocity.x >= 0.15){
-        s = 0.0;
-    }
-    else
-      s=10.0;
-  }
-  else if(dxy <= 0.09)
-  {
-    if(traj.velocity.x >= 0.15 && fabs(traj.velocity.theta) <= 0.02){
+    if(traj.velocity.x >= 0.2 && fabs(traj.velocity.theta) <= 0.02){
         s = 0.0;
     }
     else
