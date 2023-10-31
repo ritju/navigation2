@@ -380,8 +380,6 @@ void ControllerServer::computeControl()
     last_valid_cmd_time_ = now();
     rclcpp::WallRate loop_rate(controller_frequency_);
     while (rclcpp::ok()) {
-      goal_x = action_server_->get_current_goal()->path.poses.back().pose.position.x;
-      goal_y = action_server_->get_current_goal()->path.poses.back().pose.position.y;
       if (action_server_ == nullptr || !action_server_->is_server_active()) {
         RCLCPP_DEBUG(get_logger(), "Action server unavailable or inactive. Stopping.");
         return;
@@ -472,17 +470,17 @@ void ControllerServer::computeControl()
       }
 
       updateGlobalPath();
-      if(isGoalOccupied()){
-        publishZeroVelocity();
-        sleep(1);
-        continue;
-      }
 
       computeAndPublishVelocity();
 
       if (isGoalReached()) {
         RCLCPP_INFO(get_logger(), "Reached the goal!");
         break;
+      }
+      if(isGoalOccupied()){
+        publishZeroVelocity();
+        sleep(1);
+        continue;
       }
 
       if (!loop_rate.sleep()) {
@@ -672,6 +670,10 @@ bool ControllerServer::isGoalReached()
   nav_2d_utils::transformPose(
     costmap_ros_->getTfBuffer(), costmap_ros_->getGlobalFrameID(),
     end_pose_, transformed_end_pose, tolerance);
+
+  
+  goal_x = transformed_end_pose.pose.position.x;
+  goal_y = transformed_end_pose.pose.position.y;
 
   return goal_checkers_[current_goal_checker_]->isGoalReached(
     pose.pose, transformed_end_pose.pose,

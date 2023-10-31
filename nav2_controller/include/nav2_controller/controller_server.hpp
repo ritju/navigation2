@@ -74,7 +74,7 @@ public:
         if(costmap_->getCost(k,j) >= 253){
           costmap_->mapToWorld(k,j,obstacle.x,obstacle.y);
           double distance = sqrt((obstacle.x - goal_x)*(obstacle.x - goal_x)+(obstacle.y - goal_y)*(obstacle.y - goal_y));
-          if(distance < 0.05){
+          if(distance < 0.5){
             return true;
           }
         }
