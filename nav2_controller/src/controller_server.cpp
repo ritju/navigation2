@@ -403,30 +403,30 @@ void ControllerServer::computeControl()
       }
       stop = false;
       //localization rotation  
-      if(lcz == 0){
-        geometry_msgs::msg::TwistStamped velocity;
-        velocity.twist.angular.x = 0;
-        velocity.twist.angular.y = 0;
-        velocity.twist.angular.z = 0.4;
-        velocity.twist.linear.x = 0;
-        velocity.twist.linear.y = 0;
-        velocity.twist.linear.z = 0;
-        velocity.header.frame_id = costmap_ros_->getBaseFrameID();
-        velocity.header.stamp = now();
-        publishVelocity(velocity);
-        continue;
-      }
+      // if(lcz == 0){
+      //   geometry_msgs::msg::TwistStamped velocity;
+      //   velocity.twist.angular.x = 0;
+      //   velocity.twist.angular.y = 0;
+      //   velocity.twist.angular.z = 0.4;
+      //   velocity.twist.linear.x = 0;
+      //   velocity.twist.linear.y = 0;
+      //   velocity.twist.linear.z = 0;
+      //   velocity.header.frame_id = costmap_ros_->getBaseFrameID();
+      //   velocity.header.stamp = now();
+      //   publishVelocity(velocity);
+      //   continue;
+      // }
       //localization stop
-      if(lcz == 2){
-        publishZeroVelocity();
-        sleep(1);
-        stop = true;
-        continue;
-      }
-      if(stop){
-        sleep(1);
-      }
-      stop = false;
+      // if(lcz == 2){
+      //   publishZeroVelocity();
+      //   sleep(1);
+      //   stop = true;
+      //   continue;
+      // }
+      // if(stop){
+      //   sleep(1);
+      // }
+      // stop = false;
       //person and check obstacle in back
       if(stop_2 == 1 && isobstacleback()){
         publishZeroVelocity();
@@ -447,6 +447,24 @@ void ControllerServer::computeControl()
         continue;    
       }  
       // check close proximity obstacles in front
+      if(isobstacleultraforward() && ultra_count >= 5 && isobstacleback()){
+        publishZeroVelocity();
+        sleep(1);
+        continue; 
+      }
+      if(isobstacleultraforward() && ultra_count >= 5 && !isobstacleback()){
+        geometry_msgs::msg::TwistStamped velocity;
+        velocity.twist.angular.x = 0;
+        velocity.twist.angular.y = 0;
+        velocity.twist.angular.z = 0;
+        velocity.twist.linear.x = -0.2;
+        velocity.twist.linear.y = 0;
+        velocity.twist.linear.z = 0;
+        velocity.header.frame_id = costmap_ros_->getBaseFrameID();
+        velocity.header.stamp = now();
+        publishVelocity(velocity);
+        continue; 
+      }
       if(isobstacleultra()){
         publishZeroVelocity();
         sleep(1);

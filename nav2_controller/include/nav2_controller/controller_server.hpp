@@ -82,15 +82,17 @@ public:
     }
     return false;
   }
-    bool isobstacleultra()
+  bool isobstacleultraforward()
   {
+    back_ultra = 0;
     std::vector<tf2::Vector3> footprint_pose;
     tf2::Vector3 c1(1.5,1.5,0);
-    unsigned int s[3][2];
-    for (double x = 0.4; x <= 0.5; x += 0.05) {
-      // for (double y = -0.05; y <= 0.05; y += 0.05) {
-      footprint_pose.push_back(tf2::Vector3(x, 0, 0));
-      // }
+    unsigned int s[15][2];
+    // unsigned int m[441];
+    for (double x = 0.6; x <= 1.0; x += 0.1) {
+      for (double y = -0.1; y <= 0.1; y += 0.1) {
+        footprint_pose.push_back(tf2::Vector3(x, y, 0));
+      }
     }
     std::vector<tf2::Vector3> odom_pose;
     bool tferr = true;
@@ -105,14 +107,74 @@ public:
         transform_stamped.transform.rotation.y,
         transform_stamped.transform.rotation.z,
         transform_stamped.transform.rotation.w));
-        for(int i=0;i<3;i++){
+        for(int i=0;i<15;i++){
           odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[i] + c1);
         }       
-        for(int i=0;i<3;i++){ 
+        for(int i=0;i<15;i++){ 
           s[i][0] = static_cast<unsigned int>(odom_pose[i][0] / 0.05);
           s[i][1] = static_cast<unsigned int>(odom_pose[i][1] / 0.05);
-          // RCLCPP_INFO(rclcpp::get_logger("trans"), "cost in odom frame: %d", costmap_->getCost(s[i][0],s[i][1]));
-          if(costmap_->getCost(s[i][0],s[i][1]) >= 253 && fabs(cvt) < 0.2 ){
+          if(costmap_->getCost(s[i][0],s[i][1]) >= 253){
+            back_ultra += 1;
+          }
+          else{
+            back_ultra += 0;
+          }
+        }
+      }
+      catch (tf2::TransformException& e) {
+        RCLCPP_WARN(get_logger(), "Failed to transform base_footprint to odom: %s", e.what());
+        tferr = true;
+        continue;
+      }
+    }
+    back_messages.push(back_ultra);
+    if(back_messages.size()>5){
+      back_messages.pop();
+    }
+    if(back_ultra == 0){
+      back_messages1 = back_messages;
+      for(int i=0;i<5;i++){
+        if(back_messages1.empty()){
+          return false;
+        }
+        if(back_messages1.front()>0){
+          return true;
+        }
+        back_messages1.pop();
+      }
+      return false;
+    }
+    else{
+      return true;
+    }
+  }
+  bool isobstacleultra()
+  {
+    std::vector<tf2::Vector3> footprint_pose;
+    tf2::Vector3 c1(1.5,1.5,0);
+    unsigned int s[2][2];
+    footprint_pose.push_back(tf2::Vector3(0.6, -0.1, 0));
+    footprint_pose.push_back(tf2::Vector3(0.6, 0.1, 0));
+    std::vector<tf2::Vector3> odom_pose;
+    bool tferr = true;
+    while(tferr){
+      try {
+        tferr = false;
+        geometry_msgs::msg::TransformStamped transform_stamped;
+        transform_stamped = costmap_ros_->getTfBuffer()->lookupTransform("base_footprint", "odom", tf2::TimePointZero);
+        tf2::Matrix3x3 rotation_matrix(
+        tf2::Quaternion(
+        transform_stamped.transform.rotation.x,
+        transform_stamped.transform.rotation.y,
+        transform_stamped.transform.rotation.z,
+        transform_stamped.transform.rotation.w));
+        odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[0] + c1);  
+        odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[1] + c1);  
+        for(int i=0;i<2;i++){ 
+          s[i][0] = static_cast<unsigned int>(odom_pose[i][0] / 0.05);
+          s[i][1] = static_cast<unsigned int>(odom_pose[i][1] / 0.05);
+          if(costmap_->getCost(s[i][0],s[i][1]) >= 253 && fabs(cvt) < 0.2){
+            ultra_count++;
             return true;
           }
         }
@@ -123,27 +185,21 @@ public:
         continue;
       }
     }
+    ultra_count = 0;
     return false;
   }
   bool isobstacleback()
   {
-    // base_footprint
     std::vector<tf2::Vector3> footprint_pose;
     tf2::Vector3 c1(1.5,1.5,0);
-    unsigned int s[21][2];
-    // unsigned int m[441];
-    for (double x = -0.6; x <= -0.3; x += 0.05) {
-      for (double y = -0.05; y <= 0.05; y += 0.05) {
-        footprint_pose.push_back(tf2::Vector3(x, y, 0));
-      }
-    }
-    // odom
+    unsigned int s[2][2];
+    footprint_pose.push_back(tf2::Vector3(-0.65, -0.1, 0));
+    footprint_pose.push_back(tf2::Vector3(-0.65, 0.1, 0));
     std::vector<tf2::Vector3> odom_pose;
     bool tferr = true;
     while(tferr){
       try {
         tferr = false;
-        // trans
         geometry_msgs::msg::TransformStamped transform_stamped;
         transform_stamped = costmap_ros_->getTfBuffer()->lookupTransform("base_footprint", "odom", tf2::TimePointZero);
         tf2::Matrix3x3 rotation_matrix(
@@ -152,17 +208,12 @@ public:
         transform_stamped.transform.rotation.y,
         transform_stamped.transform.rotation.z,
         transform_stamped.transform.rotation.w));
-        // RCLCPP_INFO(rclcpp::get_logger("trans"), "Position in odom frame: %.2f, %.2f, %.2f", rotation_matrix[0][0], rotation_matrix[1][1], rotation_matrix[2][2]);
-        //index
-        for(int i=0;i<21;i++){
-          odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[i] + c1);
-        }       
-        // RCLCPP_INFO(rclcpp::get_logger("trans"), "Position in odom frame: %f, %f", odom_pose[10][0], odom_pose[10][1]);
-        for(int i=0;i<21;i++){ 
+        odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[0] + c1);  
+        odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[1] + c1);  
+        for(int i=0;i<2;i++){ 
           s[i][0] = static_cast<unsigned int>(odom_pose[i][0] / 0.05);
           s[i][1] = static_cast<unsigned int>(odom_pose[i][1] / 0.05);
-          // m[i] = s[i][0] + 20 * s[i][1];
-          if(costmap_->getCost(s[i][0],s[i][1]) != nav2_costmap_2d::FREE_SPACE){
+          if(costmap_->getCost(s[i][0],s[i][1]) >= 253 && fabs(cvt) < 0.2){
             return true;
           }
         }
@@ -399,8 +450,13 @@ private:
   int stop_2;
   std::queue<int> recent_messages;
   std::queue<int> recent_messages1;
+  std::queue<int> back_messages;
+  std::queue<int> back_messages1;
+  int back_ultra;
   int drop_s = 0;
   double goal_x,goal_y;
+  int ultra_count = 0;
+  bool back_threshold = false;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr dropsignal_subscribe_;
   void dropsignalsubscribecallback(const std_msgs::msg::Bool::SharedPtr msg)
   {
