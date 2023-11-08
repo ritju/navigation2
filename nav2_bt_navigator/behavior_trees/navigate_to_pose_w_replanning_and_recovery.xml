@@ -92,12 +92,11 @@
               <ClearEntireCostmap name="ClearGlobalCostmap-Subtree"  service_name="global_costmap/clear_entirely_global_costmap"/>
             </GoalUpdatedController>
             <RateController hz="2.0">
-              <IsLocalizationGood min_localization_score = "0.6"/>
+              <IsLocalizationGood min_localization_score = "0.4"/>
             </RateController>
             <RateController hz="1.0">
               <RecoveryNode number_of_retries="1" name="ComputePathToPose">
                 <Sequence>
-                  <!-- <IsLocalizationGood min_localization_score = "0.6"/> -->
                   <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
                 </Sequence> 
                 <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
@@ -117,11 +116,11 @@
               <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
             </Sequence>
             <Fallback>
-              <IsLocalizationGood min_localization_score = "0.6"/>
-              <RelocalizationSpin localization_score = "0.6"/>
+              <IsLocalizationGood min_localization_score = "0.4"/>
+              <RelocalizationSpin localization_score = "0.7"/>
             </Fallback>
-            <!-- <Wait wait_duration="5"/>
-            <BackUp backup_dist="0.30" backup_speed="0.05"/> -->
+            <Wait wait_duration="5"/>
+            <BackUp backup_dist="0.20" backup_speed="0.05"/>
           </Sequence>
         </ReactiveFallback>
       </RecoveryNode>
