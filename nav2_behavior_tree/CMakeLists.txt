@@ -17,6 +17,7 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(nav2_util REQUIRED)
+find_package(capella_ros_msg REQUIRED)
 
 nav2_package()
 
@@ -41,6 +42,7 @@ set(dependencies
   std_msgs
   std_srvs
   nav2_util
+  capella_ros_msg
 )
 
 add_library(${library_name} SHARED
@@ -65,6 +67,9 @@ list(APPEND plugin_libs nav2_wait_cancel_bt_node)
 
 add_library(nav2_spin_cancel_bt_node SHARED plugins/action/spin_cancel_node.cpp)
 list(APPEND plugin_libs nav2_spin_cancel_bt_node)
+
+add_library(nav2_relocalization_spin_bt_node SHARED plugins/action/relocalization_spin_action.cpp)
+list(APPEND plugin_libs nav2_relocalization_spin_bt_node)
 
 add_library(nav2_back_up_cancel_bt_node SHARED plugins/action/back_up_cancel_node.cpp)
 list(APPEND plugin_libs nav2_back_up_cancel_bt_node)
@@ -131,6 +136,9 @@ list(APPEND plugin_libs nav2_initial_pose_received_condition_bt_node)
 
 add_library(nav2_is_battery_low_condition_bt_node SHARED plugins/condition/is_battery_low_condition.cpp)
 list(APPEND plugin_libs nav2_is_battery_low_condition_bt_node)
+
+add_library(nav2_is_localization_good_condition_bt_node SHARED plugins/condition/is_localization_status_good.cpp)
+list(APPEND plugin_libs nav2_is_localization_good_condition_bt_node)
 
 add_library(nav2_reinitialize_global_localization_service_bt_node SHARED plugins/action/reinitialize_global_localization_service.cpp)
 list(APPEND plugin_libs nav2_reinitialize_global_localization_service_bt_node)
