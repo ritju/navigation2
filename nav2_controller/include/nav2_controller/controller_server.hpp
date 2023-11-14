@@ -439,7 +439,7 @@ private:
     * @param msg Shared pointer to nav2_msgs::msg::SpeedLimit
     */
   void speedLimitCallback(const nav2_msgs::msg::SpeedLimit::SharedPtr msg);
-  int icp;
+  int icp = 0;
   // int icf;
   int stop_1;
   double cvt;
