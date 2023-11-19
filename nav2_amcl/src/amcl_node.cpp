@@ -146,11 +146,11 @@ AmclNode::AmclNode(const rclcpp::NodeOptions & options)
 
   add_parameter(
     "max_particles", rclcpp::ParameterValue(2000),
-    "Minimum allowed number of particles");
+    "Maximum allowed number of particles");
 
   add_parameter(
     "min_particles", rclcpp::ParameterValue(500),
-    "Maximum allowed number of particles");
+    "Minimum allowed number of particles");
 
   add_parameter(
     "odom_frame_id", rclcpp::ParameterValue(std::string("odom")),
@@ -1571,8 +1571,6 @@ AmclNode::initParticleFilter()
   // Create the particle filter
   pf_ = pf_alloc(
     min_particles_, max_particles_, alpha_slow_, alpha_fast_,
-    // (pf_init_model_fn_t)AmclNode::uniformPoseGenerator,
-    // reinterpret_cast<void *>(map_));
     (pf_init_model_fn_t)AmclNode::uniformPoseGenerator);
   pf_->pop_err = pf_err_;
   pf_->pop_z = pf_z_;
