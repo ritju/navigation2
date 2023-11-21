@@ -400,8 +400,8 @@ void ControllerServer::computeControl()
       }
       if(stop){
         sleep(3);
+        stop = false;
       }
-      stop = false;
       //localization rotation  
       // if(lcz == 0){
       //   geometry_msgs::msg::TwistStamped velocity;
@@ -447,34 +447,35 @@ void ControllerServer::computeControl()
         continue;    
       }  
       // check close proximity obstacles in front
-      // if(isobstacleultraforward() && ultra_count >= 5 && isobstacleback()){
-      //   publishZeroVelocity();
-      //   sleep(1);
-      //   continue; 
-      // }
-      // else if(isobstacleultraforward() && ultra_count >= 5 && !isobstacleback()){
-      //   geometry_msgs::msg::TwistStamped velocity;
-      //   velocity.twist.angular.x = 0;
-      //   velocity.twist.angular.y = 0;
-      //   velocity.twist.angular.z = 0;
-      //   velocity.twist.linear.x = -0.2;
-      //   velocity.twist.linear.y = 0;
-      //   velocity.twist.linear.z = 0;
-      //   velocity.header.frame_id = costmap_ros_->getBaseFrameID();
-      //   velocity.header.stamp = now();
-      //   publishVelocity(velocity);
-      //   continue; 
-      // }
-      // if(isobstacleultra()){
-      //   publishZeroVelocity();
-      //   sleep(1);
-      //   stop = true;
-      //   continue;
-      // }
-      // if(stop){
-      //   sleep(2);
-      // }
-      // stop = false; 
+      // RCLCPP_INFO(rclcpp::get_logger("TEST"), "back: %d, %d", isobstacleultraforward(),ultra_count);
+      if(isobstacleultraforward() && ultra_count >= 5 && isobstacleback()){
+        publishZeroVelocity();
+        sleep(1);
+        continue; 
+      }
+      else if(isobstacleultraforward() && ultra_count >= 5 && !isobstacleback()){
+        geometry_msgs::msg::TwistStamped velocity;
+        velocity.twist.angular.x = 0;
+        velocity.twist.angular.y = 0;
+        velocity.twist.angular.z = 0;
+        velocity.twist.linear.x = -0.2;
+        velocity.twist.linear.y = 0;
+        velocity.twist.linear.z = 0;
+        velocity.header.frame_id = costmap_ros_->getBaseFrameID();
+        velocity.header.stamp = now();
+        publishVelocity(velocity);
+        continue; 
+      }
+      if(isobstacleultra()){
+        publishZeroVelocity();
+        sleep(1);
+        stop = true;
+        continue;
+      }
+      if(stop){
+        sleep(2);
+        stop = false;
+      }
       // Drop proof
       if(drop_s == 1){
         publishZeroVelocity();
@@ -495,11 +496,11 @@ void ControllerServer::computeControl()
         RCLCPP_INFO(get_logger(), "Reached the goal!");
         break;
       }
-      // if(isGoalOccupied()){
-      //   publishZeroVelocity();
-      //   sleep(1);
-      //   continue;
-      // }
+      if(isGoalOccupied()){
+        publishZeroVelocity();
+        sleep(1);
+        continue;
+      }
 
       if (!loop_rate.sleep()) {
         RCLCPP_WARN(
