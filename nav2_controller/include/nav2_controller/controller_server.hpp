@@ -74,7 +74,7 @@ public:
         if(costmap_->getCost(k,j) >= 253){
           costmap_->mapToWorld(k,j,obstacle.x,obstacle.y);
           double distance = sqrt((obstacle.x - goal_x)*(obstacle.x - goal_x)+(obstacle.y - goal_y)*(obstacle.y - goal_y));
-          if(distance < 0.5){
+          if(distance < 0.4){
             return true;
           }
         }
@@ -452,6 +452,8 @@ private:
   std::queue<int> recent_messages1;
   std::queue<int> back_messages;
   std::queue<int> back_messages1;
+  std::queue<int> ultra_messages;
+  std::queue<int> ultra_messages1;
   int back_ultra;
   int drop_s = 0;
   double goal_x,goal_y;
@@ -519,7 +521,7 @@ private:
       recent_messages1 = recent_messages;
       for (int i = 0; i < 5; i++) {  
         if (recent_messages1.front() > 0) {  
-          stop_2 = 1;
+          stop_2 += 1;
           break;  
         }  
         recent_messages1.pop();  
@@ -527,7 +529,7 @@ private:
       stop_2 = 0;
     }
     else{
-      stop_2 = 1;
+      stop_2 += 1;
     }
     recent_messages.push(stop_1);
     if(recent_messages.size()>5){

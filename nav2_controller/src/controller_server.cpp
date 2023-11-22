@@ -399,7 +399,7 @@ void ControllerServer::computeControl()
         continue;
       }
       if(stop){
-        sleep(3);
+        sleep(2);
         stop = false;
       }
       //localization rotation  
@@ -428,17 +428,23 @@ void ControllerServer::computeControl()
       // }
       // stop = false;
       //person and check obstacle in back
-      if(stop_2 == 1 && isobstacleback()){
+      // RCLCPP_INFO(rclcpp::get_logger("TEST"), "stop2: %d", stop_2);
+      if(stop_2 >= 1 && isobstacleback()){
         publishZeroVelocity();
-        stop = true;
+        sleep(1);
         continue;         
       }  
-      else if(stop_2 == 1 && !isobstacleback()){
+      else if(stop_2 >= 1 && stop_2 <= 10 && !isobstacleback()){
+        publishZeroVelocity();
+        sleep(1);
+        continue;     
+      } 
+      else if(stop_2 >= 11 && !isobstacleback()){
         geometry_msgs::msg::TwistStamped velocity;
         velocity.twist.angular.x = 0;
         velocity.twist.angular.y = 0;
         velocity.twist.angular.z = 0;
-        velocity.twist.linear.x = -0.1;
+        velocity.twist.linear.x = -0.2;
         velocity.twist.linear.y = 0;
         velocity.twist.linear.z = 0;
         velocity.header.frame_id = costmap_ros_->getBaseFrameID();
@@ -448,12 +454,12 @@ void ControllerServer::computeControl()
       }  
       // check close proximity obstacles in front
       // RCLCPP_INFO(rclcpp::get_logger("TEST"), "back: %d, %d", isobstacleultraforward(),ultra_count);
-      if(isobstacleultraforward() && ultra_count >= 5 && isobstacleback()){
+      if(isobstacleultraforward() && ultra_count >= 2 && isobstacleback()){
         publishZeroVelocity();
         sleep(1);
         continue; 
       }
-      else if(isobstacleultraforward() && ultra_count >= 5 && !isobstacleback()){
+      else if(isobstacleultraforward() && ultra_count >= 2 && !isobstacleback()){
         geometry_msgs::msg::TwistStamped velocity;
         velocity.twist.angular.x = 0;
         velocity.twist.angular.y = 0;
@@ -471,10 +477,6 @@ void ControllerServer::computeControl()
         sleep(1);
         stop = true;
         continue;
-      }
-      if(stop){
-        sleep(2);
-        stop = false;
       }
       // Drop proof
       if(drop_s == 1){
