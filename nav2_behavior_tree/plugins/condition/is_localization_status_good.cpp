@@ -26,7 +26,8 @@ IsLocalizationGoodCondition::IsLocalizationGoodCondition(
 : BT::ConditionNode(condition_name, conf),
   localization_score_topic_("/localization_score"),
   min_localization_score_(0.6),
-  is_localization_score_good_(true)
+  is_localization_score_good_(true),
+  charge_position_(false)
 {
   getInput("min_localization_score", min_localization_score_);
   getInput("localization_score_topic", localization_score_topic_);
@@ -43,6 +44,11 @@ IsLocalizationGoodCondition::IsLocalizationGoodCondition(
     rclcpp::SystemDefaultsQoS(),
     std::bind(&IsLocalizationGoodCondition::localizationscoreCallback, this, std::placeholders::_1),
     sub_option);
+  charger_position_sub_ = node_->create_subscription<std_msgs::msg::Bool>(
+    "/charger_position_bool",
+    rclcpp::SystemDefaultsQoS(),
+    std::bind(&IsLocalizationGoodCondition::chargePositionCallback, this, std::placeholders::_1),
+    sub_option);
 }
 
 BT::NodeStatus IsLocalizationGoodCondition::tick()
@@ -57,7 +63,11 @@ BT::NodeStatus IsLocalizationGoodCondition::tick()
 
 void IsLocalizationGoodCondition::localizationscoreCallback(std_msgs::msg::Float32::SharedPtr msg)
 {
-    is_localization_score_good_ = msg->data > min_localization_score_;
+    is_localization_score_good_ = (msg->data > min_localization_score_) || (charge_position_);
+}
+void IsLocalizationGoodCondition::chargePositionCallback(std_msgs::msg::Bool::SharedPtr msg)
+{
+    charge_position_ = msg->data;
 }
 
 }  // namespace nav2_behavior_tree

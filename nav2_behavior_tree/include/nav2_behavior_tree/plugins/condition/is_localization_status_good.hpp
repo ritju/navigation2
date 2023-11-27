@@ -22,6 +22,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float32.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "behaviortree_cpp_v3/condition_node.h"
 
 namespace nav2_behavior_tree
@@ -70,14 +71,16 @@ private:
    * @param msg Shared pointer to std_msgs::msg::Float32 message
    */
   void localizationscoreCallback(std_msgs::msg::Float32::SharedPtr msg);
-
+  void chargePositionCallback(std_msgs::msg::Bool::SharedPtr msg);
   rclcpp::Node::SharedPtr node_;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   rclcpp::executors::SingleThreadedExecutor callback_group_executor_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr localization_score_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr charger_position_sub_;
   std::string localization_score_topic_;
   float min_localization_score_;
   bool is_localization_score_good_;
+  bool charge_position_;
 };
 
 }  // namespace nav2_behavior_tree
