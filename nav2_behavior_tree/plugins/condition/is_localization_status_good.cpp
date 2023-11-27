@@ -27,7 +27,7 @@ IsLocalizationGoodCondition::IsLocalizationGoodCondition(
   localization_score_topic_("/localization_score"),
   min_localization_score_(0.6),
   is_localization_score_good_(true),
-  charge_position_(false)
+  charge_position_(true)
 {
   getInput("min_localization_score", min_localization_score_);
   getInput("localization_score_topic", localization_score_topic_);
