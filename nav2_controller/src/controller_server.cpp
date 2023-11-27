@@ -59,6 +59,8 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
   declare_parameter("speed_limit_topic", rclcpp::ParameterValue("speed_limit"));
 
   declare_parameter("failure_tolerance", rclcpp::ParameterValue(0.0));
+  declare_parameter("local_width", rclcpp::ParameterValue(1.5));
+  declare_parameter("local_height", rclcpp::ParameterValue(1.5));
 
   // The costmap node is used in the implementation of the controller
   costmap_ros_ = std::make_shared<nav2_costmap_2d::Costmap2DROS>(
@@ -121,6 +123,9 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   std::string speed_limit_topic;
   get_parameter("speed_limit_topic", speed_limit_topic);
   get_parameter("failure_tolerance", failure_tolerance_);
+  
+  get_parameter("local_width", local_width_);
+  get_parameter("local_height", local_height_);
 
   costmap_ros_->configure();
   costmap_ = costmap_ros_->getCostmap();

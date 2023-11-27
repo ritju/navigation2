@@ -74,7 +74,7 @@ public:
         if(costmap_->getCost(k,j) >= 253){
           costmap_->mapToWorld(k,j,obstacle.x,obstacle.y);
           double distance = sqrt((obstacle.x - goal_x)*(obstacle.x - goal_x)+(obstacle.y - goal_y)*(obstacle.y - goal_y));
-          if(distance < 0.4){
+          if(distance < 0.1){
             return true;
           }
         }
@@ -86,7 +86,7 @@ public:
   {
     back_ultra = 0;
     std::vector<tf2::Vector3> footprint_pose;
-    tf2::Vector3 c1(1.5,1.5,0);
+    tf2::Vector3 c1(local_width_,local_height_,0);
     unsigned int s[15][2];
     // unsigned int m[441];
     for (double x = 0.6; x <= 1.0; x += 0.1) {
@@ -151,7 +151,7 @@ public:
   bool isobstacleultra()
   {
     std::vector<tf2::Vector3> footprint_pose;
-    tf2::Vector3 c1(1.5,1.5,0);
+    tf2::Vector3 c1(local_width_,local_height_,0);
     unsigned int s[2][2];
     footprint_pose.push_back(tf2::Vector3(0.6, -0.1, 0));
     footprint_pose.push_back(tf2::Vector3(0.6, 0.1, 0));
@@ -191,7 +191,7 @@ public:
   bool isobstacleback()
   {
     std::vector<tf2::Vector3> footprint_pose;
-    tf2::Vector3 c1(1.5,1.5,0);
+    tf2::Vector3 c1(local_width_,local_height_,0);
     unsigned int s[2][2];
     footprint_pose.push_back(tf2::Vector3(-0.65, -0.1, 0));
     footprint_pose.push_back(tf2::Vector3(-0.65, 0.1, 0));
@@ -422,6 +422,8 @@ protected:
   double min_theta_velocity_threshold_;
 
   double failure_tolerance_;
+  double local_width_;
+  double local_height_;
 
   // Whether we've published the single controller warning yet
   geometry_msgs::msg::PoseStamped end_pose_;
