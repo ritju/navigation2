@@ -84,69 +84,86 @@ public:
   }
   bool isobstacleultraforward()
   {
-    back_ultra = 0;
-    std::vector<tf2::Vector3> footprint_pose;
-    tf2::Vector3 c1(local_width_,local_height_,0);
-    unsigned int s[15][2];
-    // unsigned int m[441];
-    for (double x = 0.6; x <= 1.0; x += 0.1) {
-      for (double y = -0.1; y <= 0.1; y += 0.1) {
-        footprint_pose.push_back(tf2::Vector3(x, y, 0));
+    rclcpp::Clock steady_clock_{RCL_STEADY_TIME};
+    // RCLCPP_INFO(rclcpp::get_logger("TEST"), "ultra_back_time  %.9f", ultra_back_time);
+    if(ultra_count >= 2 && ultra_back_time <= 2){
+      if (!update_time)
+      {
+        start_time_= steady_clock_.now();
       }
-    }
-    std::vector<tf2::Vector3> odom_pose;
-    bool tferr = true;
-    while(tferr){
-      try {
-        tferr = false;
-        geometry_msgs::msg::TransformStamped transform_stamped;
-        transform_stamped = costmap_ros_->getTfBuffer()->lookupTransform("base_footprint", "odom", tf2::TimePointZero);
-        tf2::Matrix3x3 rotation_matrix(
-        tf2::Quaternion(
-        transform_stamped.transform.rotation.x,
-        transform_stamped.transform.rotation.y,
-        transform_stamped.transform.rotation.z,
-        transform_stamped.transform.rotation.w));
-        for(int i=0;i<15;i++){
-          odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[i] + c1);
-        }       
-        for(int i=0;i<15;i++){ 
-          s[i][0] = static_cast<unsigned int>(odom_pose[i][0] / 0.05);
-          s[i][1] = static_cast<unsigned int>(odom_pose[i][1] / 0.05);
-          if(costmap_->getCost(s[i][0],s[i][1]) >= 253){
-            back_ultra += 1;
-          }
-          else{
-            back_ultra += 0;
-          }
-        }
-      }
-      catch (tf2::TransformException& e) {
-        RCLCPP_WARN(get_logger(), "Failed to transform base_footprint to odom: %s", e.what());
-        tferr = true;
-        continue;
-      }
-    }
-    back_messages.push(back_ultra);
-    if(back_messages.size()>5){
-      back_messages.pop();
-    }
-    if(back_ultra == 0){
-      back_messages1 = back_messages;
-      for(int i=0;i<5;i++){
-        if(back_messages1.empty()){
-          return false;
-        }
-        if(back_messages1.front()>0){
-          return true;
-        }
-        back_messages1.pop();
-      }
-      return false;
-    }
-    else{
+      update_time = true;
+      ultra_back_time = steady_clock_.now().seconds() - start_time_.seconds();
       return true;
     }
+    else{
+      ultra_back_time = 0;
+      update_time = false;
+      return false;
+    }
+
+    // back_ultra = 0;
+    // std::vector<tf2::Vector3> footprint_pose;
+    // tf2::Vector3 c1(local_width_,local_height_,0);
+    // unsigned int s[15][2];
+    // // unsigned int m[441];
+    // for (double x = 0.6; x <= 1.0; x += 0.1) {
+    //   for (double y = -0.1; y <= 0.1; y += 0.1) {
+    //     footprint_pose.push_back(tf2::Vector3(x, y, 0));
+    //   }
+    // }
+    // std::vector<tf2::Vector3> odom_pose;
+    // bool tferr = true;
+    // while(tferr){
+    //   try {
+    //     tferr = false;
+    //     geometry_msgs::msg::TransformStamped transform_stamped;
+    //     transform_stamped = costmap_ros_->getTfBuffer()->lookupTransform("base_footprint", "odom", tf2::TimePointZero);
+    //     tf2::Matrix3x3 rotation_matrix(
+    //     tf2::Quaternion(
+    //     transform_stamped.transform.rotation.x,
+    //     transform_stamped.transform.rotation.y,
+    //     transform_stamped.transform.rotation.z,
+    //     transform_stamped.transform.rotation.w));
+    //     for(int i=0;i<15;i++){
+    //       odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[i] + c1);
+    //     }       
+    //     for(int i=0;i<15;i++){ 
+    //       s[i][0] = static_cast<unsigned int>(odom_pose[i][0] / 0.05);
+    //       s[i][1] = static_cast<unsigned int>(odom_pose[i][1] / 0.05);
+    //       if(costmap_->getCost(s[i][0],s[i][1]) >= 253){
+    //         back_ultra += 1;
+    //       }
+    //       else{
+    //         back_ultra += 0;
+    //       }
+    //     }
+    //   }
+    //   catch (tf2::TransformException& e) {
+    //     RCLCPP_WARN(get_logger(), "Failed to transform base_footprint to odom: %s", e.what());
+    //     tferr = true;
+    //     continue;
+    //   }
+    // }
+    // back_messages.push(back_ultra);
+    // if(back_messages.size()>5){
+    //   back_messages.pop();
+    // }
+    // if(back_ultra == 0){
+    //   back_messages1 = back_messages;
+    //   for(int i=0;i<5;i++){
+    //     if(back_messages1.empty()){
+    //       return false;
+    //     }
+    //     if(back_messages1.front()>0){
+    //       return true;
+    //     }
+    //     back_messages1.pop();
+    //   }
+    //   return false;
+    // }
+    // else{
+    //   return true;
+    // }
   }
   bool isobstacleultra()
   {
@@ -441,6 +458,8 @@ private:
     * @param msg Shared pointer to nav2_msgs::msg::SpeedLimit
     */
   void speedLimitCallback(const nav2_msgs::msg::SpeedLimit::SharedPtr msg);
+  double ultra_back_time = 0;
+  rclcpp::Time start_time_;
   int icp = 0;
   // int icf;
   int stop_1;
@@ -452,11 +471,11 @@ private:
   int stop_2;
   std::queue<int> recent_messages;
   std::queue<int> recent_messages1;
-  std::queue<int> back_messages;
-  std::queue<int> back_messages1;
+  // std::queue<int> back_messages;
+  // std::queue<int> back_messages1;
   std::queue<int> ultra_messages;
   std::queue<int> ultra_messages1;
-  int back_ultra;
+  // int back_ultra;
   int drop_s = 0;
   double goal_x,goal_y;
   int ultra_count = 0;

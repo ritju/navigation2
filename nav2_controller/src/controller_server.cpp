@@ -459,12 +459,12 @@ void ControllerServer::computeControl()
       }  
       // check close proximity obstacles in front
       // RCLCPP_INFO(rclcpp::get_logger("TEST"), "back: %d, %d", isobstacleultraforward(),ultra_count);
-      if(isobstacleultraforward() && ultra_count >= 2 && isobstacleback()){
+      if(isobstacleultraforward() && isobstacleback()){
         publishZeroVelocity();
         sleep(1);
         continue; 
       }
-      else if(isobstacleultraforward() && ultra_count >= 2 && !isobstacleback()){
+      else if(isobstacleultraforward() && !isobstacleback()){
         geometry_msgs::msg::TwistStamped velocity;
         velocity.twist.angular.x = 0;
         velocity.twist.angular.y = 0;
