@@ -460,6 +460,7 @@ private:
   void speedLimitCallback(const nav2_msgs::msg::SpeedLimit::SharedPtr msg);
   double ultra_back_time = 0;
   rclcpp::Time start_time_;
+  bool update_time;
   int icp = 0;
   // int icf;
   int stop_1;
