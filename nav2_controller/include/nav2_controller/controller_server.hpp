@@ -230,7 +230,7 @@ public:
         for(int i=0;i<2;i++){ 
           s[i][0] = static_cast<unsigned int>(odom_pose[i][0] / 0.05);
           s[i][1] = static_cast<unsigned int>(odom_pose[i][1] / 0.05);
-          if(costmap_->getCost(s[i][0],s[i][1]) >= 253 && fabs(cvt) < 0.2){
+          if(costmap_->getCost(s[i][0],s[i][1]) >= 253){
             return true;
           }
         }
@@ -461,6 +461,9 @@ private:
   double ultra_back_time = 0;
   rclcpp::Time start_time_;
   bool update_time;
+  double timeout = 0;
+  rclcpp::Time starttime;
+  bool timeout_update;
   int icp = 0;
   // int icf;
   int stop_1;
