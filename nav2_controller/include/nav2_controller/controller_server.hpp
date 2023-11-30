@@ -472,7 +472,7 @@ private:
   // int stop_ = 0;
   int lcz = 0;
   bool above_threshold = false;
-  int stop_2;
+  int stop_2 = 0;
   std::queue<int> recent_messages;
   std::queue<int> recent_messages1;
   // std::queue<int> back_messages;
