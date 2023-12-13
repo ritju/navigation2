@@ -169,9 +169,12 @@ public:
   {
     std::vector<tf2::Vector3> footprint_pose;
     tf2::Vector3 c1(local_width_,local_height_,0);
-    unsigned int s[2][2];
-    footprint_pose.push_back(tf2::Vector3(0.6, -0.1, 0));
-    footprint_pose.push_back(tf2::Vector3(0.6, 0.1, 0));
+    unsigned int s[15][2];
+    for (double x = 0.5; x < 0.61; x += 0.05) {
+      for (double y = -0.1; y < 0.11; y += 0.05) {
+        footprint_pose.push_back(tf2::Vector3(x, y, 0));
+      }
+    }
     std::vector<tf2::Vector3> odom_pose;
     bool tferr = true;
     while(tferr){
@@ -185,9 +188,10 @@ public:
         transform_stamped.transform.rotation.y,
         transform_stamped.transform.rotation.z,
         transform_stamped.transform.rotation.w));
-        odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[0] + c1);  
-        odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[1] + c1);  
-        for(int i=0;i<2;i++){ 
+        for(int i=0;i<15;i++){
+          odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[i] + c1);
+        }  
+        for(int i=0;i<15;i++){ 
           s[i][0] = static_cast<unsigned int>(odom_pose[i][0] / 0.05);
           s[i][1] = static_cast<unsigned int>(odom_pose[i][1] / 0.05);
           if(costmap_->getCost(s[i][0],s[i][1]) >= 253 && fabs(cvt) < 0.2){
@@ -209,9 +213,12 @@ public:
   {
     std::vector<tf2::Vector3> footprint_pose;
     tf2::Vector3 c1(local_width_,local_height_,0);
-    unsigned int s[2][2];
-    footprint_pose.push_back(tf2::Vector3(-0.65, -0.1, 0));
-    footprint_pose.push_back(tf2::Vector3(-0.65, 0.1, 0));
+    unsigned int s[15][2];
+    for (double x = -0.65; x < -0.54; x += 0.05) {
+      for (double y = -0.1; y < 0.11; y += 0.05) {
+        footprint_pose.push_back(tf2::Vector3(x, y, 0));
+      }
+    }
     std::vector<tf2::Vector3> odom_pose;
     bool tferr = true;
     while(tferr){
@@ -225,9 +232,10 @@ public:
         transform_stamped.transform.rotation.y,
         transform_stamped.transform.rotation.z,
         transform_stamped.transform.rotation.w));
-        odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[0] + c1);  
-        odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[1] + c1);  
-        for(int i=0;i<2;i++){ 
+        for(int i=0;i<15;i++){
+          odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[i] + c1);
+        }  
+        for(int i=0;i<15;i++){ 
           s[i][0] = static_cast<unsigned int>(odom_pose[i][0] / 0.05);
           s[i][1] = static_cast<unsigned int>(odom_pose[i][1] / 0.05);
           if(costmap_->getCost(s[i][0],s[i][1]) >= 253){

@@ -458,8 +458,12 @@ void ControllerServer::computeControl()
         continue;    
       }  
       // check close proximity obstacles in front
-      // RCLCPP_INFO(rclcpp::get_logger("TEST"), "back: %d, %d", isobstacleultraforward(),ultra_count);
-      if(isobstacleultraforward() && !isobstacleback()){
+      if(isobstacleultraforward() && isobstacleback()){
+        publishZeroVelocity();
+        sleep(1);
+        continue; 
+      }
+      else if(isobstacleultraforward() && !isobstacleback()){
         geometry_msgs::msg::TwistStamped velocity;
         velocity.twist.angular.x = 0;
         velocity.twist.angular.y = 0;
@@ -472,33 +476,52 @@ void ControllerServer::computeControl()
         publishVelocity(velocity);
         continue; 
       }
-      if(isobstacleultra() && !isobstacleback()){
+      if(isobstacleultra()){
         publishZeroVelocity();
         sleep(1);
-        stop = true;
         continue;
       }
-      if(isobstacleultra() && isobstacleback()){
-        rclcpp::Clock steady_clock_{RCL_STEADY_TIME};
-        if(timeout <= 5){
-          if (!timeout_update)
-          {
-            starttime= steady_clock_.now();
-          }
-          timeout_update = true;
-          timeout = steady_clock_.now().seconds() - starttime.seconds();
-          publishZeroVelocity();
-          sleep(1);
-          continue;
-        }
-        else{
-          timeout = steady_clock_.now().seconds() - starttime.seconds();
-        }
-      }
-      if(timeout > 25){
-        timeout = 0;
-        timeout_update = false;
-      }
+      // check close proximity obstacles in front and back,stop and move
+      // if(isobstacleultraforward() && !isobstacleback()){
+      //   geometry_msgs::msg::TwistStamped velocity;
+      //   velocity.twist.angular.x = 0;
+      //   velocity.twist.angular.y = 0;
+      //   velocity.twist.angular.z = 0;
+      //   velocity.twist.linear.x = -0.2;
+      //   velocity.twist.linear.y = 0;
+      //   velocity.twist.linear.z = 0;
+      //   velocity.header.frame_id = costmap_ros_->getBaseFrameID();
+      //   velocity.header.stamp = now();
+      //   publishVelocity(velocity);
+      //   continue; 
+      // }
+      // if(isobstacleultra() && !isobstacleback()){
+      //   publishZeroVelocity();
+      //   sleep(1);
+      //   stop = true;
+      //   continue;
+      // }
+      // if(isobstacleultra() && isobstacleback()){
+      //   rclcpp::Clock steady_clock_{RCL_STEADY_TIME};
+      //   if(timeout <= 5){
+      //     if (!timeout_update)
+      //     {
+      //       starttime= steady_clock_.now();
+      //     }
+      //     timeout_update = true;
+      //     timeout = steady_clock_.now().seconds() - starttime.seconds();
+      //     publishZeroVelocity();
+      //     sleep(1);
+      //     continue;
+      //   }
+      //   else{
+      //     timeout = steady_clock_.now().seconds() - starttime.seconds();
+      //   }
+      // }
+      // if(timeout > 25){
+      //   timeout = 0;
+      //   timeout_update = false;
+      // }
       // Drop proof
       if(drop_s == 1){
         publishZeroVelocity();
