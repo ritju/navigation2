@@ -85,7 +85,11 @@ protected:
       else if(fabs(cvt) < 0.2 && msg->result[i].x < 1.6 && fabs(msg->result[i].y) < 0.6 && msg->result[i].part){
         icp += 1;
       }
-      else if(msg->result[i].x < 1.5 && fabs(msg->result[i].y) < 0.4 && !msg->result[i].part){
+      else if(fabs(cvt) >= 0.2 && msg->result[i].x < 0.8 && fabs(msg->result[i].y) < 0.4 && !msg->result[i].part){
+        icp += 0;
+        stop_1 += 1;
+      }
+      else if(fabs(cvt) < 0.2 && msg->result[i].x < 1.5 && fabs(msg->result[i].y) < 0.4 && !msg->result[i].part){
         icp += 0;
         stop_1 += 1;
       }
