@@ -25,6 +25,8 @@
 #include "nav2_util/node_utils.hpp"
 #include "nav2_util/geometry_utils.hpp"
 #include "nav2_controller/controller_server.hpp"
+#include "nav2_core/obstacle_avoidance.hpp"
+#include <pluginlib/class_loader.hpp>
 
 using namespace std::chrono_literals;
 using rcl_interfaces::msg::ParameterType;
@@ -43,15 +45,20 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
   default_goal_checker_types_{"nav2_controller::SimpleGoalChecker"},
   lp_loader_("nav2_core", "nav2_core::Controller"),
   default_ids_{"FollowPath"},
-  default_types_{"dwb_core::DWBLocalPlanner"}
+  default_types_{"dwb_core::DWBLocalPlanner"},
+  obstacle_avoidance_loader_("nav2_core", "nav2_core::ObstacleAvoidance"),
+  default_obstacle_avoidance_id_{"obstacle_avoidance"},
+  default_obstacle_avoidance_type_{"nav2_controller::SimpleObstacleAvoidance"}
 {
   RCLCPP_INFO(get_logger(), "Creating controller server");
 
   declare_parameter("controller_frequency", 20.0);
 
   declare_parameter("progress_checker_plugin", default_progress_checker_id_);
+  // declare_parameter("obstacle_avoidance_plugin", default_obstacle_avoidance_id_);
   declare_parameter("goal_checker_plugins", default_goal_checker_ids_);
   declare_parameter("controller_plugins", default_ids_);
+  declare_parameter("obstacle_avoidance_plugin", default_obstacle_avoidance_id_);
   declare_parameter("min_x_velocity_threshold", rclcpp::ParameterValue(0.0001));
   declare_parameter("min_y_velocity_threshold", rclcpp::ParameterValue(0.0001));
   declare_parameter("min_theta_velocity_threshold", rclcpp::ParameterValue(0.0001));
@@ -59,8 +66,6 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
   declare_parameter("speed_limit_topic", rclcpp::ParameterValue("speed_limit"));
 
   declare_parameter("failure_tolerance", rclcpp::ParameterValue(0.0));
-  declare_parameter("local_width", rclcpp::ParameterValue(1.5));
-  declare_parameter("local_height", rclcpp::ParameterValue(1.5));
 
   // The costmap node is used in the implementation of the controller
   costmap_ros_ = std::make_shared<nav2_costmap_2d::Costmap2DROS>(
@@ -90,6 +95,12 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
     nav2_util::declare_parameter_if_not_declared(
       node, default_progress_checker_id_ + ".plugin",
       rclcpp::ParameterValue(default_progress_checker_type_));
+  }
+  get_parameter("obstacle_avoidance_plugin", obstacle_avoidance_id_);
+  if (obstacle_avoidance_id_ == default_obstacle_avoidance_id_) {
+    nav2_util::declare_parameter_if_not_declared(
+      node, default_obstacle_avoidance_id_ + ".plugin",
+      rclcpp::ParameterValue(default_obstacle_avoidance_type_));
   }
 
   RCLCPP_INFO(get_logger(), "getting goal checker plugins..");
@@ -124,8 +135,6 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   get_parameter("speed_limit_topic", speed_limit_topic);
   get_parameter("failure_tolerance", failure_tolerance_);
   
-  get_parameter("local_width", local_width_);
-  get_parameter("local_height", local_height_);
 
   costmap_ros_->configure();
   costmap_ = costmap_ros_->getCostmap();
@@ -141,6 +150,19 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
     RCLCPP_FATAL(
       get_logger(),
       "Failed to create progress_checker. Exception: %s", ex.what());
+    return nav2_util::CallbackReturn::FAILURE;
+  }
+  try {
+    obstacle_avoidance_type_ = nav2_util::get_plugin_type_param(node, obstacle_avoidance_id_);
+    obstacle_avoidance_ = obstacle_avoidance_loader_.createUniqueInstance(obstacle_avoidance_type_);
+    RCLCPP_INFO(
+      get_logger(), "Created obstacle_avoidance : %s of type %s",
+      obstacle_avoidance_id_.c_str(), obstacle_avoidance_type_.c_str());
+    obstacle_avoidance_->initialize(node, obstacle_avoidance_id_,costmap_ros_);
+  } catch (const pluginlib::PluginlibException & ex) {
+    RCLCPP_FATAL(
+      get_logger(),
+      "Failed to create obstacle_avoidance. Exception: %s", ex.what());
     return nav2_util::CallbackReturn::FAILURE;
   }
 
@@ -199,6 +221,8 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
     "Controller Server has %s controllers available.", controller_ids_concat_.c_str());
 
   odom_sub_ = std::make_unique<nav_2d_utils::OdomSubscriber>(node);
+  person_sub_ = std::make_unique<nav2_controller::PersonSubscriber>(node);
+  drop_sub_ = std::make_unique<nav2_controller::DropSubscriber>(node);
   vel_publisher_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 1);
 
   // Create the action server that we implement with our followPath method
@@ -215,9 +239,9 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
     speed_limit_topic, rclcpp::QoS(10),
     std::bind(&ControllerServer::speedLimitCallback, this, std::placeholders::_1));
   
-  localization_subscribe_ = create_subscription<std_msgs::msg::Float32>("localization_score", 10, std::bind(&ControllerServer::localizationsubscribecallback, this, std::placeholders::_1));
-  person_subscribe_ = create_subscription<capella_ros_msg::msg::DetectResult>("person_detected", 10, std::bind(&ControllerServer::personsubscribecallback, this, std::placeholders::_1));
-  dropsignal_subscribe_ = create_subscription<std_msgs::msg::Bool>("drop_signal", 10, std::bind(&ControllerServer::dropsignalsubscribecallback, this, std::placeholders::_1));
+  // localization_subscribe_ = create_subscription<std_msgs::msg::Float32>("localization_score", 10, std::bind(&ControllerServer::localizationsubscribecallback, this, std::placeholders::_1));
+  // person_subscribe_ = create_subscription<nav2_msgs::msg::DetectResult>("person_detected", 10, std::bind(&ControllerServer::personsubscribecallback, this, std::placeholders::_1));
+  // dropsignal_subscribe_ = create_subscription<std_msgs::msg::Bool>("drop_signal", 10, std::bind(&ControllerServer::dropsignalsubscribecallback, this, std::placeholders::_1));
 
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -286,11 +310,13 @@ ControllerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   // Release any allocated resources
   action_server_.reset();
   odom_sub_.reset();
+  person_sub_.reset();
+  drop_sub_.reset();
   vel_publisher_.reset();
   speed_limit_sub_.reset();
-  person_subscribe_.reset();
-  localization_subscribe_.reset();
-  dropsignal_subscribe_.reset();
+  // person_subscribe_.reset();
+  // localization_subscribe_.reset();
+  // dropsignal_subscribe_.reset();
 
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -396,8 +422,11 @@ void ControllerServer::computeControl()
         publishZeroVelocity();
         return;
       }
-      //face
-      if (icp > 0) {  
+
+      // person and face
+      nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
+      person_sub_->getcvt(twist);
+      if(person_sub_->geticp() > 0){
         publishZeroVelocity();
         sleep(1);
         stop = true;
@@ -407,44 +436,17 @@ void ControllerServer::computeControl()
         sleep(2);
         stop = false;
       }
-      //localization rotation  
-      // if(lcz == 0){
-      //   geometry_msgs::msg::TwistStamped velocity;
-      //   velocity.twist.angular.x = 0;
-      //   velocity.twist.angular.y = 0;
-      //   velocity.twist.angular.z = 0.4;
-      //   velocity.twist.linear.x = 0;
-      //   velocity.twist.linear.y = 0;
-      //   velocity.twist.linear.z = 0;
-      //   velocity.header.frame_id = costmap_ros_->getBaseFrameID();
-      //   velocity.header.stamp = now();
-      //   publishVelocity(velocity);
-      //   continue;
-      // }
-      //localization stop
-      // if(lcz == 2){
-      //   publishZeroVelocity();
-      //   sleep(1);
-      //   stop = true;
-      //   continue;
-      // }
-      // if(stop){
-      //   sleep(1);
-      // }
-      // stop = false;
-      //person and check obstacle in back
-      // RCLCPP_INFO(rclcpp::get_logger("TEST"), "stop2: %d", stop_2);
-      if(stop_2 >= 1 && isobstacleback()){
+      if(person_sub_->getstop() > 0 && obstacle_avoidance_->isobstacleback()){
         publishZeroVelocity();
         sleep(1);
         continue;         
       }  
-      else if(stop_2 >= 1 && stop_2 <= 10 && !isobstacleback()){
+      else if(person_sub_->getstop() > 0 && person_sub_->getstop() <= 30 && !obstacle_avoidance_->isobstacleback()){
         publishZeroVelocity();
         sleep(1);
         continue;     
       } 
-      else if(stop_2 >= 11 && !isobstacleback()){
+      else if(person_sub_->getstop() > 30 && !obstacle_avoidance_->isobstacleback()){
         geometry_msgs::msg::TwistStamped velocity;
         velocity.twist.angular.x = 0;
         velocity.twist.angular.y = 0;
@@ -456,14 +458,15 @@ void ControllerServer::computeControl()
         velocity.header.stamp = now();
         publishVelocity(velocity);
         continue;    
-      }  
-      // check close proximity obstacles in front
-      if(isobstacleultraforward() && isobstacleback()){
+      }
+      
+      //ultra
+      if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && obstacle_avoidance_->isobstacleback()){
         publishZeroVelocity();
         sleep(1);
         continue; 
       }
-      else if(isobstacleultraforward() && !isobstacleback()){
+      else if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && !obstacle_avoidance_->isobstacleback()){
         geometry_msgs::msg::TwistStamped velocity;
         velocity.twist.angular.x = 0;
         velocity.twist.angular.y = 0;
@@ -476,59 +479,16 @@ void ControllerServer::computeControl()
         publishVelocity(velocity);
         continue; 
       }
-      if(isobstacleultra()){
+      if(obstacle_avoidance_->isobstacleultra() && fabs(twist.theta) < 0.2){
         publishZeroVelocity();
         sleep(1);
         continue;
       }
-      // check close proximity obstacles in front and back,stop and move
-      // if(isobstacleultraforward() && !isobstacleback()){
-      //   geometry_msgs::msg::TwistStamped velocity;
-      //   velocity.twist.angular.x = 0;
-      //   velocity.twist.angular.y = 0;
-      //   velocity.twist.angular.z = 0;
-      //   velocity.twist.linear.x = -0.2;
-      //   velocity.twist.linear.y = 0;
-      //   velocity.twist.linear.z = 0;
-      //   velocity.header.frame_id = costmap_ros_->getBaseFrameID();
-      //   velocity.header.stamp = now();
-      //   publishVelocity(velocity);
-      //   continue; 
-      // }
-      // if(isobstacleultra() && !isobstacleback()){
-      //   publishZeroVelocity();
-      //   sleep(1);
-      //   stop = true;
-      //   continue;
-      // }
-      // if(isobstacleultra() && isobstacleback()){
-      //   rclcpp::Clock steady_clock_{RCL_STEADY_TIME};
-      //   if(timeout <= 5){
-      //     if (!timeout_update)
-      //     {
-      //       starttime= steady_clock_.now();
-      //     }
-      //     timeout_update = true;
-      //     timeout = steady_clock_.now().seconds() - starttime.seconds();
-      //     publishZeroVelocity();
-      //     sleep(1);
-      //     continue;
-      //   }
-      //   else{
-      //     timeout = steady_clock_.now().seconds() - starttime.seconds();
-      //   }
-      // }
-      // if(timeout > 25){
-      //   timeout = 0;
-      //   timeout_update = false;
-      // }
-      // Drop proof
-      if(drop_s == 1){
+      // // Drop proof
+      if(drop_sub_->getdrop()){
         publishZeroVelocity();
         break;
       }
-      
-      // Don't compute a trajectory until costmap is valid (after clear costmap)
       rclcpp::Rate r(100);
       while (!costmap_ros_->isCurrent()) {
         r.sleep();
@@ -542,7 +502,8 @@ void ControllerServer::computeControl()
         RCLCPP_INFO(get_logger(), "Reached the goal!");
         break;
       }
-      if(isGoalOccupied()){
+      //goal occupied
+      if(obstacle_avoidance_->isGoalOccupied(goal_x, goal_y)){
         publishZeroVelocity();
         sleep(1);
         continue;
