@@ -46,7 +46,7 @@ IsLocalizationGoodCondition::IsLocalizationGoodCondition(
     sub_option);
   charger_position_sub_ = node_->create_subscription<std_msgs::msg::Bool>(
     "/charger_position_bool",
-    rclcpp::SystemDefaultsQoS(),
+    rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local(),
     std::bind(&IsLocalizationGoodCondition::chargePositionCallback, this, std::placeholders::_1),
     sub_option);
 }
@@ -54,8 +54,8 @@ IsLocalizationGoodCondition::IsLocalizationGoodCondition(
 BT::NodeStatus IsLocalizationGoodCondition::tick()
 {
   callback_group_executor_.spin_some();
-  if (is_localization_score_good_) {
-    RCLCPP_INFO(rclcpp::get_logger("rclcpp"), "In localization status check !");
+  if (!is_localization_score_good_) {
+    RCLCPP_INFO(rclcpp::get_logger("rclcpp"), "Bad localization status !");
     return BT::NodeStatus::SUCCESS;
   }
   return BT::NodeStatus::FAILURE;
