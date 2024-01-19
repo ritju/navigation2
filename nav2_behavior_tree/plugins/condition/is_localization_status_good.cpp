@@ -56,9 +56,9 @@ BT::NodeStatus IsLocalizationGoodCondition::tick()
   callback_group_executor_.spin_some();
   if (!is_localization_score_good_) {
     RCLCPP_INFO(rclcpp::get_logger("rclcpp"), "Bad localization status !");
-    return BT::NodeStatus::SUCCESS;
+    return BT::NodeStatus::FAILURE;
   }
-  return BT::NodeStatus::FAILURE;
+  return BT::NodeStatus::SUCCESS;
 }
 
 void IsLocalizationGoodCondition::localizationscoreCallback(std_msgs::msg::Float32::SharedPtr msg)
