@@ -466,15 +466,10 @@ void ControllerServer::computeControl()
         velocity.header.stamp = now();
         publishVelocity(velocity);
         continue;    
-      }
-      
-      //ultra
-      if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && obstacle_avoidance_->isobstacleback()){
-        publishZeroVelocity();
-        sleep(1);
-        continue; 
-      }
-      else if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && !obstacle_avoidance_->isobstacleback()){
+      }  
+      // check close proximity obstacles in front
+      // RCLCPP_INFO(rclcpp::get_logger("TEST"), "back: %d, %d", isobstacleultraforward(),ultra_count);
+      if(isobstacleultraforward() && !isobstacleback()){
         geometry_msgs::msg::TwistStamped velocity;
         velocity.twist.angular.x = 0;
         velocity.twist.angular.y = 0;
@@ -487,13 +482,34 @@ void ControllerServer::computeControl()
         publishVelocity(velocity);
         continue; 
       }
-      if(obstacle_avoidance_->isobstacleultra() && fabs(twist.theta) < 0.2){
+      if(isobstacleultra() && !isobstacleback()){
         publishZeroVelocity();
         sleep(1);
         continue;
       }
-      // // Drop proof
-      if(drop_sub_->getdrop()){
+      if(isobstacleultra() && isobstacleback()){
+        rclcpp::Clock steady_clock_{RCL_STEADY_TIME};
+        if(timeout <= 5){
+          if (!timeout_update)
+          {
+            starttime= steady_clock_.now();
+          }
+          timeout_update = true;
+          timeout = steady_clock_.now().seconds() - starttime.seconds();
+          publishZeroVelocity();
+          sleep(1);
+          continue;
+        }
+        else{
+          timeout = steady_clock_.now().seconds() - starttime.seconds();
+        }
+      }
+      if(timeout > 25){
+        timeout = 0;
+        timeout_update = false;
+      }
+      // Drop proof
+      if(drop_s == 1){
         publishZeroVelocity();
         break;
       }

@@ -69,7 +69,187 @@ public:
    * @brief Destructor for nav2_controller::ControllerServer
    */
   ~ControllerServer();
+  bool isGoalOccupied(){
+    geometry_msgs::msg::Point obstacle;
+    unsigned int size_x = costmap_->getSizeInCellsX();
+    unsigned int size_y = costmap_->getSizeInCellsY();
+    // RCLCPP_INFO(rclcpp::get_logger("trans"), "goal pose: %f, %f", goal_pose.pose.x,goal_pose.pose.y);
+    for(unsigned int j=0;j<size_y;j++){
+      for(unsigned int k=0;k<size_x;k++){
+        if(costmap_->getCost(k,j) >= 253){
+          costmap_->mapToWorld(k,j,obstacle.x,obstacle.y);
+          double distance = sqrt((obstacle.x - goal_x)*(obstacle.x - goal_x)+(obstacle.y - goal_y)*(obstacle.y - goal_y));
+          if(distance < 0.1){
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+  bool isobstacleultraforward()
+  {
+    rclcpp::Clock steady_clock_{RCL_STEADY_TIME};
+    // RCLCPP_INFO(rclcpp::get_logger("TEST"), "ultra_back_time  %.9f", ultra_back_time);
+    if(ultra_count >= 2 && ultra_back_time <= 2){
+      if (!update_time)
+      {
+        start_time_= steady_clock_.now();
+      }
+      update_time = true;
+      ultra_back_time = steady_clock_.now().seconds() - start_time_.seconds();
+      return true;
+    }
+    else{
+      ultra_back_time = 0;
+      update_time = false;
+      return false;
+    }
+
+    // back_ultra = 0;
+    // std::vector<tf2::Vector3> footprint_pose;
+    // tf2::Vector3 c1(local_width_,local_height_,0);
+    // unsigned int s[15][2];
+    // // unsigned int m[441];
+    // for (double x = 0.6; x <= 1.0; x += 0.1) {
+    //   for (double y = -0.1; y <= 0.1; y += 0.1) {
+    //     footprint_pose.push_back(tf2::Vector3(x, y, 0));
+    //   }
+    // }
+    // std::vector<tf2::Vector3> odom_pose;
+    // bool tferr = true;
+    // while(tferr){
+    //   try {
+    //     tferr = false;
+    //     geometry_msgs::msg::TransformStamped transform_stamped;
+    //     transform_stamped = costmap_ros_->getTfBuffer()->lookupTransform("base_footprint", "odom", tf2::TimePointZero);
+    //     tf2::Matrix3x3 rotation_matrix(
+    //     tf2::Quaternion(
+    //     transform_stamped.transform.rotation.x,
+    //     transform_stamped.transform.rotation.y,
+    //     transform_stamped.transform.rotation.z,
+    //     transform_stamped.transform.rotation.w));
+    //     for(int i=0;i<15;i++){
+    //       odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[i] + c1);
+    //     }       
+    //     for(int i=0;i<15;i++){ 
+    //       s[i][0] = static_cast<unsigned int>(odom_pose[i][0] / 0.05);
+    //       s[i][1] = static_cast<unsigned int>(odom_pose[i][1] / 0.05);
+    //       if(costmap_->getCost(s[i][0],s[i][1]) >= 253){
+    //         back_ultra += 1;
+    //       }
+    //       else{
+    //         back_ultra += 0;
+    //       }
+    //     }
+    //   }
+    //   catch (tf2::TransformException& e) {
+    //     RCLCPP_WARN(get_logger(), "Failed to transform base_footprint to odom: %s", e.what());
+    //     tferr = true;
+    //     continue;
+    //   }
+    // }
+    // back_messages.push(back_ultra);
+    // if(back_messages.size()>5){
+    //   back_messages.pop();
+    // }
+    // if(back_ultra == 0){
+    //   back_messages1 = back_messages;
+    //   for(int i=0;i<5;i++){
+    //     if(back_messages1.empty()){
+    //       return false;
+    //     }
+    //     if(back_messages1.front()>0){
+    //       return true;
+    //     }
+    //     back_messages1.pop();
+    //   }
+    //   return false;
+    // }
+    // else{
+    //   return true;
+    // }
+  }
+  bool isobstacleultra()
+  {
+    std::vector<tf2::Vector3> footprint_pose;
+    tf2::Vector3 c1(local_width_,local_height_,0);
+    unsigned int s[2][2];
+    footprint_pose.push_back(tf2::Vector3(0.6, -0.1, 0));
+    footprint_pose.push_back(tf2::Vector3(0.6, 0.1, 0));
+    std::vector<tf2::Vector3> odom_pose;
+    bool tferr = true;
+    while(tferr){
+      try {
+        tferr = false;
+        geometry_msgs::msg::TransformStamped transform_stamped;
+        transform_stamped = costmap_ros_->getTfBuffer()->lookupTransform("base_footprint", "odom", tf2::TimePointZero);
+        tf2::Matrix3x3 rotation_matrix(
+        tf2::Quaternion(
+        transform_stamped.transform.rotation.x,
+        transform_stamped.transform.rotation.y,
+        transform_stamped.transform.rotation.z,
+        transform_stamped.transform.rotation.w));
+        odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[0] + c1);  
+        odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[1] + c1);  
+        for(int i=0;i<2;i++){ 
+          s[i][0] = static_cast<unsigned int>(odom_pose[i][0] / 0.05);
+          s[i][1] = static_cast<unsigned int>(odom_pose[i][1] / 0.05);
+          if(costmap_->getCost(s[i][0],s[i][1]) >= 253 && fabs(cvt) < 0.2){
+            ultra_count++;
+            return true;
+          }
+        }
+      }
+      catch (tf2::TransformException& e) {
+        RCLCPP_WARN(get_logger(), "Failed to transform base_footprint to odom: %s", e.what());
+        tferr = true;
+        continue;
+      }
+    }
+    ultra_count = 0;
+    return false;
+  }
+  bool isobstacleback()
+  {
+    std::vector<tf2::Vector3> footprint_pose;
+    tf2::Vector3 c1(local_width_,local_height_,0);
+    unsigned int s[2][2];
+    footprint_pose.push_back(tf2::Vector3(-0.65, -0.1, 0));
+    footprint_pose.push_back(tf2::Vector3(-0.65, 0.1, 0));
+    std::vector<tf2::Vector3> odom_pose;
+    bool tferr = true;
+    while(tferr){
+      try {
+        tferr = false;
+        geometry_msgs::msg::TransformStamped transform_stamped;
+        transform_stamped = costmap_ros_->getTfBuffer()->lookupTransform("base_footprint", "odom", tf2::TimePointZero);
+        tf2::Matrix3x3 rotation_matrix(
+        tf2::Quaternion(
+        transform_stamped.transform.rotation.x,
+        transform_stamped.transform.rotation.y,
+        transform_stamped.transform.rotation.z,
+        transform_stamped.transform.rotation.w));
+        odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[0] + c1);  
+        odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[1] + c1);  
+        for(int i=0;i<2;i++){ 
+          s[i][0] = static_cast<unsigned int>(odom_pose[i][0] / 0.05);
+          s[i][1] = static_cast<unsigned int>(odom_pose[i][1] / 0.05);
+          if(costmap_->getCost(s[i][0],s[i][1]) >= 253){
+            return true;
+          }
+        }
+      }
+      catch (tf2::TransformException& e) {
+        RCLCPP_WARN(get_logger(), "Failed to transform base_footprint to odom: %s", e.what());
+        tferr = true;
+        continue;
+      }
+    }
+    return false;
+  }
   
+
 protected:
   /**
    * @brief Configures controller parameters and member variables
@@ -297,7 +477,29 @@ private:
     * @param msg Shared pointer to nav2_msgs::msg::SpeedLimit
     */
   void speedLimitCallback(const nav2_msgs::msg::SpeedLimit::SharedPtr msg);
+  double ultra_back_time = 0;
+  rclcpp::Time start_time_;
+  bool update_time;
+  double timeout = 0;
+  rclcpp::Time starttime;
+  bool timeout_update;
+  int icp = 0;
+  // int icf;
+  int stop_1;
+  double cvt;
   bool stop = false;
+  // int stop_ = 0;
+  int lcz = 0;
+  bool above_threshold = false;
+  int stop_2 = 0;
+  std::queue<int> recent_messages;
+  std::queue<int> recent_messages1;
+  // std::queue<int> back_messages;
+  // std::queue<int> back_messages1;
+  std::queue<int> ultra_messages;
+  std::queue<int> ultra_messages1;
+  // int back_ultra;
+  int drop_s = 0;
   double goal_x,goal_y;
  
   // rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr localization_subscribe_;
