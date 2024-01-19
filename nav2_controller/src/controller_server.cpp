@@ -224,6 +224,8 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   person_sub_ = std::make_unique<nav2_controller::PersonSubscriber>(node);
   drop_sub_ = std::make_unique<nav2_controller::DropSubscriber>(node);
   vel_publisher_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 1);
+  robot_publisher_ = create_publisher<geometry_msgs::msg::PoseArray>("robot_pose", 1);
+  crop_global_publisher_ = create_publisher<geometry_msgs::msg::PoseArray>("crop_global_pose", 1);
 
   // Create the action server that we implement with our followPath method
   action_server_ = std::make_unique<ActionServer>(
@@ -257,6 +259,8 @@ ControllerServer::on_activate(const rclcpp_lifecycle::State & /*state*/)
     it->second->activate();
   }
   vel_publisher_->on_activate();
+  robot_publisher_->on_activate();
+  crop_global_publisher_->on_activate();
   action_server_->activate();
 
   auto node = shared_from_this();
@@ -284,6 +288,8 @@ ControllerServer::on_deactivate(const rclcpp_lifecycle::State & /*state*/)
 
   publishZeroVelocity();
   vel_publisher_->on_deactivate();
+  robot_publisher_->on_deactivate();
+  crop_global_publisher_->on_deactivate();
   dyn_params_handler_.reset();
 
   // destroy bond connection
@@ -313,6 +319,8 @@ ControllerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   person_sub_.reset();
   drop_sub_.reset();
   vel_publisher_.reset();
+  robot_publisher_.reset();
+  crop_global_publisher_.reset();
   speed_limit_sub_.reset();
   // person_subscribe_.reset();
   // localization_subscribe_.reset();
@@ -555,6 +563,14 @@ void ControllerServer::setPlannerPath(const nav_msgs::msg::Path & path)
     end_pose_.pose.position.x, end_pose_.pose.position.y);
 
   current_path_ = path;
+  crop_global_poses.header.frame_id = current_path_.header.frame_id;
+  crop_global_poses.header.stamp = current_path_.header.stamp;
+  crop_global_poses.poses.push_back(current_path_.poses[2].pose);
+  crop_global_poses.poses.push_back(current_path_.poses[4].pose);
+  crop_global_poses.poses.push_back(current_path_.poses[6].pose);
+  crop_global_poses.poses.push_back(current_path_.poses[8].pose);
+  crop_global_poses.poses.push_back(current_path_.poses[10].pose);
+  crop_global_publisher_->publish(crop_global_poses);
 }
 
 void ControllerServer::computeAndPublishVelocity()
@@ -713,6 +729,11 @@ bool ControllerServer::getRobotPose(geometry_msgs::msg::PoseStamped & pose)
     return false;
   }
   pose = current_pose;
+  //rviz show all robot pose
+  robot_poses.header.frame_id = "map";
+  robot_poses.header.stamp = pose.header.stamp;
+  robot_poses.poses.push_back(pose.pose);
+  robot_publisher_->publish(robot_poses);
   return true;
 }
 

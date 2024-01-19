@@ -41,6 +41,7 @@
 #include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "nav2_controller/plugins/simple_obstacle_avoidance.hpp"
+#include "geometry_msgs/msg/pose_array.hpp"
 
 namespace nav2_controller
 {
@@ -231,6 +232,8 @@ protected:
   std::unique_ptr<nav2_controller::PersonSubscriber> person_sub_;
   std::unique_ptr<nav2_controller::DropSubscriber> drop_sub_;
   rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::Twist>::SharedPtr vel_publisher_;
+  rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PoseArray>::SharedPtr robot_publisher_;
+  rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PoseArray>::SharedPtr crop_global_publisher_;
   rclcpp::Subscription<nav2_msgs::msg::SpeedLimit>::SharedPtr speed_limit_sub_;
 
   // Progress Checker Plugin
@@ -287,6 +290,8 @@ protected:
   nav2_costmap_2d::Costmap2D * costmap_;
 
 private:
+  geometry_msgs::msg::PoseArray robot_poses;
+  geometry_msgs::msg::PoseArray crop_global_poses;
   /**
     * @brief Callback for speed limiting messages
     * @param msg Shared pointer to nav2_msgs::msg::SpeedLimit
