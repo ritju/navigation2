@@ -126,17 +126,26 @@ public:
     auto cmd_vel = std::make_unique<geometry_msgs::msg::Twist>();
     cmd_vel->linear.y = 0.0;
     cmd_vel->angular.z = 0.0;
-    cmd_vel->linear.x = command_speed_;
+    // cmd_vel->linear.x = command_speed_;
 
     geometry_msgs::msg::Pose2D pose2d;
     pose2d.x = current_pose.pose.position.x;
     pose2d.y = current_pose.pose.position.y;
     pose2d.theta = tf2::getYaw(current_pose.pose.orientation);
 
-    if (!isCollisionFree(distance, cmd_vel.get(), pose2d)) {
-      this->stopRobot();
-      RCLCPP_WARN(this->logger_, "Collision Ahead - Exiting DriveOnHeading");
-      return Status::FAILED;
+    // if (!isCollisionFree(distance, cmd_vel.get(), pose2d)) {
+    //   this->stopRobot();
+    //   RCLCPP_WARN(this->logger_, "Collision Ahead - Exiting DriveOnHeading");
+    //   return Status::FAILED;
+    // }
+    if (isCollisionFront(distance, cmd_vel.get(), pose2d) && !isCollisionBack(distance, cmd_vel.get(), pose2d)) {
+      cmd_vel->linear.x = command_speed_;
+    }
+    else if (!isCollisionFront(distance, cmd_vel.get(), pose2d) && isCollisionBack(distance, cmd_vel.get(), pose2d)) {
+      cmd_vel->linear.x = -command_speed_;
+    }
+    else if(isCollisionFront(distance, cmd_vel.get(), pose2d) && isCollisionBack(distance, cmd_vel.get(), pose2d)) {
+      cmd_vel->linear.x = 0;
     }
 
     this->vel_pub_->publish(std::move(cmd_vel));
@@ -181,6 +190,62 @@ protected:
       fetch_data = false;
     }
     return true;
+  }
+  bool isCollisionFront(
+    const double & distance,
+    geometry_msgs::msg::Twist * cmd_vel,
+    geometry_msgs::msg::Pose2D & pose2d)
+  {
+    // Simulate ahead by simulate_ahead_time_ in this->cycle_frequency_ increments
+    int cycle_count = 0;
+    double sim_position_change;
+    const double diff_dist = abs(command_x_) - distance;
+    const int max_cycle_count = static_cast<int>(this->cycle_frequency_ * simulate_ahead_time_);
+    geometry_msgs::msg::Pose2D init_pose = pose2d;
+
+    while (cycle_count < max_cycle_count) {
+      sim_position_change = cmd_vel->linear.x * (cycle_count / this->cycle_frequency_);
+      pose2d.x = init_pose.x + sim_position_change * cos(init_pose.theta);
+      pose2d.y = init_pose.y + sim_position_change * sin(init_pose.theta);
+      cycle_count++;
+
+      if (diff_dist - abs(sim_position_change) <= 0.) {
+        break;
+      }
+
+      if (this->collision_checker_->isCollisionFront(pose2d)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  bool isCollisionBack(
+    const double & distance,
+    geometry_msgs::msg::Twist * cmd_vel,
+    geometry_msgs::msg::Pose2D & pose2d)
+  {
+    // Simulate ahead by simulate_ahead_time_ in this->cycle_frequency_ increments
+    int cycle_count = 0;
+    double sim_position_change;
+    const double diff_dist = abs(command_x_) - distance;
+    const int max_cycle_count = static_cast<int>(this->cycle_frequency_ * simulate_ahead_time_);
+    geometry_msgs::msg::Pose2D init_pose = pose2d;
+
+    while (cycle_count < max_cycle_count) {
+      sim_position_change = cmd_vel->linear.x * (cycle_count / this->cycle_frequency_);
+      pose2d.x = init_pose.x + sim_position_change * cos(init_pose.theta);
+      pose2d.y = init_pose.y + sim_position_change * sin(init_pose.theta);
+      cycle_count++;
+
+      if (diff_dist - abs(sim_position_change) <= 0.) {
+        break;
+      }
+
+      if (this->collision_checker_->isCollisionBack(pose2d)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

@@ -71,6 +71,8 @@ public:
    * @param fetch_costmap_and_footprint Defaults to true. When checking with multiple poses at once,
    * data should be fetched in the first check but fetching can be skipped in consequent checks for speedup
    */
+  bool isCollisionFront(const geometry_msgs::msg::Pose2D & pose);
+  bool isCollisionBack(const geometry_msgs::msg::Pose2D & pose);
   bool isCollisionFree(
     const geometry_msgs::msg::Pose2D & pose,
     bool fetch_costmap_and_footprint = true);

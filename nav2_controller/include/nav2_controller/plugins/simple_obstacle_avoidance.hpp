@@ -71,7 +71,32 @@ public:
     person_sub_ = nh->create_subscription<capella_ros_msg::msg::DetectResult>(person_topic, 10, std::bind(&PersonSubscriber::personsubscribecallback, this, std::placeholders::_1));
   }
   inline void getcvt(const nav_2d_msgs::msg::Twist2D & twist){cvt = twist.theta;}
-  inline int geticp() {return icp;}
+  inline int geticp() {
+    rclcpp::Clock steady_clock_{RCL_STEADY_TIME};
+    if(icp > 0 && check_icp_time <= 300){
+      if (!icp_update_time)
+      {
+        icp_start_time_= steady_clock_.now();
+      }
+      icp_update_time = true;
+      check_icp_time = steady_clock_.now().seconds() - icp_start_time_.seconds();
+      return icp;
+    }
+    else if(icp > 0 && check_icp_time > 300 && check_icp_time <= 320){
+      if (!icp_update_time)
+      {
+        icp_start_time_= steady_clock_.now();
+      }
+      icp_update_time = true;
+      check_icp_time = steady_clock_.now().seconds() - icp_start_time_.seconds();
+      return 0;
+    }
+    else{
+      check_icp_time = 0;
+      icp_update_time = false;
+      return 0;
+    }
+  }
   inline int getstop() {return stop_2;}
 protected:
   void personsubscribecallback(const capella_ros_msg::msg::DetectResult::SharedPtr msg){
@@ -125,6 +150,9 @@ protected:
 
   rclcpp::Subscription<capella_ros_msg::msg::DetectResult>::SharedPtr person_sub_;
   int icp = 0;
+  double check_icp_time = 0;
+  rclcpp::Time icp_start_time_;
+  bool icp_update_time = false;
   double cvt;
   int stop_1 = 0;
   int stop_2 = 0;
