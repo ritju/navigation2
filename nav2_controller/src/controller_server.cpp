@@ -432,87 +432,87 @@ void ControllerServer::computeControl()
       }
 
       // person and face
-      nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
-      person_sub_->getcvt(twist);
-      if(person_sub_->geticp() > 0){
-        publishZeroVelocity();
-        sleep(1);
-        stop = true;
-        continue;
-      }
-      if(stop){
-        sleep(2);
-        stop = false;
-      }
-      if(person_sub_->getstop() > 0 && obstacle_avoidance_->isobstacleback()){
-        publishZeroVelocity();
-        sleep(1);
-        continue;         
-      }  
-      else if(person_sub_->getstop() > 0 && person_sub_->getstop() <= 30 && !obstacle_avoidance_->isobstacleback()){
-        publishZeroVelocity();
-        sleep(1);
-        continue;     
-      } 
-      else if(person_sub_->getstop() > 30 && !obstacle_avoidance_->isobstacleback()){
-        geometry_msgs::msg::TwistStamped velocity;
-        velocity.twist.angular.x = 0;
-        velocity.twist.angular.y = 0;
-        velocity.twist.angular.z = 0;
-        velocity.twist.linear.x = -0.2;
-        velocity.twist.linear.y = 0;
-        velocity.twist.linear.z = 0;
-        velocity.header.frame_id = costmap_ros_->getBaseFrameID();
-        velocity.header.stamp = now();
-        publishVelocity(velocity);
-        continue;    
-      }  
-      // check close proximity obstacles in front
-      // RCLCPP_INFO(rclcpp::get_logger("TEST"), "back: %d, %d", isobstacleultraforward(),ultra_count);
-      if(isobstacleultraforward() && !isobstacleback()){
-        geometry_msgs::msg::TwistStamped velocity;
-        velocity.twist.angular.x = 0;
-        velocity.twist.angular.y = 0;
-        velocity.twist.angular.z = 0;
-        velocity.twist.linear.x = -0.2;
-        velocity.twist.linear.y = 0;
-        velocity.twist.linear.z = 0;
-        velocity.header.frame_id = costmap_ros_->getBaseFrameID();
-        velocity.header.stamp = now();
-        publishVelocity(velocity);
-        continue; 
-      }
-      if(isobstacleultra() && !isobstacleback()){
-        publishZeroVelocity();
-        sleep(1);
-        continue;
-      }
-      if(isobstacleultra() && isobstacleback()){
-        rclcpp::Clock steady_clock_{RCL_STEADY_TIME};
-        if(timeout <= 5){
-          if (!timeout_update)
-          {
-            starttime= steady_clock_.now();
-          }
-          timeout_update = true;
-          timeout = steady_clock_.now().seconds() - starttime.seconds();
-          publishZeroVelocity();
-          sleep(1);
-          continue;
-        }
-        else{
-          timeout = steady_clock_.now().seconds() - starttime.seconds();
-        }
-      }
-      if(timeout > 25){
-        timeout = 0;
-        timeout_update = false;
-      }
-      // Drop proof
-      if(drop_s == 1){
-        publishZeroVelocity();
-        break;
-      }
+      // nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
+      // person_sub_->getcvt(twist);
+      // if(person_sub_->geticp() > 0){
+      //   publishZeroVelocity();
+      //   sleep(1);
+      //   stop = true;
+      //   continue;
+      // }
+      // if(stop){
+      //   sleep(2);
+      //   stop = false;
+      // }
+      // if(person_sub_->getstop() > 0 && obstacle_avoidance_->isobstacleback()){
+      //   publishZeroVelocity();
+      //   sleep(1);
+      //   continue;         
+      // }  
+      // else if(person_sub_->getstop() > 0 && person_sub_->getstop() <= 30 && !obstacle_avoidance_->isobstacleback()){
+      //   publishZeroVelocity();
+      //   sleep(1);
+      //   continue;     
+      // } 
+      // else if(person_sub_->getstop() > 30 && !obstacle_avoidance_->isobstacleback()){
+      //   geometry_msgs::msg::TwistStamped velocity;
+      //   velocity.twist.angular.x = 0;
+      //   velocity.twist.angular.y = 0;
+      //   velocity.twist.angular.z = 0;
+      //   velocity.twist.linear.x = -0.2;
+      //   velocity.twist.linear.y = 0;
+      //   velocity.twist.linear.z = 0;
+      //   velocity.header.frame_id = costmap_ros_->getBaseFrameID();
+      //   velocity.header.stamp = now();
+      //   publishVelocity(velocity);
+      //   continue;    
+      // }  
+      // // check close proximity obstacles in front
+      // // RCLCPP_INFO(rclcpp::get_logger("TEST"), "back: %d, %d", isobstacleultraforward(),ultra_count);
+      // if(isobstacleultraforward() && !isobstacleback()){
+      //   geometry_msgs::msg::TwistStamped velocity;
+      //   velocity.twist.angular.x = 0;
+      //   velocity.twist.angular.y = 0;
+      //   velocity.twist.angular.z = 0;
+      //   velocity.twist.linear.x = -0.2;
+      //   velocity.twist.linear.y = 0;
+      //   velocity.twist.linear.z = 0;
+      //   velocity.header.frame_id = costmap_ros_->getBaseFrameID();
+      //   velocity.header.stamp = now();
+      //   publishVelocity(velocity);
+      //   continue; 
+      // }
+      // if(isobstacleultra() && !isobstacleback()){
+      //   publishZeroVelocity();
+      //   sleep(1);
+      //   continue;
+      // }
+      // if(isobstacleultra() && isobstacleback()){
+      //   rclcpp::Clock steady_clock_{RCL_STEADY_TIME};
+      //   if(timeout <= 5){
+      //     if (!timeout_update)
+      //     {
+      //       starttime= steady_clock_.now();
+      //     }
+      //     timeout_update = true;
+      //     timeout = steady_clock_.now().seconds() - starttime.seconds();
+      //     publishZeroVelocity();
+      //     sleep(1);
+      //     continue;
+      //   }
+      //   else{
+      //     timeout = steady_clock_.now().seconds() - starttime.seconds();
+      //   }
+      // }
+      // if(timeout > 25){
+      //   timeout = 0;
+      //   timeout_update = false;
+      // }
+      // // Drop proof
+      // if(drop_s == 1){
+      //   publishZeroVelocity();
+      //   break;
+      // }
       rclcpp::Rate r(100);
       while (!costmap_ros_->isCurrent()) {
         r.sleep();
@@ -527,11 +527,11 @@ void ControllerServer::computeControl()
         break;
       }
       //goal occupied
-      if(obstacle_avoidance_->isGoalOccupied(goal_x, goal_y)){
-        publishZeroVelocity();
-        sleep(1);
-        continue;
-      }
+      // if(obstacle_avoidance_->isGoalOccupied(goal_x, goal_y)){
+      //   publishZeroVelocity();
+      //   sleep(1);
+      //   continue;
+      // }
 
       if (!loop_rate.sleep()) {
         RCLCPP_WARN(
