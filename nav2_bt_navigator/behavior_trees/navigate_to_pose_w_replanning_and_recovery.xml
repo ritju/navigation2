@@ -95,7 +95,7 @@
               <IsLocalizationGood min_localization_score = "0.35"/>
             </RateController>
             <RateController hz="1.0">
-              <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+              <RecoveryNode number_of_retries="10" name="ComputePathToPose">
                 <Sequence>
                   <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
                 </Sequence> 
@@ -103,7 +103,7 @@
               </RecoveryNode>
             </RateController>
           </Sequence>
-          <RecoveryNode number_of_retries="1" name="FollowPath">               
+          <RecoveryNode number_of_retries="10" name="FollowPath">               
               <FollowPath path="{path}" controller_id="FollowPath"/>
               <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
           </RecoveryNode>
