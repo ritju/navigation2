@@ -242,7 +242,7 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   // localization_subscribe_ = create_subscription<std_msgs::msg::Float32>("localization_score", 10, std::bind(&ControllerServer::localizationsubscribecallback, this, std::placeholders::_1));
   // person_subscribe_ = create_subscription<nav2_msgs::msg::DetectResult>("person_detected", 10, std::bind(&ControllerServer::personsubscribecallback, this, std::placeholders::_1));
   // dropsignal_subscribe_ = create_subscription<std_msgs::msg::Bool>("drop_signal", 10, std::bind(&ControllerServer::dropsignalsubscribecallback, this, std::placeholders::_1));
-  following_person_subscribe_ = create_subscription<std_msgs::msg::Bool>("following_person", 10, std::bind(&ControllerServer::followingpersonsubscribecallback, this, std::placeholders::_1)); 
+  following_person_subscribe_ = create_subscription<std_msgs::msg::Bool>("following_person", rclcpp::SensorDataQoS(rclcpp::KeepLast(1)).transient_local().reliable(), std::bind(&ControllerServer::followingpersonsubscribecallback, this, std::placeholders::_1)); 
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
