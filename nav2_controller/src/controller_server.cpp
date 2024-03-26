@@ -242,7 +242,7 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   // localization_subscribe_ = create_subscription<std_msgs::msg::Float32>("localization_score", 10, std::bind(&ControllerServer::localizationsubscribecallback, this, std::placeholders::_1));
   // person_subscribe_ = create_subscription<nav2_msgs::msg::DetectResult>("person_detected", 10, std::bind(&ControllerServer::personsubscribecallback, this, std::placeholders::_1));
   // dropsignal_subscribe_ = create_subscription<std_msgs::msg::Bool>("drop_signal", 10, std::bind(&ControllerServer::dropsignalsubscribecallback, this, std::placeholders::_1));
-
+  following_person_subscribe_ = create_subscription<std_msgs::msg::Bool>("following_person", 10, std::bind(&ControllerServer::followingpersonsubscribecallback, this, std::placeholders::_1)); 
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
@@ -314,6 +314,7 @@ ControllerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   drop_sub_.reset();
   vel_publisher_.reset();
   speed_limit_sub_.reset();
+  following_person_subscribe_.reset();
   // person_subscribe_.reset();
   // localization_subscribe_.reset();
   // dropsignal_subscribe_.reset();
@@ -423,71 +424,73 @@ void ControllerServer::computeControl()
         return;
       }
 
-      // person and face
-      nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
-      person_sub_->getcvt(twist);
-      if(person_sub_->geticp() > 0){
-        publishZeroVelocity();
-        sleep(1);
-        stop = true;
-        continue;
-      }
-      if(stop){
-        sleep(2);
-        stop = false;
-      }
-      if(person_sub_->getstop() > 0 && obstacle_avoidance_->isobstacleback()){
-        publishZeroVelocity();
-        sleep(1);
-        continue;         
-      }  
-      else if(person_sub_->getstop() > 0 && person_sub_->getstop() <= 30 && !obstacle_avoidance_->isobstacleback()){
-        publishZeroVelocity();
-        sleep(1);
-        continue;     
-      } 
-      else if(person_sub_->getstop() > 30 && !obstacle_avoidance_->isobstacleback()){
-        geometry_msgs::msg::TwistStamped velocity;
-        velocity.twist.angular.x = 0;
-        velocity.twist.angular.y = 0;
-        velocity.twist.angular.z = 0;
-        velocity.twist.linear.x = -0.2;
-        velocity.twist.linear.y = 0;
-        velocity.twist.linear.z = 0;
-        velocity.header.frame_id = costmap_ros_->getBaseFrameID();
-        velocity.header.stamp = now();
-        publishVelocity(velocity);
-        continue;    
-      }
-      
-      //ultra
-      if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && obstacle_avoidance_->isobstacleback()){
-        publishZeroVelocity();
-        sleep(1);
-        continue; 
-      }
-      else if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && !obstacle_avoidance_->isobstacleback()){
-        geometry_msgs::msg::TwistStamped velocity;
-        velocity.twist.angular.x = 0;
-        velocity.twist.angular.y = 0;
-        velocity.twist.angular.z = 0;
-        velocity.twist.linear.x = -0.2;
-        velocity.twist.linear.y = 0;
-        velocity.twist.linear.z = 0;
-        velocity.header.frame_id = costmap_ros_->getBaseFrameID();
-        velocity.header.stamp = now();
-        publishVelocity(velocity);
-        continue; 
-      }
-      if(obstacle_avoidance_->isobstacleultra() && fabs(twist.theta) < 0.2){
-        publishZeroVelocity();
-        sleep(1);
-        continue;
-      }
-      // // Drop proof
-      if(drop_sub_->getdrop()){
-        publishZeroVelocity();
-        break;
+      if(!follow_person_){
+        // person and face
+        nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
+        person_sub_->getcvt(twist);
+        if(person_sub_->geticp() > 0){
+          publishZeroVelocity();
+          sleep(1);
+          stop = true;
+          continue;
+        }
+        if(stop){
+          sleep(2);
+          stop = false;
+        }
+        if(person_sub_->getstop() > 0 && obstacle_avoidance_->isobstacleback()){
+          publishZeroVelocity();
+          sleep(1);
+          continue;         
+        }  
+        else if(person_sub_->getstop() > 0 && person_sub_->getstop() <= 30 && !obstacle_avoidance_->isobstacleback()){
+          publishZeroVelocity();
+          sleep(1);
+          continue;     
+        } 
+        else if(person_sub_->getstop() > 30 && !obstacle_avoidance_->isobstacleback()){
+          geometry_msgs::msg::TwistStamped velocity;
+          velocity.twist.angular.x = 0;
+          velocity.twist.angular.y = 0;
+          velocity.twist.angular.z = 0;
+          velocity.twist.linear.x = -0.2;
+          velocity.twist.linear.y = 0;
+          velocity.twist.linear.z = 0;
+          velocity.header.frame_id = costmap_ros_->getBaseFrameID();
+          velocity.header.stamp = now();
+          publishVelocity(velocity);
+          continue;    
+        }
+        
+        //ultra
+        if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && obstacle_avoidance_->isobstacleback()){
+          publishZeroVelocity();
+          sleep(1);
+          continue; 
+        }
+        else if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && !obstacle_avoidance_->isobstacleback()){
+          geometry_msgs::msg::TwistStamped velocity;
+          velocity.twist.angular.x = 0;
+          velocity.twist.angular.y = 0;
+          velocity.twist.angular.z = 0;
+          velocity.twist.linear.x = -0.2;
+          velocity.twist.linear.y = 0;
+          velocity.twist.linear.z = 0;
+          velocity.header.frame_id = costmap_ros_->getBaseFrameID();
+          velocity.header.stamp = now();
+          publishVelocity(velocity);
+          continue; 
+        }
+        if(obstacle_avoidance_->isobstacleultra() && fabs(twist.theta) < 0.2){
+          publishZeroVelocity();
+          sleep(1);
+          continue;
+        }
+        // // Drop proof
+        if(drop_sub_->getdrop()){
+          publishZeroVelocity();
+          break;
+        }
       }
       rclcpp::Rate r(100);
       while (!costmap_ros_->isCurrent()) {
@@ -503,7 +506,7 @@ void ControllerServer::computeControl()
         break;
       }
       //goal occupied
-      if(obstacle_avoidance_->isGoalOccupied(goal_x, goal_y)){
+      if(!follow_person_ && obstacle_avoidance_->isGoalOccupied(goal_x, goal_y)){
         publishZeroVelocity();
         sleep(1);
         continue;
