@@ -56,6 +56,7 @@
 
 namespace nav2_controller
 {
+double front_x = 0.8, front_face_y = 0.6, front_straight_x = 1.6, front_person_y = 0.4;
 class PersonSubscriber
 {
 public:
@@ -69,6 +70,18 @@ public:
     std::string person_topic;
     nh->get_parameter_or("person_topic", person_topic, default_topic);
     person_sub_ = nh->create_subscription<capella_ros_msg::msg::DetectResult>(person_topic, 10, std::bind(&PersonSubscriber::personsubscribecallback, this, std::placeholders::_1));
+    try
+    {
+      front_x = std::stod(getenv("FRONT_X"));
+      front_face_y = std::stod(getenv("FRONT_FACE_Y"));
+      front_straight_x = std::stod(getenv("FRONT_STRAIGHT_X"));
+      front_person_y = std::stod(getenv("FRONT_PERSON_Y"));
+    }
+    catch(...)
+    {
+      auto now = rclcpp::Clock();
+      RCLCPP_WARN(rclcpp::get_logger("simple_avoidance"),  "ENV in controller {FRONT_X} or {FRONT_FACE_Y} or {FRONT_STRAIGHT_X} or{ FRONT_PERSON_Y} not set! Use default values !");
+    }
   }
   inline void getcvt(const nav_2d_msgs::msg::Twist2D & twist){cvt = twist.theta;}
   inline int geticp() {
@@ -104,17 +117,17 @@ protected:
     icp = 0;
     stop_1 = 0;
     for(size_t i=0;i<msg->result.size();i++){
-      if(fabs(cvt) >= 0.2 && msg->result[i].x < 0.8 && fabs(msg->result[i].y) < 0.6 && msg->result[i].part){
+      if(fabs(cvt) >= 0.2 && msg->result[i].x <  front_x  && fabs(msg->result[i].y) < front_face_y  && msg->result[i].part){
         icp += 1;
       }
-      else if(fabs(cvt) < 0.2 && msg->result[i].x < 1.6 && fabs(msg->result[i].y) < 0.6 && msg->result[i].part){
+      else if(fabs(cvt) < 0.2 && msg->result[i].x < front_straight_x  && fabs(msg->result[i].y) < front_face_y  && msg->result[i].part){
         icp += 1;
       }
-      else if(fabs(cvt) >= 0.2 && msg->result[i].x < 0.8 && fabs(msg->result[i].y) < 0.4 && !msg->result[i].part){
+      else if(fabs(cvt) >= 0.2 && msg->result[i].x < front_x  && fabs(msg->result[i].y) < front_person_y  && !msg->result[i].part){
         icp += 0;
         stop_1 += 1;
       }
-      else if(fabs(cvt) < 0.2 && msg->result[i].x < 1.5 && fabs(msg->result[i].y) < 0.4 && !msg->result[i].part){
+      else if(fabs(cvt) < 0.2 && msg->result[i].x < front_straight_x  && fabs(msg->result[i].y) < front_person_y  && !msg->result[i].part){
         icp += 0;
         stop_1 += 1;
       }
