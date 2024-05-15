@@ -18,6 +18,7 @@
 #include <string>
 #include <utility>
 #include <limits>
+#include <Eigen/Dense>
 
 #include "nav2_core/exceptions.hpp"
 #include "nav_2d_utils/conversions.hpp"
@@ -381,6 +382,50 @@ bool ControllerServer::findGoalCheckerId(
   return true;
 }
 
+bool ControllerServer::isSameDirect(){
+  geometry_msgs::msg::TransformStamped t;
+    try {
+          t = costmap_ros_->getTfBuffer()->lookupTransform(
+            "map", "base_link",
+            tf2::TimePointZero);
+           
+        } catch (const tf2::TransformException & ex) {
+        }
+  geometry_msgs::msg::Quaternion q = t.transform.rotation;  
+  Eigen::Quaterniond eigen_q(q.w, q.x, q.y, q.z);
+  double yaw = atan2(2.0 * (eigen_q.w() * eigen_q.z() + eigen_q.x() * eigen_q.y()),  
+                    1.0 - 2.0 * (eigen_q.y() * eigen_q.y() + eigen_q.z() * eigen_q.z()));  
+  geometry_msgs::msg::Pose robot_pose;
+  robot_pose.position.x = t.transform.translation.x;
+  robot_pose.position.y = t.transform.translation.y;
+  geometry_msgs::msg::Pose2D loop;
+  geometry_msgs::msg::Point targetPoint;
+  targetPoint.x = current_path_.poses[0].pose.position.x;
+  targetPoint.y = current_path_.poses[0].pose.position.y;
+  for (unsigned int i = 1; i < current_path_.poses.size(); ++i) {
+    double sq_dist = (current_path_.poses[i].pose.position.x - robot_pose.position.x) * (current_path_.poses[i].pose.position.x - robot_pose.position.x) + (current_path_.poses[i].pose.position.y - robot_pose.position.y) * (current_path_.poses[i].pose.position.y - robot_pose.position.y);
+    if (sq_dist < 1.5) {
+      targetPoint.x = current_path_.poses[i].pose.position.x;
+      targetPoint.y = current_path_.poses[i].pose.position.y;
+    }
+    else{
+      break;
+    }
+  }
+  double angleRad = std::atan2(targetPoint.y - robot_pose.position.y, targetPoint.x - robot_pose.position.x);
+  double difference = yaw - angleRad;  
+  if (difference < 0) {  
+      difference = -difference;  
+  } 
+  if (difference > M_PI) {  
+      difference = 2 * M_PI - difference;  
+  } 
+  if(difference < 0.5 * M_PI){
+    return true;
+  }
+  return false;
+}
+
 void ControllerServer::computeControl()
 {
   std::lock_guard<std::mutex> lock(dynamic_params_lock_);
@@ -424,9 +469,35 @@ void ControllerServer::computeControl()
         return;
       }
 
+      nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
+      if(!follow_person_ && isSameDirect()){
+        //ultra
+        if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && obstacle_avoidance_->isobstacleback()){
+          publishZeroVelocity();
+          sleep(1);
+          continue; 
+        }
+        if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && !obstacle_avoidance_->isobstacleback()){
+          geometry_msgs::msg::TwistStamped velocity;
+          velocity.twist.angular.x = 0;
+          velocity.twist.angular.y = 0;
+          velocity.twist.angular.z = 0;
+          velocity.twist.linear.x = -0.2;
+          velocity.twist.linear.y = 0;
+          velocity.twist.linear.z = 0;
+          velocity.header.frame_id = costmap_ros_->getBaseFrameID();
+          velocity.header.stamp = now();
+          publishVelocity(velocity);
+          continue; 
+        }
+        if(obstacle_avoidance_->isobstacleultra() && fabs(twist.theta) < 0.2){
+          publishZeroVelocity();
+          sleep(1);
+          continue;
+        }
+      }
       if(!follow_person_){
         // person and face
-        nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
         person_sub_->getcvt(twist);
         if(person_sub_->geticp() > 0){
           publishZeroVelocity();
@@ -460,31 +531,6 @@ void ControllerServer::computeControl()
           velocity.header.stamp = now();
           publishVelocity(velocity);
           continue;    
-        }
-        
-        //ultra
-        if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && obstacle_avoidance_->isobstacleback()){
-          publishZeroVelocity();
-          sleep(1);
-          continue; 
-        }
-        else if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && !obstacle_avoidance_->isobstacleback()){
-          geometry_msgs::msg::TwistStamped velocity;
-          velocity.twist.angular.x = 0;
-          velocity.twist.angular.y = 0;
-          velocity.twist.angular.z = 0;
-          velocity.twist.linear.x = -0.2;
-          velocity.twist.linear.y = 0;
-          velocity.twist.linear.z = 0;
-          velocity.header.frame_id = costmap_ros_->getBaseFrameID();
-          velocity.header.stamp = now();
-          publishVelocity(velocity);
-          continue; 
-        }
-        if(obstacle_avoidance_->isobstacleultra() && fabs(twist.theta) < 0.2){
-          publishZeroVelocity();
-          sleep(1);
-          continue;
         }
         // // Drop proof
         if(drop_sub_->getdrop()){
