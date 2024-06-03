@@ -35,7 +35,6 @@ using std::placeholders::_1;
 
 namespace nav2_controller
 {
-bool guide_model_switch_ = false;
 
 ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
 : nav2_util::LifecycleNode("controller_server", "", options),
@@ -75,15 +74,6 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
 
   // Launch a thread to run the costmap node
   costmap_thread_ = std::make_unique<nav2_util::NodeThread>(costmap_ros_);
-  try
-  {
-    guide_model_switch_ = std::stod(getenv("GUIDE_MODEL_SWITCH"));
-  }
-  catch(...)
-  {
-    auto now = rclcpp::Clock();
-    RCLCPP_WARN(rclcpp::get_logger("guide_model_switch"),  "ENV in controller {GUIDE_MODEL_SWITCH} not set! Use default values !");
-  }
 }
 
 ControllerServer::~ControllerServer()
@@ -253,7 +243,7 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   // localization_subscribe_ = create_subscription<std_msgs::msg::Float32>("localization_score", 10, std::bind(&ControllerServer::localizationsubscribecallback, this, std::placeholders::_1));
   // person_subscribe_ = create_subscription<nav2_msgs::msg::DetectResult>("person_detected", 10, std::bind(&ControllerServer::personsubscribecallback, this, std::placeholders::_1));
   // dropsignal_subscribe_ = create_subscription<std_msgs::msg::Bool>("drop_signal", 10, std::bind(&ControllerServer::dropsignalsubscribecallback, this, std::placeholders::_1));
-  // following_person_subscribe_ = create_subscription<std_msgs::msg::Bool>("following_person", rclcpp::SensorDataQoS(rclcpp::KeepLast(1)).transient_local().reliable(), std::bind(&ControllerServer::followingpersonsubscribecallback, this, std::placeholders::_1)); 
+  following_person_subscribe_ = create_subscription<std_msgs::msg::Bool>("following_person", rclcpp::SensorDataQoS(rclcpp::KeepLast(1)).transient_local().reliable(), std::bind(&ControllerServer::followingpersonsubscribecallback, this, std::placeholders::_1)); 
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
@@ -325,7 +315,7 @@ ControllerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   drop_sub_.reset();
   vel_publisher_.reset();
   speed_limit_sub_.reset();
-  // following_person_subscribe_.reset();
+  following_person_subscribe_.reset();
   // person_subscribe_.reset();
   // localization_subscribe_.reset();
   // dropsignal_subscribe_.reset();
@@ -480,28 +470,12 @@ void ControllerServer::computeControl()
       }
 
       nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
-      if(isSameDirect()){
+      if(!follow_person_ && isSameDirect()){
         //ultra
-        if(obstacle_avoidance_->isobstacleultra() && obstacle_avoidance_->isobstacleback()){
-          rclcpp::Clock steady_clock_{RCL_STEADY_TIME};
-          if(timeout <= 5){
-            if (!timeout_update)
-            {
-              starttime= steady_clock_.now();
-            }
-            timeout_update = true;
-            timeout = steady_clock_.now().seconds() - starttime.seconds();
-            publishZeroVelocity();
-            sleep(1);
-            continue;
-          }
-          else{
-            timeout = steady_clock_.now().seconds() - starttime.seconds();
-          }
-        }
-        if(timeout > 25){
-          timeout = 0;
-          timeout_update = false;
+        if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && obstacle_avoidance_->isobstacleback()){
+          publishZeroVelocity();
+          sleep(1);
+          continue; 
         }
         if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && !obstacle_avoidance_->isobstacleback()){
           geometry_msgs::msg::TwistStamped velocity;
@@ -516,14 +490,13 @@ void ControllerServer::computeControl()
           publishVelocity(velocity);
           continue; 
         }
-        if(obstacle_avoidance_->isobstacleultra() && fabs(twist.theta) < 0.2 &&  !obstacle_avoidance_->isobstacleback()){
+        if(obstacle_avoidance_->isobstacleultra() && fabs(twist.theta) < 0.2){
           publishZeroVelocity();
           sleep(1);
           continue;
         }
-        
       }
-      if(!guide_model_switch_){
+      if(!follow_person_){
         // person and face
         person_sub_->getcvt(twist);
         if(person_sub_->geticp() > 0){
@@ -537,27 +510,10 @@ void ControllerServer::computeControl()
           stop = false;
         }
         if(person_sub_->getstop() > 0 && obstacle_avoidance_->isobstacleback()){
-          rclcpp::Clock steady_clock_{RCL_STEADY_TIME};
-          if(timeout1 <= 5){
-            if (!timeout_update1)
-            {
-              starttime1 = steady_clock_.now();
-            }
-            timeout_update1 = true;
-            timeout1 = steady_clock_.now().seconds() - starttime1.seconds();
-            publishZeroVelocity();
-            sleep(1);
-            continue;
-          }
-          else{
-            timeout1 = steady_clock_.now().seconds() - starttime1.seconds();
-          }
-        }
-        if(timeout1 > 25){
-          timeout1 = 0;
-          timeout_update1 = false;
-        }
-
+          publishZeroVelocity();
+          sleep(1);
+          continue;         
+        }  
         else if(person_sub_->getstop() > 0 && person_sub_->getstop() <= 30 && !obstacle_avoidance_->isobstacleback()){
           publishZeroVelocity();
           sleep(1);
@@ -576,11 +532,11 @@ void ControllerServer::computeControl()
           publishVelocity(velocity);
           continue;    
         }
-      }
-      // // Drop proof
-      if(drop_sub_->getdrop()){
-        publishZeroVelocity();
-        break;
+        // // Drop proof
+        if(drop_sub_->getdrop()){
+          publishZeroVelocity();
+          break;
+        }
       }
       rclcpp::Rate r(100);
       while (!costmap_ros_->isCurrent()) {
@@ -596,7 +552,7 @@ void ControllerServer::computeControl()
         break;
       }
       //goal occupied
-      if(obstacle_avoidance_->isGoalOccupied(goal_x, goal_y)){
+      if(!follow_person_ && obstacle_avoidance_->isGoalOccupied(goal_x, goal_y)){
         publishZeroVelocity();
         sleep(1);
         continue;
