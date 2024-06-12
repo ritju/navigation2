@@ -295,35 +295,6 @@ private:
   void speedLimitCallback(const nav2_msgs::msg::SpeedLimit::SharedPtr msg);
   bool stop = false;
   double goal_x,goal_y;
-  bool follow_person_ = false;
-  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr following_person_subscribe_;
-  void followingpersonsubscribecallback(const std_msgs::msg::Bool::SharedPtr msg)
-  {
-    if(msg->data){
-      follow_person_ = true;
-    }
-    else{
-      follow_person_ = false;
-    }
-  }
-  // rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr localization_subscribe_;
-  // void localizationsubscribecallback(const std_msgs::msg::Float32::SharedPtr msg)
-  // {
-  //   if(msg->data < 0.35){
-  //     lcz = 0;
-  //     above_threshold = true;
-  //   }
-  //   else if(msg->data >= 0.35 && msg->data < 0.75 && above_threshold){
-  //     lcz = 0;
-  //   }
-  //   else if(msg->data >= 0.75 && above_threshold){
-  //     lcz = 2;
-  //     above_threshold = false;
-  //   }
-  //   else{
-  //     lcz = 1;
-  //   }
-  // }
 };
 
 }  // namespace nav2_controller

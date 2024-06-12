@@ -35,6 +35,7 @@ using std::placeholders::_1;
 
 namespace nav2_controller
 {
+bool guide_model_switch_ = false;
 
 ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
 : nav2_util::LifecycleNode("controller_server", "", options),
@@ -74,6 +75,15 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
 
   // Launch a thread to run the costmap node
   costmap_thread_ = std::make_unique<nav2_util::NodeThread>(costmap_ros_);
+  try
+  {
+    guide_model_switch_ = std::stod(getenv("GUIDE_MODEL_SWITCH"));
+  }
+  catch(...)
+  {
+    auto now = rclcpp::Clock();
+    RCLCPP_WARN(rclcpp::get_logger("guide_model_switch"),  "ENV in controller {GUIDE_MODEL_SWITCH} not set! Use default values !");
+  }
 }
 
 ControllerServer::~ControllerServer()
@@ -243,7 +253,7 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   // localization_subscribe_ = create_subscription<std_msgs::msg::Float32>("localization_score", 10, std::bind(&ControllerServer::localizationsubscribecallback, this, std::placeholders::_1));
   // person_subscribe_ = create_subscription<nav2_msgs::msg::DetectResult>("person_detected", 10, std::bind(&ControllerServer::personsubscribecallback, this, std::placeholders::_1));
   // dropsignal_subscribe_ = create_subscription<std_msgs::msg::Bool>("drop_signal", 10, std::bind(&ControllerServer::dropsignalsubscribecallback, this, std::placeholders::_1));
-  following_person_subscribe_ = create_subscription<std_msgs::msg::Bool>("following_person", rclcpp::SensorDataQoS(rclcpp::KeepLast(1)).transient_local().reliable(), std::bind(&ControllerServer::followingpersonsubscribecallback, this, std::placeholders::_1)); 
+  // following_person_subscribe_ = create_subscription<std_msgs::msg::Bool>("following_person", rclcpp::SensorDataQoS(rclcpp::KeepLast(1)).transient_local().reliable(), std::bind(&ControllerServer::followingpersonsubscribecallback, this, std::placeholders::_1)); 
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
@@ -315,7 +325,6 @@ ControllerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   drop_sub_.reset();
   vel_publisher_.reset();
   speed_limit_sub_.reset();
-  following_person_subscribe_.reset();
   // person_subscribe_.reset();
   // localization_subscribe_.reset();
   // dropsignal_subscribe_.reset();
@@ -470,7 +479,7 @@ void ControllerServer::computeControl()
       }
 
       nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
-      if(!follow_person_ && isSameDirect()){
+      if(!guide_model_switch_ && isSameDirect()){
         //ultra
         if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && obstacle_avoidance_->isobstacleback()){
           publishZeroVelocity();
@@ -496,7 +505,7 @@ void ControllerServer::computeControl()
           continue;
         }
       }
-      if(!follow_person_){
+      if(!guide_model_switch_){
         // person and face
         person_sub_->getcvt(twist);
         if(person_sub_->geticp() > 0){
@@ -532,11 +541,11 @@ void ControllerServer::computeControl()
           publishVelocity(velocity);
           continue;    
         }
-        // // Drop proof
-        if(drop_sub_->getdrop()){
-          publishZeroVelocity();
-          break;
-        }
+      }
+      // // Drop proof
+      if(drop_sub_->getdrop()){
+        publishZeroVelocity();
+        break;
       }
       rclcpp::Rate r(100);
       while (!costmap_ros_->isCurrent()) {
@@ -552,7 +561,7 @@ void ControllerServer::computeControl()
         break;
       }
       //goal occupied
-      if(!follow_person_ && obstacle_avoidance_->isGoalOccupied(goal_x, goal_y)){
+      if(obstacle_avoidance_->isGoalOccupied(goal_x, goal_y)){
         publishZeroVelocity();
         sleep(1);
         continue;
