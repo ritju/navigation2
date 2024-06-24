@@ -131,7 +131,6 @@ protected:
    * @throw nav2_core::PlannerException
    */
   void computeControl();
-  bool isSameDirect();
 
   /**
    * @brief Find the valid controller ID name for the given request

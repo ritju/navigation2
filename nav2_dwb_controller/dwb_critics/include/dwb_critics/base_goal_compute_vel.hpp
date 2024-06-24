@@ -23,10 +23,11 @@ public:
     double scoreTrajectory(const dwb_msgs::msg::Trajectory2D & traj) override;
 
 private:
+    double difference;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_{nullptr};
     std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
     double dx, dxy;
-    double pose_x, pose_y;
+    double pose_x, pose_y, pose_z;
     double robot_x, robot_y;
     double previous_goal_x = 0.0;
     double previous_goal_y = 0.0;
@@ -45,17 +46,20 @@ private:
             follow_person_ = false;
         }
     }  
-    
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr subscription_;
-    rclcpp::Publisher<geometry_msgs::msg::Pose>::SharedPtr command_publisher_;
+    // rclcpp::Publisher<geometry_msgs::msg::Pose>::SharedPtr command_publisher_;
     rclcpp::Subscription<geometry_msgs::msg::Pose>::SharedPtr slide_subscription_;
     void slidesubscribecallback(const geometry_msgs::msg::Pose::SharedPtr msg)
     {  
         pose_x = msg->position.x;
         pose_y = msg->position.y;
+        double r, p, y;
+        tf2::Quaternion q;
+        tf2::fromMsg(msg->orientation, q);
+        tf2::Matrix3x3(q).getRPY(r, p, y);
+        pose_z = y;
     } 
     std::deque<double> queue_dxy;
-
 };
 
 }  // namespace dwb_critics

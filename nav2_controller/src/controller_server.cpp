@@ -35,8 +35,6 @@ using std::placeholders::_1;
 
 namespace nav2_controller
 {
-bool guide_model_switch_ = false;
-
 ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
 : nav2_util::LifecycleNode("controller_server", "", options),
   progress_checker_loader_("nav2_core", "nav2_core::ProgressChecker"),
@@ -75,15 +73,6 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
 
   // Launch a thread to run the costmap node
   costmap_thread_ = std::make_unique<nav2_util::NodeThread>(costmap_ros_);
-  try
-  {
-    guide_model_switch_ = std::stod(getenv("GUIDE_MODEL_SWITCH"));
-  }
-  catch(...)
-  {
-    auto now = rclcpp::Clock();
-    RCLCPP_WARN(rclcpp::get_logger("guide_model_switch"),  "ENV in controller {GUIDE_MODEL_SWITCH} not set! Use default values !");
-  }
 }
 
 ControllerServer::~ControllerServer()
@@ -391,50 +380,6 @@ bool ControllerServer::findGoalCheckerId(
   return true;
 }
 
-bool ControllerServer::isSameDirect(){
-  geometry_msgs::msg::TransformStamped t;
-    try {
-          t = costmap_ros_->getTfBuffer()->lookupTransform(
-            "map", "base_link",
-            tf2::TimePointZero);
-           
-        } catch (const tf2::TransformException & ex) {
-        }
-  geometry_msgs::msg::Quaternion q = t.transform.rotation;  
-  Eigen::Quaterniond eigen_q(q.w, q.x, q.y, q.z);
-  double yaw = atan2(2.0 * (eigen_q.w() * eigen_q.z() + eigen_q.x() * eigen_q.y()),  
-                    1.0 - 2.0 * (eigen_q.y() * eigen_q.y() + eigen_q.z() * eigen_q.z()));  
-  geometry_msgs::msg::Pose robot_pose;
-  robot_pose.position.x = t.transform.translation.x;
-  robot_pose.position.y = t.transform.translation.y;
-  geometry_msgs::msg::Pose2D loop;
-  geometry_msgs::msg::Point targetPoint;
-  targetPoint.x = current_path_.poses[0].pose.position.x;
-  targetPoint.y = current_path_.poses[0].pose.position.y;
-  for (unsigned int i = 1; i < current_path_.poses.size(); ++i) {
-    double sq_dist = (current_path_.poses[i].pose.position.x - robot_pose.position.x) * (current_path_.poses[i].pose.position.x - robot_pose.position.x) + (current_path_.poses[i].pose.position.y - robot_pose.position.y) * (current_path_.poses[i].pose.position.y - robot_pose.position.y);
-    if (sq_dist < 1.5) {
-      targetPoint.x = current_path_.poses[i].pose.position.x;
-      targetPoint.y = current_path_.poses[i].pose.position.y;
-    }
-    else{
-      break;
-    }
-  }
-  double angleRad = std::atan2(targetPoint.y - robot_pose.position.y, targetPoint.x - robot_pose.position.x);
-  double difference = yaw - angleRad;  
-  if (difference < 0) {  
-      difference = -difference;  
-  } 
-  if (difference > M_PI) {  
-      difference = 2 * M_PI - difference;  
-  } 
-  if(difference < 0.5 * M_PI){
-    return true;
-  }
-  return false;
-}
-
 void ControllerServer::computeControl()
 {
   std::lock_guard<std::mutex> lock(dynamic_params_lock_);
@@ -479,69 +424,6 @@ void ControllerServer::computeControl()
       }
 
       nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
-      // if(!guide_model_switch_ && isSameDirect()){
-      //   //ultra
-      //   if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && obstacle_avoidance_->isobstacleback()){
-      //     publishZeroVelocity();
-      //     sleep(1);
-      //     continue; 
-      //   }
-      //   if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && !obstacle_avoidance_->isobstacleback()){
-      //     geometry_msgs::msg::TwistStamped velocity;
-      //     velocity.twist.angular.x = 0;
-      //     velocity.twist.angular.y = 0;
-      //     velocity.twist.angular.z = 0;
-      //     velocity.twist.linear.x = -0.2;
-      //     velocity.twist.linear.y = 0;
-      //     velocity.twist.linear.z = 0;
-      //     velocity.header.frame_id = costmap_ros_->getBaseFrameID();
-      //     velocity.header.stamp = now();
-      //     publishVelocity(velocity);
-      //     continue; 
-      //   }
-      //   if(obstacle_avoidance_->isobstacleultra() && fabs(twist.theta) < 0.2){
-      //     publishZeroVelocity();
-      //     sleep(1);
-      //     continue;
-      //   }
-      // }
-      if(!guide_model_switch_){
-        // person and face
-        person_sub_->getcvt(twist);
-        if(person_sub_->geticp() > 0){
-          publishZeroVelocity();
-          sleep(1);
-          stop = true;
-          continue;
-        }
-        if(stop){
-          sleep(2);
-          stop = false;
-        }
-        if(person_sub_->getstop() > 0 && obstacle_avoidance_->isobstacleback()){
-          publishZeroVelocity();
-          sleep(1);
-          continue;         
-        }  
-        else if(person_sub_->getstop() > 0 && person_sub_->getstop() <= 30 && !obstacle_avoidance_->isobstacleback()){
-          publishZeroVelocity();
-          sleep(1);
-          continue;     
-        } 
-        else if(person_sub_->getstop() > 30 && !obstacle_avoidance_->isobstacleback()){
-          geometry_msgs::msg::TwistStamped velocity;
-          velocity.twist.angular.x = 0;
-          velocity.twist.angular.y = 0;
-          velocity.twist.angular.z = 0;
-          velocity.twist.linear.x = -0.2;
-          velocity.twist.linear.y = 0;
-          velocity.twist.linear.z = 0;
-          velocity.header.frame_id = costmap_ros_->getBaseFrameID();
-          velocity.header.stamp = now();
-          publishVelocity(velocity);
-          continue;    
-        }
-      }
       // // Drop proof
       if(drop_sub_->getdrop()){
         publishZeroVelocity();
