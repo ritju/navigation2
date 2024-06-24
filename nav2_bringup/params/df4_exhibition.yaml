@@ -1,0 +1,528 @@
+# 机器人为第四代版本，模式为导览模式
+#自适应蒙特卡洛定位
+amcl:
+  ros__parameters:
+    use_sim_time: False
+    alpha1: 0.25 #从旋转角度考虑机器人里程计的旋转噪声,diff_mode only alpha1~4 有用
+    alpha2: 0.25 #机器人平移分量中的里程计旋转噪音，噪声在机器人左右两边分布
+    alpha3: 0.25 #机器人平移过程中的里程计平移噪音，沿着机器人前进方向分布
+    alpha4: 0.25 #机器人旋转过程中的里程计平移噪音， 斜角方向上的运动噪声
+    alpha5: 0.2 #仅适用于全向式（Omni）: 平移噪声
+    base_frame_id: "base_footprint"
+    beam_skip_distance: 0.5 #设置忽略掉似然场模型中大多数粒子与地图不一致的光束，表示忽略的最大距离单位m
+    beam_skip_error_threshold: 0.9 
+    beam_skip_threshold: 0.3
+    do_beamskip: false
+    global_frame_id: "map" #定位系统发布的坐标系名称
+    lambda_short: 0.1
+    laser_likelihood_max_dist: 2.0 #在地图上进行障碍物充气的最大距离，用于likelihood_field模型
+    laser_max_range: 10.0 #要考虑的最大扫描范围
+    laser_min_range: 0.1  #要考虑的最小扫描范围
+    laser_model_type: "likelihood_field"
+    max_beams: 60 #更新过滤器时，设置每次扫描要使用多少个均匀间隔的光束
+    max_particles: 2000
+    min_particles: 500
+    odom_frame_id: "odom"
+    pf_err: 0.05
+    pf_z: 0.99
+    recovery_alpha_fast: 0.0 #快速平均权重滤波器(fast average weight filter)的指数衰减速率
+    recovery_alpha_slow: 0.0 #慢速平均权重滤波器(slow average weight filter)的指数衰减速率
+    resample_interval: 1
+    robot_model_type: "nav2_amcl::DifferentialMotionModel"
+    save_pose_rate: 0.5
+    sigma_hit: 0.2
+    tf_broadcast: False
+    transform_tolerance: 1.0
+    update_min_a: 0.2 #执行一次滤波器更新所需的最小转角
+    update_min_d: 0.2 #执行一次滤波器更新所需的最小位移
+    z_hit: 0.5 #测量噪声参数 #likelihood_field 只使用了z_hit和z_rand，原始值为0.6
+    z_max: 0.05 #检测失败参数
+    z_rand: 0.5 #随机测量参数,原始值为0.6
+    z_short: 0.05 #意外对象参数
+    scan_topic: scan
+    
+amcl_map_client:
+  ros__parameters:
+    use_sim_time: False
+
+amcl_rclcpp_node:
+  ros__parameters:
+    use_sim_time: False
+
+#导航行为树（用于加载行为树节点并根据xml配置进行调度）
+bt_navigator:
+  ros__parameters:
+    use_sim_time: False
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /odom
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    # enable_groot_monitoring: True
+    # groot_zmq_publisher_port: 1666
+    # groot_zmq_server_port: 1667
+    # default_nav_to_pose_bt_xml: "navigate_w_recovery_and_replanning_only_if_path_becomes_invalid.xml"
+    # 'default_nav_through_poses_bt_xml' and 'default_nav_to_pose_bt_xml' are use defaults:
+    # nav2_bt_navigator/navigate_to_pose_w_replanning_and_recovery.xml
+    # nav2_bt_navigator/navigate_through_poses_w_replanning_and_recovery.xml
+    # They can be set here or via a RewrittenYaml remap from a parent launch file to Nav2.
+    plugin_lib_names:
+    - nav2_compute_path_to_pose_action_bt_node
+    - nav2_compute_path_through_poses_action_bt_node
+    - nav2_smooth_path_action_bt_node
+    - nav2_follow_path_action_bt_node
+    - nav2_spin_action_bt_node
+    - nav2_wait_action_bt_node
+    - nav2_assisted_teleop_action_bt_node
+    - nav2_back_up_action_bt_node
+    - nav2_drive_on_heading_bt_node
+    - nav2_clear_costmap_service_bt_node
+    - nav2_is_stuck_condition_bt_node
+    - nav2_goal_reached_condition_bt_node
+    - nav2_goal_updated_condition_bt_node
+    - nav2_globally_updated_goal_condition_bt_node
+    - nav2_is_path_valid_condition_bt_node
+    - nav2_initial_pose_received_condition_bt_node
+    - nav2_reinitialize_global_localization_service_bt_node
+    - nav2_rate_controller_bt_node
+    - nav2_distance_controller_bt_node
+    - nav2_speed_controller_bt_node
+    - nav2_truncate_path_action_bt_node
+    - nav2_truncate_path_local_action_bt_node
+    - nav2_goal_updater_node_bt_node
+    - nav2_recovery_node_bt_node
+    - nav2_pipeline_sequence_bt_node
+    - nav2_round_robin_node_bt_node
+    - nav2_transform_available_condition_bt_node
+    - nav2_time_expired_condition_bt_node
+    - nav2_path_expiring_timer_condition
+    - nav2_distance_traveled_condition_bt_node
+    - nav2_single_trigger_bt_node
+    - nav2_goal_updated_controller_bt_node
+    - nav2_is_battery_low_condition_bt_node
+    - nav2_navigate_through_poses_action_bt_node
+    - nav2_navigate_to_pose_action_bt_node
+    - nav2_remove_passed_goals_action_bt_node
+    - nav2_planner_selector_bt_node
+    - nav2_controller_selector_bt_node
+    - nav2_goal_checker_selector_bt_node
+    - nav2_controller_cancel_bt_node
+    - nav2_path_longer_on_approach_bt_node
+    - nav2_wait_cancel_bt_node
+    - nav2_spin_cancel_bt_node
+    - nav2_back_up_cancel_bt_node
+    - nav2_assisted_teleop_cancel_bt_node
+    - nav2_drive_on_heading_cancel_bt_node
+    - nav2_relocalization_spin_bt_node
+    - nav2_is_localization_good_condition_bt_node
+
+bt_navigator_navigate_through_poses_rclcpp_node:
+  ros__parameters:
+    use_sim_time: False
+
+bt_navigator_navigate_to_pose_rclcpp_node:
+  ros__parameters:
+    use_sim_time: False
+
+#控制器服务器
+controller_server:
+  ros__parameters:
+    use_sim_time: False
+    controller_frequency: 10.0
+    # 控制器服务器会对接收到的里程计消息速度部分进行过滤,低于这个值认为是0
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.5
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3 #new
+    progress_checker_plugin: "progress_checker" #设置用于检测机器人进展情况的进度检测器插件的映射名称，该插件用于检测机器人是否取得进展（是否在前进）
+    goal_checker_plugin: "goal_checker" #设置用于检测是否已经到达目标位置的目标检测器插件的映射名称，该插件用于检测机器人是否到达了目标位姿
+    obstacle_avoidance_plugin: "obstacle_avoidance"
+    controller_plugins: ["FollowPath"]  #设置用于处理请求和参数的控制器插件的映射名称列表
+
+    obstacle_avoidance:
+      plugin: "nav2_controller::SimpleObstacleAvoidance"
+      local_width: 1.5
+      local_height: 1.5
+    # Progress checker parameters
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.2 #原始值为0.2
+      movement_time_allowance: 30.0
+    # Goal checker parameters
+    goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.5
+      yaw_goal_tolerance: 0.1
+      stateful: True
+    # DWB parameters DWB控制器参数
+    FollowPath:
+      # plugin: "dwb_core::DWBLocalPlanner"
+      plugin: "nav2_rotation_shim_controller::RotationShimController"
+      primary_controller: "dwb_core::DWBLocalPlanner"
+      angular_dist_threshold: 0.589
+      forward_sampling_distance: 1.0
+      rotate_to_heading_angular_vel: 0.4
+      max_angular_accel: 1.0
+      simulate_ahead_time: 1.0
+
+      debug_trajectory_details: True #发布调试信息
+      #Kinematic参数
+      min_vel_x: 0.0
+      min_vel_y: 0.0
+      max_vel_x: 0.6
+      max_vel_y: 0.0
+      max_vel_theta: 1.0 #原始值为0.4
+      min_speed_xy: 0.0
+      max_speed_xy: 0.6
+      min_speed_theta: -1.0
+      # Add high threshold velocity for turtlebot 3 issue.
+      # https://github.com/ROBOTIS-GIT/turtlebot3_simulations/issues/75
+      acc_lim_x: 0.3 #单位为m/s2
+      acc_lim_y: 0.0
+      acc_lim_theta: 0.3 #用于设置最大旋转加速度，原始值为0.2
+      #减速度
+      decel_lim_x: -0.5
+      
+      decel_lim_y: 0.0
+      decel_lim_theta: -0.5 #原始值为-0.2
+      #XYTheta迭代器（Iterator）
+      #各方向速度样本数
+      vx_samples: 60
+      vy_samples: 5
+      vtheta_samples: 20
+
+      #LimitedAccelGenerator StandardTrajectoryGenerator 插件
+      sim_time: 1.7
+      sim_time_angular: 1.0
+
+      linear_granularity: 0.05 #用于设置线性粒度，即向前投射的线性距离
+      angular_granularity: 0.025 #用于设置角度粒度，即向前投射的角度距离
+      transform_tolerance: 0.5 #用于设置TF坐标变换的容差（单位为秒）
+      xy_goal_tolerance: 0.2
+      trans_stopped_velocity: 0.25
+      short_circuit_trajectory_evaluation: True #用于设置是否在找到最佳结果轨迹后停止评估
+      stateful: True
+
+      #轨迹评分插件（critics）
+      # critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist","GoalThreshold"]
+      # critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist","ObstacleAlign","ObstacleFootprint"]
+      # critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist", "BaseGoalComputeVel"]
+      BaseObstacle.scale: 0.02
+      #用于设置对齐路径评分插件的加权比例
+      PathAlign.scale: 32.0
+      PathAlign.forward_point_distance: 0.1
+      #用于设置目标位姿对齐评分插件的加权比例
+      GoalAlign.scale: 24.0
+      GoalAlign.forward_point_distance: 0.1
+      PathDist.scale: 32.0
+      GoalDist.scale: 24.0
+      RotateToGoal.scale: 32.0
+      RotateToGoal.slowing_factor: 5.0
+      RotateToGoal.lookahead_time: -1.0
+      ObstacleAlign.scale: 1.0
+      GoalThreshold.sclae: 32.0
+      BaseGoalComputeVel.sclae: 1.0
+      # ObstacleFootprint.scale: 0.02
+      # ObstacleFootprint.max_scaling_factor: 0.2
+      # ObstacleFootprint.scaling_speed: 0.25
+      # PathAlign.aggregation: "sum"
+      # PathDist.aggregation: "sum"
+      # Twirling.scale: 1.0
+
+controller_server_rclcpp_node:
+  ros__parameters:
+    use_sim_time: False
+
+#局部代价地图
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      update_frequency: 5.0  #原始值为5.0
+      publish_frequency: 5.0 #原始值为2.0
+      global_frame: odom
+      robot_base_frame: base_link
+      use_sim_time: False
+      rolling_window: true #用于设置成本地图是否应该随机器人基座滚动
+      width: 3
+      height: 3
+      resolution: 0.05 #用于设置成本地图上1个像素的分辨率，单位为m
+      # robot_radius: 0.505
+      footprint: "[ [-0.376, -0.376], [-0.376, 0.376], [0.376, 0.376], [0.376, -0.763] ]"
+      
+        #用于设置要使用的机器人半径
+      # plugins: ["voxel_layer", "inflation_layer", "static_layer", "range_sensor_layer"]
+      # plugins: ["voxel_layer", "inflation_layer", "static_layer"]
+      # plugins: ["voxel_layer", "inflation_layer"]
+      plugins: ["obstacle_layer", "keepout_filter", "inflation_layer"]
+      filters: ["keepout_filter"]
+      #膨胀图层（Inflation Layer）参数
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.8 #扩大致命障碍物周围的成本图的半径, 原始0.45
+      #体素图层（Voxel Layer）参数38098
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        observation_sources: scan point2scan_back point2scan_front_up #point2scan_front_down  
+        scan:
+          topic: /scan
+          obstacle_max_range: 5.0
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+        point2scan_back:
+          topic: /point_scan_back
+          max_obstacle_height: 1.8
+          obstacle_max_range: 5.0
+          min_obstacle_height: 0.0
+          # expected_update_rate: 0.7
+          inf_is_valid: True
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+        point2scan_front_up:
+          topic: /point_scan_front_up
+          max_obstacle_height: 1.8
+          min_obstacle_height: 0.0
+          obstacle_max_range: 5.0
+          inf_is_valid: True
+          # expected_update_rate: 0.7
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+        point2scan_front_down:
+          topic: /point_scan_front_down
+          max_obstacle_height: 1.8
+          obstacle_max_range: 5.0
+          min_obstacle_height: 0.0
+          inf_is_valid: True
+          # expected_update_rate: 0.7
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+        person_cloud:
+          topic: /points_cloud_person
+          max_obstacle_height: 1.8
+          obstacle_max_range: 5.0
+          min_obstacle_height: 0.0
+          # expected_update_rate: 0.7
+          clearing: True
+          marking: True
+          data_type: "PointCloud2"
+
+      voxel_layer:
+        plugin: "nav2_costmap_2d::VoxelLayer"
+        enabled: True
+        publish_voxel_map: True #用于设置是否要为调试发布3D体素网格，其计算量大
+        origin_z: 0.0      #用于设置从哪里开始标记体素即z轴原点（单位为m）
+        z_resolution: 0.05 #用于设置高度方向上（z轴）体素的分辨率（单位为m）
+        z_voxels: 16       #用于设置要标记z轴方向高度的体素个数，最多为16个体素
+        max_obstacle_height: 2.0 #用于设置返回给占用网格的障碍物最大高度
+        mark_threshold: 0  #用于设置某柱中要在2D占用网格中标记为已占用的最小体素数
+        observation_sources: scan #用于设置数据源的命名空间
+        scan:
+          topic: /scan
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"  #用于设置某个传感器的输入数据类型，其值为LaserScan或PointCloud2
+      #静态图层（Static Layer）参数
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True #用于设置是否将地图话题的QoS设置为瞬态本地
+      range_sensor_layer:
+        plugin: "nav2_costmap_2d::RangeSensorLayer"
+        enabled: True
+        topics: ["/ultrasonic1", "/ultrasonic2", "/ultrasonic3"]
+        clear_threshold: 0.46
+        mark_threshold: 0.98
+        clear_on_max_reading: True #是否清楚超过最大范围的数值.
+      keepout_filter:
+        plugin: "nav2_costmap_2d::KeepoutFilter"
+        enabled: True
+        filter_info_topic: "/nav/keepout/info"
+      always_send_full_costmap: True #用于设置是否在每次更新时发送完整的成本地图，而不是对成本地图进行更新
+
+  local_costmap_client:
+    ros__parameters:
+      use_sim_time: False
+
+  local_costmap_rclcpp_node:
+    ros__parameters:
+      use_sim_time: False
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      update_frequency: 2.0 #原始值为1.0
+      publish_frequency: 2.0
+      global_frame: map
+      robot_base_frame: base_link
+      use_sim_time: False
+      robot_radius: 0.4 #用于设置要使用的机器人半径
+      # footprint: "[[-0.406, -0.465], [-0.406, 0.465], [0.406, 0.465], [0.406, -0.465]]"
+      resolution: 0.05 #用于设置成本地图上1个像素的分辨率，单位为m
+      track_unknown_space: true  #用于设置是否将未知空间视为空闲空间。如果为false，则会将未知空间视为空闲空间；否则视为未知空间
+      plugins: ["static_layer", "obstacle_layer", "keepout_filter", "inflation_layer"]
+      filters: ["keepout_filter"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        observation_sources: scan  #point2scan_front_up point2scan_front_down  #point2scan_back #person_cloud
+        scan:
+          topic: /scan
+          obstacle_max_range: 10.0
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+        point2scan_back:
+          topic: /point_scan_back
+          max_obstacle_height: 3.0
+          obstacle_max_range: 3.0
+          min_obstacle_height: 0.0
+          expected_update_rate: 0.7
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+        point2scan_front_up:
+          topic: /point_scan_front_up
+          max_obstacle_height: 1.8
+          min_obstacle_height: 0.0
+          obstacle_max_range: 3.0
+          expected_update_rate: 0.7
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+        point2scan_front_down:
+          topic: /point_scan_front_down
+          max_obstacle_height: 3.0
+          obstacle_max_range: 3.0
+          min_obstacle_height: 0.0
+          expected_update_rate: 0.7
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+        person_cloud:
+          topic: /points_cloud_person
+          max_obstacle_height: 3.0
+          obstacle_max_range: 3.0
+          min_obstacle_height: 0.0
+          expected_update_rate: 0.7
+          clearing: True
+          marking: True
+          data_type: "PointCloud2"
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True
+      keepout_filter:
+        plugin: "nav2_costmap_2d::KeepoutFilter"
+        enabled: True
+        filter_info_topic: "/nav/keepout/info"
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.8  #扩大致命障碍物周围的成本图的半径
+      always_send_full_costmap: True
+
+  global_costmap_client:
+    ros__parameters:
+      use_sim_time: False
+
+  global_costmap_rclcpp_node:
+    ros__parameters:
+      use_sim_time: False
+
+#地图服务器（Map Server）参数
+map_server:
+  ros__parameters:
+    use_sim_time: False
+    yaml_filename: "plate_test.yaml"  #用于设置指向地图yaml文件的路径
+
+#地图保存器（Map Saver）参数
+map_saver:
+  ros__parameters:
+    use_sim_time: False
+    save_map_timeout: 5000
+    free_thresh_default: 0.25     #用于设置占用情况网格的空闲空间最大概率阈值
+    occupied_thresh_default: 0.5 #用于设置占用情况网格的占用空间最小概率阈值
+    map_subscribe_transient_local: False
+
+planner_server:
+  ros__parameters:
+    expected_planner_frequency: 20.0
+    use_sim_time: False
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_navfn_planner/NavfnPlanner"
+      tolerance: 0.5 #请求的目标姿态和路径末端之间的公差
+      use_astar: false #是否使用A*
+      allow_unknown: true #是否允许在未知空间进行规划
+
+planner_server_rclcpp_node:
+  ros__parameters:
+    use_sim_time: False
+
+smoother_server:
+  ros__parameters:
+    use_sim_time: True
+    smoother_plugins: ["simple_smoother"]
+    simple_smoother:
+      plugin: "nav2_smoother::SimpleSmoother"
+      tolerance: 1.0e-10
+      max_its: 1000
+      do_refinement: True
+
+behavior_server:
+  ros__parameters:
+    costmap_topic: local_costmap/costmap_raw #用于碰撞检查的原始成本图主题
+    footprint_topic: local_costmap/published_footprint 
+    cycle_frequency: 10.0
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait"]
+    spin:
+      plugin: "nav2_behaviors/Spin"
+    backup:
+      plugin: "nav2_behaviors/BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors/DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors/Wait"
+    assisted_teleop:
+      plugin: "nav2_behaviors/AssistedTeleop"
+    global_frame: odom
+    robot_base_frame: base_link
+    transform_timeout: 0.1
+    use_sim_time: False
+    simulate_ahead_time: 3.0 #用于设置等待碰撞的时间长度
+    max_rotational_vel: 0.3 #用于设置最大旋转速度（单位为弧度/秒），原始值为0.4
+    min_rotational_vel: 0.2 #初始值为0.32
+    rotational_acc_lim: 0.8 #用于设置最大旋转加速度（单位为弧度/秒2）
+
+robot_state_publisher:
+  ros__parameters:
+    use_sim_time: False
+
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: False
+    smoothing_frequency: 10.0
+    scale_velocities: False
+    feedback: "OPEN_LOOP"
+    max_velocity: [1.0, 0.0, 2.0]
+    min_velocity: [-0.3, 0.0, -2.0]
+    max_accel: [1.0, 0.0, 2.0]
+    max_decel: [-1.0, 0.0, -2.0]
+    odom_topic: "odom"
+    odom_duration: 0.1
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0
+
+#配置生命周期管理器
+lifecycle_manager:
+  ros__parameters:
+    autostart:true:
+    node_names: ['controller_server', 'planner_server', 'recoveries_server', 'bt_navigator', 'waypoint_follower']
+    bond_timeout: 4.0   
