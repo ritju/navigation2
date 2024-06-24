@@ -479,32 +479,32 @@ void ControllerServer::computeControl()
       }
 
       nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
-      if(!guide_model_switch_ && isSameDirect()){
-        //ultra
-        if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && obstacle_avoidance_->isobstacleback()){
-          publishZeroVelocity();
-          sleep(1);
-          continue; 
-        }
-        if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && !obstacle_avoidance_->isobstacleback()){
-          geometry_msgs::msg::TwistStamped velocity;
-          velocity.twist.angular.x = 0;
-          velocity.twist.angular.y = 0;
-          velocity.twist.angular.z = 0;
-          velocity.twist.linear.x = -0.2;
-          velocity.twist.linear.y = 0;
-          velocity.twist.linear.z = 0;
-          velocity.header.frame_id = costmap_ros_->getBaseFrameID();
-          velocity.header.stamp = now();
-          publishVelocity(velocity);
-          continue; 
-        }
-        if(obstacle_avoidance_->isobstacleultra() && fabs(twist.theta) < 0.2){
-          publishZeroVelocity();
-          sleep(1);
-          continue;
-        }
-      }
+      // if(!guide_model_switch_ && isSameDirect()){
+      //   //ultra
+      //   if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && obstacle_avoidance_->isobstacleback()){
+      //     publishZeroVelocity();
+      //     sleep(1);
+      //     continue; 
+      //   }
+      //   if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && !obstacle_avoidance_->isobstacleback()){
+      //     geometry_msgs::msg::TwistStamped velocity;
+      //     velocity.twist.angular.x = 0;
+      //     velocity.twist.angular.y = 0;
+      //     velocity.twist.angular.z = 0;
+      //     velocity.twist.linear.x = -0.2;
+      //     velocity.twist.linear.y = 0;
+      //     velocity.twist.linear.z = 0;
+      //     velocity.header.frame_id = costmap_ros_->getBaseFrameID();
+      //     velocity.header.stamp = now();
+      //     publishVelocity(velocity);
+      //     continue; 
+      //   }
+      //   if(obstacle_avoidance_->isobstacleultra() && fabs(twist.theta) < 0.2){
+      //     publishZeroVelocity();
+      //     sleep(1);
+      //     continue;
+      //   }
+      // }
       if(!guide_model_switch_){
         // person and face
         person_sub_->getcvt(twist);
