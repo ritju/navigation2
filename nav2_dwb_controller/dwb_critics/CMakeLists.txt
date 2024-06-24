@@ -36,7 +36,6 @@ add_library(${PROJECT_NAME} SHARED
     src/twirling.cpp
     src/obstacle_align.cpp
     src/goal_threshold.cpp
-    src/base_goal_compute_vel.cpp
 )
 
 set(dependencies

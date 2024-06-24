@@ -35,8 +35,6 @@ using std::placeholders::_1;
 
 namespace nav2_controller
 {
-bool guide_model_switch_ = false;
-
 ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
 : nav2_util::LifecycleNode("controller_server", "", options),
   progress_checker_loader_("nav2_core", "nav2_core::ProgressChecker"),
@@ -75,15 +73,6 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
 
   // Launch a thread to run the costmap node
   costmap_thread_ = std::make_unique<nav2_util::NodeThread>(costmap_ros_);
-  try
-  {
-    guide_model_switch_ = std::stod(getenv("GUIDE_MODEL_SWITCH"));
-  }
-  catch(...)
-  {
-    auto now = rclcpp::Clock();
-    RCLCPP_WARN(rclcpp::get_logger("guide_model_switch"),  "ENV in controller {GUIDE_MODEL_SWITCH} not set! Use default values !");
-  }
 }
 
 ControllerServer::~ControllerServer()
@@ -479,8 +468,8 @@ void ControllerServer::computeControl()
       }
 
       nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
-      if(!guide_model_switch_ && isSameDirect()){
-        //ultra
+      //ultra
+      if(isSameDirect()){
         if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && obstacle_avoidance_->isobstacleback()){
           publishZeroVelocity();
           sleep(1);
@@ -505,42 +494,40 @@ void ControllerServer::computeControl()
           continue;
         }
       }
-      if(!guide_model_switch_){
-        // person and face
-        person_sub_->getcvt(twist);
-        if(person_sub_->geticp() > 0){
-          publishZeroVelocity();
-          sleep(1);
-          stop = true;
-          continue;
-        }
-        if(stop){
-          sleep(2);
-          stop = false;
-        }
-        if(person_sub_->getstop() > 0 && obstacle_avoidance_->isobstacleback()){
-          publishZeroVelocity();
-          sleep(1);
-          continue;         
-        }  
-        else if(person_sub_->getstop() > 0 && person_sub_->getstop() <= 30 && !obstacle_avoidance_->isobstacleback()){
-          publishZeroVelocity();
-          sleep(1);
-          continue;     
-        } 
-        else if(person_sub_->getstop() > 30 && !obstacle_avoidance_->isobstacleback()){
-          geometry_msgs::msg::TwistStamped velocity;
-          velocity.twist.angular.x = 0;
-          velocity.twist.angular.y = 0;
-          velocity.twist.angular.z = 0;
-          velocity.twist.linear.x = -0.2;
-          velocity.twist.linear.y = 0;
-          velocity.twist.linear.z = 0;
-          velocity.header.frame_id = costmap_ros_->getBaseFrameID();
-          velocity.header.stamp = now();
-          publishVelocity(velocity);
-          continue;    
-        }
+      // person and face
+      person_sub_->getcvt(twist);
+      if(person_sub_->geticp() > 0){
+        publishZeroVelocity();
+        sleep(1);
+        stop = true;
+        continue;
+      }
+      if(stop){
+        sleep(2);
+        stop = false;
+      }
+      if(person_sub_->getstop() > 0 && obstacle_avoidance_->isobstacleback()){
+        publishZeroVelocity();
+        sleep(1);
+        continue;         
+      }  
+      else if(person_sub_->getstop() > 0 && person_sub_->getstop() <= 30 && !obstacle_avoidance_->isobstacleback()){
+        publishZeroVelocity();
+        sleep(1);
+        continue;     
+      } 
+      else if(person_sub_->getstop() > 30 && !obstacle_avoidance_->isobstacleback()){
+        geometry_msgs::msg::TwistStamped velocity;
+        velocity.twist.angular.x = 0;
+        velocity.twist.angular.y = 0;
+        velocity.twist.angular.z = 0;
+        velocity.twist.linear.x = -0.2;
+        velocity.twist.linear.y = 0;
+        velocity.twist.linear.z = 0;
+        velocity.header.frame_id = costmap_ros_->getBaseFrameID();
+        velocity.header.stamp = now();
+        publishVelocity(velocity);
+        continue;    
       }
       // // Drop proof
       if(drop_sub_->getdrop()){
