@@ -58,6 +58,11 @@ void StandardTrajectoryGenerator::initialize(
   nav2_util::declare_parameter_if_not_declared(
     nh,
     plugin_name + ".sim_time", rclcpp::ParameterValue(1.7));
+
+  nav2_util::declare_parameter_if_not_declared(
+    nh,
+    plugin_name + ".sim_time_angular", rclcpp::ParameterValue(1.0));
+
   nav2_util::declare_parameter_if_not_declared(
     nh,
     plugin_name + ".discretize_by_time", rclcpp::ParameterValue(false));
@@ -84,6 +89,7 @@ void StandardTrajectoryGenerator::initialize(
    *  angular distance between two successive points.
    */
   nh->get_parameter(plugin_name + ".sim_time", sim_time_);
+  nh->get_parameter(plugin_name + ".sim_time_angular", sim_time_angular);
   nh->get_parameter(plugin_name + ".discretize_by_time", discretize_by_time_);
   nh->get_parameter(plugin_name + ".time_granularity", time_granularity_);
   nh->get_parameter(plugin_name + ".linear_granularity", linear_granularity_);
@@ -117,6 +123,10 @@ nav_2d_msgs::msg::Twist2D StandardTrajectoryGenerator::nextTwist()
 std::vector<double> StandardTrajectoryGenerator::getTimeSteps(
   const nav_2d_msgs::msg::Twist2D & cmd_vel)
 {
+  double sim_time_c = sim_time_;
+  if(cmd_vel.x < 0.05){
+    sim_time_ = sim_time_angular;
+  }
   std::vector<double> steps;
   if (discretize_by_time_) {
     steps.resize(ceil(sim_time_ / time_granularity_));
@@ -140,6 +150,7 @@ std::vector<double> StandardTrajectoryGenerator::getTimeSteps(
     steps.resize(1);
   }
   std::fill(steps.begin(), steps.end(), sim_time_ / steps.size());
+  sim_time_ = sim_time_c;
   return steps;
 }
 

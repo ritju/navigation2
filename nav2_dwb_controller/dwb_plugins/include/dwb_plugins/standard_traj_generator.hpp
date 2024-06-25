@@ -131,6 +131,7 @@ protected:
   std::shared_ptr<VelocityIterator> velocity_iterator_;
 
   double sim_time_;
+  double sim_time_angular;
 
   // Sampling Parameters
   bool discretize_by_time_;
