@@ -513,12 +513,12 @@ void ControllerServer::computeControl()
         RCLCPP_INFO(get_logger(), "Reached the goal!");
         break;
       }
-      //goal occupied
-      if(obstacle_avoidance_->isGoalOccupied(goal_x, goal_y)){
-        publishZeroVelocity();
-        sleep(1);
-        continue;
-      }
+      // //goal occupied
+      // if(obstacle_avoidance_->isGoalOccupied(goal_x, goal_y)){
+      //   publishZeroVelocity();
+      //   sleep(1);
+      //   continue;
+      // }
 
       if (!loop_rate.sleep()) {
         RCLCPP_WARN(

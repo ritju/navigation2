@@ -22,7 +22,7 @@ namespace dwb_critics
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
   // command_publisher_ = node->create_publisher<geometry_msgs::msg::Pose>("distance", 10);
   slide_subscription_ = node->create_subscription<geometry_msgs::msg::Pose>("person_goal_pose", 10, std::bind(&BaseGoalComputeVelCritic::slidesubscribecallback, this, std::placeholders::_1));
-  subscription_ = node->create_subscription<std_msgs::msg::Bool>("following_person", 10, std::bind(&BaseGoalComputeVelCritic::followingpersonsubscribecallback, this, std::placeholders::_1));
+  subscription_ = node->create_subscription<std_msgs::msg::Bool>("following_person", rclcpp::SensorDataQoS(rclcpp::KeepLast(1)).transient_local().reliable(), std::bind(&BaseGoalComputeVelCritic::followingpersonsubscribecallback, this, std::placeholders::_1));
 }
 bool BaseGoalComputeVelCritic::prepare(
     const geometry_msgs::msg::Pose2D &, const nav_2d_msgs::msg::Twist2D &,
@@ -110,7 +110,7 @@ double BaseGoalComputeVelCritic::scoreTrajectory(const dwb_msgs::msg::Trajectory
         s = 80;
       }
     }
-    if(traj.velocity.x > 0.05 && traj.velocity.theta > 0.5){
+    if(traj.velocity.x > 0.05 && traj.velocity.theta > 0.4){
       s += 80;
     }
     else{
