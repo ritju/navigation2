@@ -38,14 +38,6 @@
       <description>Penalize trajectories with rotational velocities
       </description>
     </class>
-    <class type="dwb_critics::ObstacleAlignCritic" base_class_type="dwb_core::TrajectoryCritic">
-      <description>ObstacleAlign
-      </description>
-    </class>
-    <class type="dwb_critics::GoalThresholdCritic" base_class_type="dwb_core::TrajectoryCritic">
-      <description>GoalThreshold
-      </description>
-    </class>
     <class type="dwb_critics::BaseGoalComputeVelCritic" base_class_type="dwb_core::TrajectoryCritic">
       <description>Penalize trajectories with rotational velocities
       </description>

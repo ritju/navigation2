@@ -62,7 +62,6 @@ void StandardTrajectoryGenerator::initialize(
   nav2_util::declare_parameter_if_not_declared(
     nh,
     plugin_name + ".sim_time_angular", rclcpp::ParameterValue(1.0));
-
   nav2_util::declare_parameter_if_not_declared(
     nh,
     plugin_name + ".discretize_by_time", rclcpp::ParameterValue(false));

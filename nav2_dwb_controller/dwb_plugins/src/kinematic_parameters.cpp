@@ -115,6 +115,7 @@ void KinematicsHandler::initialize(
   kinematics.base_max_vel_theta_ = kinematics.max_vel_theta_;
 
   // Add callback for dynamic parameters
+  // RCLCPP_INFO(rclcpp::get_logger("critics"),"max_vel*****************: %f",kinematics.max_vel_x_);
   dyn_params_handler_ = nh->add_on_set_parameters_callback(
     std::bind(&KinematicsHandler::dynamicParametersCallback, this, _1));
 
@@ -182,6 +183,7 @@ KinematicsHandler::dynamicParametersCallback(std::vector<rclcpp::Parameter> para
       } else if (name == plugin_name_ + ".max_vel_x") {
         kinematics.max_vel_x_ = parameter.as_double();
         kinematics.base_max_vel_x_ = kinematics.max_vel_x_;
+        
       } else if (name == plugin_name_ + ".max_vel_y") {
         kinematics.max_vel_y_ = parameter.as_double();
         kinematics.base_max_vel_y_ = kinematics.max_vel_y_;

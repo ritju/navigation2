@@ -313,6 +313,7 @@ DWBLocalPlanner::computeVelocityCommands(
     nav_2d_msgs::msg::Twist2DStamped cmd_vel;
     cmd_vel.header.stamp = clock_->now();
     cmd_vel.velocity = best.traj.velocity;
+    // RCLCPP_INFO(rclcpp::get_logger("critics"),"**************best vel: %f",best.traj.velocity.x);
 
     // debrief stateful scoring functions
     for (TrajectoryCritic::Ptr & critic : critics_) {
@@ -358,13 +359,14 @@ DWBLocalPlanner::coreScoringAlgorithm(
   traj_generator_->startNewIteration(velocity);
   while (traj_generator_->hasMoreTwists()) {
     twist = traj_generator_->nextTwist();
+    // RCLCPP_INFO(rclcpp::get_logger("critics"),"x: %f",twist.x);
 
     // nav_2d_msgs::msg::Path2D transformed_plan;
-    double dy = goal_y-pose.y;
-    double dx = goal_x-pose.x;
-    while(twist.x <= 0.2 && dx * dx + dy * dy>=0.5 && fabs(angles::shortest_angular_distance(pose.theta, atan2(dy,dx)))<=0.5*M_PI){     
-      twist = traj_generator_->nextTwist();
-    }
+    // double dy = goal_y-pose.y;
+    // double dx = goal_x-pose.x;
+    // while(twist.x <= 0.2 && dx * dx + dy * dy>=0.5 && fabs(angles::shortest_angular_distance(pose.theta, atan2(dy,dx)))<=0.5*M_PI){     
+    //   twist = traj_generator_->nextTwist();
+    // }
     // while(fabs(velocity.theta)<=0.01 && fabs(velocity.x)<=0.01 && fabs(twist.theta)>=0.02){
     //   twist = traj_generator_->nextTwist();
     // }

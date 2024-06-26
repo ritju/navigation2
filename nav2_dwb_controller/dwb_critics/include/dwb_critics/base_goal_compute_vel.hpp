@@ -46,8 +46,9 @@ private:
             follow_person_ = false;
         }
     }  
+    
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr subscription_;
-    // rclcpp::Publisher<geometry_msgs::msg::Pose>::SharedPtr command_publisher_;
+    rclcpp::Publisher<geometry_msgs::msg::Pose>::SharedPtr command_publisher_;
     rclcpp::Subscription<geometry_msgs::msg::Pose>::SharedPtr slide_subscription_;
     void slidesubscribecallback(const geometry_msgs::msg::Pose::SharedPtr msg)
     {  
@@ -60,6 +61,7 @@ private:
         pose_z = y;
     } 
     std::deque<double> queue_dxy;
+
 };
 
 }  // namespace dwb_critics

@@ -131,6 +131,7 @@ protected:
    * @throw nav2_core::PlannerException
    */
   void computeControl();
+
   bool isSameDirect();
 
   /**
@@ -306,6 +307,27 @@ private:
       follow_person_ = false;
     }
   }
+  double timeout = 0;
+  rclcpp::Time starttime;
+  bool timeout_update;
+  // rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr localization_subscribe_;
+  // void localizationsubscribecallback(const std_msgs::msg::Float32::SharedPtr msg)
+  // {
+  //   if(msg->data < 0.35){
+  //     lcz = 0;
+  //     above_threshold = true;
+  //   }
+  //   else if(msg->data >= 0.35 && msg->data < 0.75 && above_threshold){
+  //     lcz = 0;
+  //   }
+  //   else if(msg->data >= 0.75 && above_threshold){
+  //     lcz = 2;
+  //     above_threshold = false;
+  //   }
+  //   else{
+  //     lcz = 1;
+  //   }
+  // }
 };
 
 }  // namespace nav2_controller

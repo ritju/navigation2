@@ -35,6 +35,7 @@ using std::placeholders::_1;
 
 namespace nav2_controller
 {
+
 ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
 : nav2_util::LifecycleNode("controller_server", "", options),
   progress_checker_loader_("nav2_core", "nav2_core::ProgressChecker"),
@@ -238,11 +239,11 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   speed_limit_sub_ = create_subscription<nav2_msgs::msg::SpeedLimit>(
     speed_limit_topic, rclcpp::QoS(10),
     std::bind(&ControllerServer::speedLimitCallback, this, std::placeholders::_1));
-  following_person_subscribe_ = create_subscription<std_msgs::msg::Bool>("following_person", rclcpp::SensorDataQoS(rclcpp::KeepLast(1)).transient_local().reliable(), std::bind(&ControllerServer::followingpersonsubscribecallback, this, std::placeholders::_1)); 
+  
   // localization_subscribe_ = create_subscription<std_msgs::msg::Float32>("localization_score", 10, std::bind(&ControllerServer::localizationsubscribecallback, this, std::placeholders::_1));
   // person_subscribe_ = create_subscription<nav2_msgs::msg::DetectResult>("person_detected", 10, std::bind(&ControllerServer::personsubscribecallback, this, std::placeholders::_1));
   // dropsignal_subscribe_ = create_subscription<std_msgs::msg::Bool>("drop_signal", 10, std::bind(&ControllerServer::dropsignalsubscribecallback, this, std::placeholders::_1));
-  // following_person_subscribe_ = create_subscription<std_msgs::msg::Bool>("following_person", rclcpp::SensorDataQoS(rclcpp::KeepLast(1)).transient_local().reliable(), std::bind(&ControllerServer::followingpersonsubscribecallback, this, std::placeholders::_1)); 
+  following_person_subscribe_ = create_subscription<std_msgs::msg::Bool>("following_person", rclcpp::SensorDataQoS(rclcpp::KeepLast(1)).transient_local().reliable(), std::bind(&ControllerServer::followingpersonsubscribecallback, this, std::placeholders::_1)); 
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
@@ -381,50 +382,6 @@ bool ControllerServer::findGoalCheckerId(
   return true;
 }
 
-bool ControllerServer::isSameDirect(){
-  geometry_msgs::msg::TransformStamped t;
-    try {
-          t = costmap_ros_->getTfBuffer()->lookupTransform(
-            "map", "base_link",
-            tf2::TimePointZero);
-           
-        } catch (const tf2::TransformException & ex) {
-        }
-  geometry_msgs::msg::Quaternion q = t.transform.rotation;  
-  Eigen::Quaterniond eigen_q(q.w, q.x, q.y, q.z);
-  double yaw = atan2(2.0 * (eigen_q.w() * eigen_q.z() + eigen_q.x() * eigen_q.y()),  
-                    1.0 - 2.0 * (eigen_q.y() * eigen_q.y() + eigen_q.z() * eigen_q.z()));  
-  geometry_msgs::msg::Pose robot_pose;
-  robot_pose.position.x = t.transform.translation.x;
-  robot_pose.position.y = t.transform.translation.y;
-  geometry_msgs::msg::Pose2D loop;
-  geometry_msgs::msg::Point targetPoint;
-  targetPoint.x = current_path_.poses[0].pose.position.x;
-  targetPoint.y = current_path_.poses[0].pose.position.y;
-  for (unsigned int i = 1; i < current_path_.poses.size(); ++i) {
-    double sq_dist = (current_path_.poses[i].pose.position.x - robot_pose.position.x) * (current_path_.poses[i].pose.position.x - robot_pose.position.x) + (current_path_.poses[i].pose.position.y - robot_pose.position.y) * (current_path_.poses[i].pose.position.y - robot_pose.position.y);
-    if (sq_dist < 1.5) {
-      targetPoint.x = current_path_.poses[i].pose.position.x;
-      targetPoint.y = current_path_.poses[i].pose.position.y;
-    }
-    else{
-      break;
-    }
-  }
-  double angleRad = std::atan2(targetPoint.y - robot_pose.position.y, targetPoint.x - robot_pose.position.x);
-  double difference = yaw - angleRad;  
-  if (difference < 0) {  
-      difference = -difference;  
-  } 
-  if (difference > M_PI) {  
-      difference = 2 * M_PI - difference;  
-  } 
-  if(difference < 0.5 * M_PI){
-    return true;
-  }
-  return false;
-}
-
 void ControllerServer::computeControl()
 {
   std::lock_guard<std::mutex> lock(dynamic_params_lock_);
@@ -470,11 +427,30 @@ void ControllerServer::computeControl()
 
       nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
       if(!follow_person_ && isSameDirect()){
-        //ultra
-        if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && obstacle_avoidance_->isobstacleback()){
+          //ultra
+        if(obstacle_avoidance_->isobstacleultra() && obstacle_avoidance_->isobstacleback()){
+          // rclcpp::Clock steady_clock_{RCL_STEADY_TIME};
+          // if(timeout <= 5){
+          //   if(!timeout_update){
+          //     starttime = steady_clock_.now();
+          //   }
+          //   timeout_update = true;
+          //   timeout = steady_clock_.now().seconds() - starttime.seconds();
+          //   publishZeroVelocity();
+          //   sleep(1);
+          //   continue; 
+          // }
+          // else{
+          //   timeout = steady_clock_.now().seconds() - starttime.seconds();
+          // }
           publishZeroVelocity();
           sleep(1);
-          continue; 
+          continue;  
+          RCLCPP_INFO(rclcpp::get_logger("test"),"ultra obstacle and obstacle in back");
+        }
+        if(timeout > 25){
+          timeout = 0;
+          timeout_update = false;
         }
         if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && !obstacle_avoidance_->isobstacleback()){
           geometry_msgs::msg::TwistStamped velocity;
@@ -486,14 +462,16 @@ void ControllerServer::computeControl()
           velocity.twist.linear.z = 0;
           velocity.header.frame_id = costmap_ros_->getBaseFrameID();
           velocity.header.stamp = now();
+          RCLCPP_INFO(rclcpp::get_logger("test"),"######### ultra back ###########");
           publishVelocity(velocity);
           continue; 
         }
-        if(obstacle_avoidance_->isobstacleultra() && fabs(twist.theta) < 0.2){
+        if(obstacle_avoidance_->isobstacleultra() && fabs(twist.theta) < 0.2 && !obstacle_avoidance_->isobstacleback()){
           publishZeroVelocity();
           sleep(1);
           continue;
         }
+        
       }
       // // Drop proof
       if(drop_sub_->getdrop()){
@@ -508,6 +486,7 @@ void ControllerServer::computeControl()
       updateGlobalPath();
 
       computeAndPublishVelocity();
+      // RCLCPP_INFO(rclcpp::get_logger("test"),"*************pub cmd**********");
 
       if (isGoalReached()) {
         RCLCPP_INFO(get_logger(), "Reached the goal!");
@@ -545,6 +524,52 @@ void ControllerServer::computeControl()
 
   // TODO(orduno) #861 Handle a pending preemption and set controller name
   action_server_->succeeded_current();
+}
+
+bool ControllerServer::isSameDirect(){
+  geometry_msgs::msg::TransformStamped t;
+    try {
+          t = costmap_ros_->getTfBuffer()->lookupTransform(
+            "map", "base_link",
+            tf2::TimePointZero);
+           
+        } catch (const tf2::TransformException & ex) {
+        }
+  geometry_msgs::msg::Quaternion q = t.transform.rotation;  
+  Eigen::Quaterniond eigen_q(q.w, q.x, q.y, q.z);
+  double yaw = atan2(2.0 * (eigen_q.w() * eigen_q.z() + eigen_q.x() * eigen_q.y()),  
+                    1.0 - 2.0 * (eigen_q.y() * eigen_q.y() + eigen_q.z() * eigen_q.z()));  
+  geometry_msgs::msg::Pose robot_pose;
+  robot_pose.position.x = t.transform.translation.x;
+  robot_pose.position.y = t.transform.translation.y;
+
+  // 2.获取局部目标点
+  geometry_msgs::msg::Pose2D loop;
+  geometry_msgs::msg::Point targetPoint;
+  targetPoint.x = current_path_.poses[0].pose.position.x;
+  targetPoint.y = current_path_.poses[0].pose.position.y;
+  for (unsigned int i = 1; i < current_path_.poses.size(); ++i) {
+    double sq_dist = (current_path_.poses[i].pose.position.x - robot_pose.position.x) * (current_path_.poses[i].pose.position.x - robot_pose.position.x) + (current_path_.poses[i].pose.position.y - robot_pose.position.y) * (current_path_.poses[i].pose.position.y - robot_pose.position.y);
+    if (sq_dist < 1.5) {
+      targetPoint.x = current_path_.poses[i].pose.position.x;
+      targetPoint.y = current_path_.poses[i].pose.position.y;
+    }
+    else{
+      break;
+    }
+  }
+  double angleRad = std::atan2(targetPoint.y - robot_pose.position.y, targetPoint.x - robot_pose.position.x);
+  double difference = yaw - angleRad;  
+  if (difference < 0) {  
+      difference = -difference;  
+  } 
+  if (difference > M_PI) {  
+      difference = 2 * M_PI - difference;  
+  } 
+  if(difference < 0.5 * M_PI){
+    return true;
+  }
+  return false;
 }
 
 void ControllerServer::setPlannerPath(const nav_msgs::msg::Path & path)

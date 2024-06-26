@@ -31,7 +31,6 @@ using namespace std::chrono_literals;
 
 namespace nav2_costmap_2d
 {
-double off_corner_min_x = 0.35, off_corner_max_x = 0.71, off_corner_min_y = -0.42, off_corner_max_y = 0.42;
 
 CostmapTopicCollisionChecker::CostmapTopicCollisionChecker(
   CostmapSubscriber & costmap_sub,
@@ -41,25 +40,12 @@ CostmapTopicCollisionChecker::CostmapTopicCollisionChecker(
   costmap_sub_(costmap_sub),
   footprint_sub_(footprint_sub),
   collision_checker_(nullptr)
-{
-  try
-  {
-    off_corner_min_x = std::stod(getenv("OFF_CORNER_MIN_X"));
-    off_corner_max_x = std::stod(getenv("OFF_CORNER_MAX_X"));
-    off_corner_min_y = std::stod(getenv("OFF_CORNER_MIN_Y"));
-    off_corner_max_y = std::stod(getenv("OFF_CORNER_MAX_Y"));
-  }
-  catch(...)
-  {
-    auto now = rclcpp::Clock();
-    RCLCPP_WARN(rclcpp::get_logger("costmap_topic_collision_checker"),  "ENV in controller {OFF_CORNER_MIN_X} or {OFF_CORNER_MAX_X} or {OFF_CORNER_MIN_Y} or {OFF_CORNER_MAX_Y} not set! Use default values !");
-  }
-}
+{}
 bool CostmapTopicCollisionChecker::isCollisionFront(const geometry_msgs::msg::Pose2D & pose)
 {
   std::vector<geometry_msgs::msg::Point> footprint;
-  for (double x = off_corner_min_x; x < off_corner_max_x; x += 0.05) {
-    for (double y = off_corner_min_y; y < off_corner_max_y; y += 0.05) {
+  for (double x = 0.35; x < 0.71; x += 0.05) {
+    for (double y = -0.42; y < 0.42; y += 0.05) {
       geometry_msgs::msg::Point new_pt;
       new_pt.x = pose.x + x * cos(pose.theta) - y * sin(pose.theta);
       new_pt.y = pose.y + y * cos(pose.theta) + x * sin(pose.theta);
@@ -95,8 +81,8 @@ bool CostmapTopicCollisionChecker::isCollisionFront(const geometry_msgs::msg::Po
 bool CostmapTopicCollisionChecker::isCollisionBack(const geometry_msgs::msg::Pose2D & pose)
 {
   std::vector<geometry_msgs::msg::Point> footprint;
-  for (double x = -off_corner_max_x ; x < -off_corner_min_x ; x += 0.05) {
-    for (double y = off_corner_min_y ; y < off_corner_max_y ; y += 0.05) {
+  for (double x = -0.7; x < -0.34; x += 0.05) {
+    for (double y = -0.42; y < 0.42; y += 0.05) {
       geometry_msgs::msg::Point new_pt;
       new_pt.x = pose.x + x * cos(pose.theta) - y * sin(pose.theta);
       new_pt.y = pose.y + y * cos(pose.theta) + x * sin(pose.theta);

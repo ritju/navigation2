@@ -16,29 +16,13 @@
 using rcl_interfaces::msg::ParameterType;
 using std::placeholders::_1;
 
-
-
 namespace nav2_controller
 {
-double isobstacleback_min_distance = -0.65, isobstacleback_max_distance = -0.54, isobstacleultra_min_distance = 0.5, isobstacleultra_max_distance = 0.61;
-
 
 SimpleObstacleAvoidance::SimpleObstacleAvoidance()
 : local_width_(1.5),
   local_height_(1.5)
 {
-  try
-  {
-    isobstacleback_min_distance = std::stod(getenv("ISOBSTACLEBACK_MIN_DISTANCE"));
-    isobstacleback_max_distance = std::stod(getenv("ISOBSTACLEBACK_MAX_DISTANCE"));
-    isobstacleultra_min_distance = std::stod(getenv("ISOBSTACLEULTRA_MIN_DISTANCE"));
-    isobstacleultra_max_distance = std::stod(getenv("ISOBSTACLEULTRA_MAX_DISTANCE"));
-  }
-  catch(...)
-  {
-    auto now = rclcpp::Clock();
-    RCLCPP_WARN(rclcpp::get_logger("simple_avoidance"),  "ENV in controller {ISOBSTACLEBACK_MIN_DISTANCE} or {ISOBSTACLEBACK_MAX_DISTANCE} not set! Use default values !");
-  }
 }
 
 void SimpleObstacleAvoidance::initialize(
@@ -92,7 +76,7 @@ bool SimpleObstacleAvoidance::isobstacleback()
   std::vector<tf2::Vector3> footprint_pose;
   tf2::Vector3 c1(local_width_,local_height_,0);
   unsigned int s[15][2];
-  for (double x = isobstacleback_min_distance; x < isobstacleback_max_distance ; x += 0.05) {
+  for (double x = -0.65; x < -0.54; x += 0.05) {
     for (double y = -0.1; y < 0.11; y += 0.05) {
       footprint_pose.push_back(tf2::Vector3(x, y, 0));
     }
@@ -151,7 +135,7 @@ bool SimpleObstacleAvoidance::isobstacleultra()
   std::vector<tf2::Vector3> footprint_pose;
   tf2::Vector3 c1(local_width_,local_height_,0);
   unsigned int s[15][2];
-  for (double x = isobstacleultra_min_distance; x < isobstacleultra_max_distance; x += 0.05) {
+  for (double x = 0.5; x < 0.61; x += 0.05) {
     for (double y = -0.1; y < 0.11; y += 0.05) {
       footprint_pose.push_back(tf2::Vector3(x, y, 0));
     }

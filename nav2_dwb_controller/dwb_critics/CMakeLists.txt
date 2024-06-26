@@ -14,6 +14,7 @@ find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav2_util REQUIRED)
+find_package(tf2_ros REQUIRED)
 
 nav2_package()
 
@@ -34,8 +35,6 @@ add_library(${PROJECT_NAME} SHARED
     src/prefer_forward.cpp
     src/rotate_to_goal.cpp
     src/twirling.cpp
-    src/obstacle_align.cpp
-    src/goal_threshold.cpp
     src/base_goal_compute_vel.cpp
 )
 
@@ -51,6 +50,7 @@ set(dependencies
   rclcpp
   sensor_msgs
   nav2_util
+  tf2_ros
 )
 
 ament_target_dependencies(${PROJECT_NAME}
