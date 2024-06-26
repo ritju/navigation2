@@ -117,7 +117,7 @@
             </Sequence>
             <Fallback>
               <IsLocalizationGood min_localization_score = "0.35"/>
-              <RelocalizationSpin localization_score = "0.75"/>
+              <RelocalizationSpin localization_score = "0.70"/>
             </Fallback>
             <Wait wait_duration="2"/>
             <!-- <BackUp backup_dist="0.10" backup_speed="0.05"/> -->
