@@ -78,7 +78,7 @@ bool SimpleObstacleAvoidance::isGoalOccupied(double goal_x, double goal_y){
       if(costmap_->getCost(k,j) >= 253){
         costmap_->mapToWorld(k,j,obstacle.x,obstacle.y);
         double distance = sqrt((obstacle.x - goal_x)*(obstacle.x - goal_x)+(obstacle.y - goal_y)*(obstacle.y - goal_y));
-        if(distance < 0.1){
+        if(distance < 0.3){
           return true;
         }
       }
