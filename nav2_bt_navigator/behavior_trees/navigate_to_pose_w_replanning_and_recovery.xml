@@ -91,7 +91,7 @@
             <GoalUpdatedController>
               <ClearEntireCostmap name="ClearGlobalCostmap-Subtree"  service_name="global_costmap/clear_entirely_global_costmap"/>
             </GoalUpdatedController>
-            <RateController hz="2.0">
+            <RateController hz="1.0">
               <IsLocalizationGood min_localization_score = "0.35"/>
             </RateController>
             <RateController hz="1.0">

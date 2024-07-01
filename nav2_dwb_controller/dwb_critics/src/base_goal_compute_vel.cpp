@@ -195,7 +195,7 @@ double BaseGoalComputeVelCritic::scoreTrajectory(const dwb_msgs::msg::Trajectory
       }
     }
     else{
-      if(traj.velocity.x <= 0.3){
+      if(traj.velocity.x <= 0.4){
         s = 0;
       }
       else{
