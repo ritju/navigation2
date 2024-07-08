@@ -446,7 +446,7 @@ void ControllerServer::computeControl()
           publishZeroVelocity();
           sleep(1);
           continue;  
-          RCLCPP_INFO(rclcpp::get_logger("test"),"ultra obstacle and obstacle in back");
+          // RCLCPP_INFO(rclcpp::get_logger("test"),"ultra obstacle and obstacle in back");
         }
         if(timeout > 25){
           timeout = 0;
@@ -462,7 +462,7 @@ void ControllerServer::computeControl()
           velocity.twist.linear.z = 0;
           velocity.header.frame_id = costmap_ros_->getBaseFrameID();
           velocity.header.stamp = now();
-          RCLCPP_INFO(rclcpp::get_logger("test"),"######### ultra back ###########");
+          // RCLCPP_INFO(rclcpp::get_logger("test"),"######### ultra back ###########");
           publishVelocity(velocity);
           continue; 
         }
