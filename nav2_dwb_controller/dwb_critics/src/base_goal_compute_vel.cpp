@@ -79,128 +79,40 @@ bool BaseGoalComputeVelCritic::prepare(
 }
 
 double BaseGoalComputeVelCritic::scoreTrajectory(const dwb_msgs::msg::Trajectory2D & traj){
-    double s = 0;
-    // RCLCPP_INFO(rclcpp::get_logger("check"), "traj_x: %f, dx: %f", traj.velocity.x, dx);
-    // if(follow_person_){  
-    //   if(dxy <= 0.7 && traj.velocity.x < 0.01){
-    //     // RCLCPP_INFO(rclcpp::get_logger("check"), "11111111111");
-    //     s = 0;
-    //   }
-    //   else if(dxy <= 0.7 && traj.velocity.x >= 0.01){
-    //     // RCLCPP_INFO(rclcpp::get_logger("check"), "222222222222");
-    //     s = 80;
-    //   }
-    //   else if(dxy <= 1.5 && traj.velocity.x >= 0.3 && traj.velocity.x < 0.32){
-    //     // RCLCPP_INFO(rclcpp::get_logger("check"), "33333333333");
-    //     s = 0;
-    //   }
-    //   else if(dxy <= 1.5 && (traj.velocity.x < 0.3 || traj.velocity.x >= 0.32)){
-    //     // RCLCPP_INFO(rclcpp::get_logger("check"), "444444444444");
-    //     s = 80;
-    //   }
-    //   else if(dxy <= 5.0 && dx <= 0.3 && traj.velocity.x >= 0.3 && traj.velocity.x < 0.32){
-    //     // RCLCPP_INFO(rclcpp::get_logger("check"), "55555555555555");
-    //     s = 0;
-    //   }
-    //   else if(dxy <= 5.0 && dx <= 0.3 && (traj.velocity.x < 0.3 || traj.velocity.x >= 0.32)){
-    //     // RCLCPP_INFO(rclcpp::get_logger("check"), "6666666666666");
-    //     s = 80;
-    //   }
-    //   else if(dx <= 0.6 && fabs(dx - traj.velocity.x) < 0.05){
-    //     // RCLCPP_INFO(rclcpp::get_logger("check"), "77777777777777");
-    //     s = 0;
-    //   }
-    //   else if(dx <= 0.6 && fabs(dx - traj.velocity.x) >= 0.05){
-    //     // RCLCPP_INFO(rclcpp::get_logger("check"), "88888888888888");
-    //     s = 80;
-    //   }
-    //   else{
-    //     s = 0;
-    //   }
-    //   if(difference < -0.7 && traj.velocity.theta < -0.98 && traj.velocity.theta >= -1.02){
-    //     s += 0;
-    //   }
-    //   else if(difference < -0.7 && (traj.velocity.theta < -1.02 || traj.velocity.theta >= -0.98)){
-    //     s += 80;
-    //   }
-    //   else if(difference > 0.7 && traj.velocity.theta >= 0.98 && traj.velocity.theta < 1.02){
-    //     s += 0;
-    //   }
-    //   else if(difference > 0.7 && (traj.velocity.theta < 0.98 || traj.velocity.theta >= 1.02)){
-    //     s += 80;
-    //   }
-    //   else if(fabs(difference) <= 0.7 && fabs(difference - traj.velocity.theta) < 0.05){
-    //     s += 0;
-    //   }
-    //   else if(fabs(difference) <= 0.7 && fabs(difference - traj.velocity.theta) >= 0.05){
-    //     s += 80;
-    //   }
-    //   else{
-    //     s += 0;
-    //   }
-    //   if(traj.velocity.x > 0.1 && traj.velocity.theta <= 0.5){
-    //     s += 0;
-    //   }
-    //   else if(traj.velocity.x > 0.1 && traj.velocity.theta > 0.5){
-    //     s += 80;
-    //   }
-    //   else{
-    //     s += 0;
-    //   }
-    // }
-    // else{
-    //   // RCLCPP_INFO(rclcpp::get_logger("check"), "99999999999999");
-    //   s = 0;
-    // }
-    // // RCLCPP_INFO(rclcpp::get_logger("check"), "traj_x: %f, s: %f", traj.velocity.x, s);
+    double s = 80;
+    // 跟随模式下，机器人速度根据行人速度与行人距离进行调节
     if(follow_person_){
+      // 原地旋转，机器人转角速度匹配行人移动角度
       if(dxy < 0.7){
-        if(traj.velocity.x < 0.01 && difference < -0.7 && traj.velocity.theta < -0.98 && traj.velocity.theta >= -1.02){
-          s = 0;
-        }
-        else if(traj.velocity.x < 0.01 && difference > 0.7 && traj.velocity.theta >= 0.98 && traj.velocity.theta < 1.02){
-          s = 0;
-        }
-        else if(traj.velocity.x < 0.01 && fabs(difference) <= 0.7 && fabs(difference - traj.velocity.theta) < 0.05){
-          s = 0;
-        }
-        else{
-          s = 80;
+        if ((traj.velocity.x < 0.01 &&   
+             ((difference < -0.7 && traj.velocity.theta < -0.98 && traj.velocity.theta >= -1.02) ||  
+              (difference > 0.7 && traj.velocity.theta >= 0.98 && traj.velocity.theta < 1.02) ||  
+              (fabs(difference) <= 0.7 && fabs(difference - traj.velocity.theta) < 0.05)))  
+        ){  
+          s = 0;  
         }
       }
+      // 1.5m内限制速度为0.3
       else if(dxy < 1.5){
         if(traj.velocity.x >= 0.3 && traj.velocity.x < 0.32){
           s = 0;
         }
-        else{
-          s = 80;
-        }
       }
+      // 机器人速度匹配行人速度，同时限制机器人最小速度为0.3（看需求，可以不限制）
       else{
-        if(dx <= 0.3 && traj.velocity.x >= 0.3 && traj.velocity.x < 0.32){
-          s = 0;
-        }
-        else if(dx <= 0.6 && fabs(dx - traj.velocity.x) < 0.05){
-          s = 0;
-        }
-        else{
-          s = 80;
+        if ((dx <= 0.3 && traj.velocity.x >= 0.3 && traj.velocity.x < 0.32) ||  
+            (dx <= 0.6 && fabs(dx - traj.velocity.x) < 0.05)){  
+            s = 0;  
         }
       }
+      // 限制线速度与角速度同时过高，否则容易漂移 
       if(traj.velocity.x > 0.1 && traj.velocity.theta > 0.4){
         s += 80;
       }
-      else{
-        s += 0;
-      }
     }
+    // 带人模式下，直接限制速度在0.4内 
     else{
-      if(traj.velocity.x <= 0.4){
-        s = 0;
-      }
-      else{
-        s = 80;
-      }
+      s = (traj.velocity.x <= 0.4) ? 0 : 80; 
     }
 
     return s;
