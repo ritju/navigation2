@@ -124,6 +124,7 @@ double MapGridCritic::scoreTrajectory(const dwb_msgs::msg::Trajectory2D & traj)
     start_index = traj.poses.size() - 1;
   }
   double grid_dist;
+  double score_mid = 0;
 
   for (unsigned int i = start_index; i < traj.poses.size(); ++i) {
     grid_dist = scorePose(traj.poses[i]);
@@ -136,6 +137,9 @@ double MapGridCritic::scoreTrajectory(const dwb_msgs::msg::Trajectory2D & traj)
               IllegalTrajectoryException(name_, "Trajectory Hits Unreachable Area.");
       }
     }
+    if(i == static_cast<unsigned int>(traj.poses.size()/2)){
+      score_mid = grid_dist;
+    }
 
     switch (aggregationType_) {
       case ScoreAggregationType::Last:
@@ -145,9 +149,10 @@ double MapGridCritic::scoreTrajectory(const dwb_msgs::msg::Trajectory2D & traj)
         score += grid_dist;
         break;
       case ScoreAggregationType::Product:
-        if (score > 0) {
-          score *= grid_dist;
-        }
+        // if (score > 0) {
+        //   score *= grid_dist;
+        // }
+        score = grid_dist + score_mid;
         break;
     }
   }

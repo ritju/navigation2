@@ -70,11 +70,20 @@ bool GoalDistCritic::getLastPoseOnCostmap(
     global_plan,
     costmap_->getResolution());
   bool started_path = false;
+  double local_goal_dist = 0;
 
   // skip global path points until we reach the border of the local map
+  geometry_msgs::msg::Pose2D last = adjusted_global_plan.poses[0];
   for (unsigned int i = 0; i < adjusted_global_plan.poses.size(); ++i) {
     double g_x = adjusted_global_plan.poses[i].x;
     double g_y = adjusted_global_plan.poses[i].y;
+    double sq_dist = sqrt((g_x- last.x) * (g_x - last.x) + (g_y - last.y) * (g_y - last.y));
+    local_goal_dist += sq_dist;
+    if(local_goal_dist >= 1.5){
+      return true;
+    }
+    last.x = g_x;
+    last.y = g_y;
     unsigned int map_x, map_y;
     if (costmap_->worldToMap(
         g_x, g_y, map_x,
