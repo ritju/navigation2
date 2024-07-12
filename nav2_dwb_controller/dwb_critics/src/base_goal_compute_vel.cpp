@@ -85,8 +85,8 @@ double BaseGoalComputeVelCritic::scoreTrajectory(const dwb_msgs::msg::Trajectory
       // 原地旋转，机器人转角速度匹配行人移动角度
       if(dxy < 0.7){
         if ((traj.velocity.x < 0.01 &&   
-             ((difference < -0.7 && traj.velocity.theta < -0.98 && traj.velocity.theta >= -1.02) ||  
-              (difference > 0.7 && traj.velocity.theta >= 0.98 && traj.velocity.theta < 1.02) ||  
+             ((difference < -0.7 && traj.velocity.theta < -0.68 && traj.velocity.theta >= -0.72) ||  
+              (difference > 0.7 && traj.velocity.theta >= 0.68 && traj.velocity.theta < 0.72) ||  
               (fabs(difference) <= 0.7 && fabs(difference - traj.velocity.theta) < 0.05)))  
         ){  
           s = 0;  
