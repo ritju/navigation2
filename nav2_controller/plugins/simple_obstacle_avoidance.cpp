@@ -135,7 +135,7 @@ bool SimpleObstacleAvoidance::isobstacleultra()
   std::vector<tf2::Vector3> footprint_pose;
   tf2::Vector3 c1(local_width_,local_height_,0);
   unsigned int s[15][2];
-  for (double x = 0.5; x < 0.61; x += 0.05) {
+  for (double x = 0.3; x < 0.41; x += 0.05) {
     for (double y = -0.1; y < 0.11; y += 0.05) {
       footprint_pose.push_back(tf2::Vector3(x, y, 0));
     }

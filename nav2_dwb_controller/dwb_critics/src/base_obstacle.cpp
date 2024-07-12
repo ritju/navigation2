@@ -64,11 +64,11 @@ void BaseObstacleCritic::onInit()
 double BaseObstacleCritic::scoreTrajectory(const dwb_msgs::msg::Trajectory2D & traj)
 {
   double score = 0.0;
+  double score_m = 0;
   for (unsigned int i = 0; i < traj.poses.size(); ++i) {
     double pose_score = scorePose(traj.poses[i]);
     // Optimized/branchless version of if (sum_scores_) score += pose_score,
     // else score = pose_score;
-    double score_m = 0;
     if(i == static_cast<unsigned int>(traj.poses.size()/2)){
       score_m = pose_score;
     }
