@@ -36,6 +36,7 @@
 #include <string>
 #include <vector>
 #include "nav_2d_utils/parameters.hpp"
+#include "nav_2d_utils/path_ops.hpp"
 #include "dwb_core/exceptions.hpp"
 #include "pluginlib/class_list_macros.hpp"
 #include "dwb_core/trajectory_utils.hpp"
@@ -84,8 +85,23 @@ void RotateToGoalCritic::reset()
 bool RotateToGoalCritic::prepare(
   const geometry_msgs::msg::Pose2D & pose, const nav_2d_msgs::msg::Twist2D & vel,
   const geometry_msgs::msg::Pose2D & goal,
-  const nav_2d_msgs::msg::Path2D &)
+  const nav_2d_msgs::msg::Path2D & global_plan)
 {
+  nav_2d_msgs::msg::Path2D adjusted_global_plan = nav_2d_utils::adjustPlanResolution(
+    global_plan,
+    0.05);
+  double local_goal_dist = 0;
+  geometry_msgs::msg::Pose2D last = adjusted_global_plan.poses[0];
+  for (unsigned int i = 0; i < adjusted_global_plan.poses.size(); ++i) {
+    double x = adjusted_global_plan.poses[i].x;
+    double y = adjusted_global_plan.poses[i].y;
+    double sq_dist = sqrt((x- last.x) * (x - last.x) + (y - last.y) * (y - last.y));
+    local_goal_dist += sq_dist;
+  }
+  if(local_goal_dist >= 0.5){
+    in_window_ = false;
+    return true;
+  }
   double dxy_sq = hypot_sq(pose.x - goal.x, pose.y - goal.y);
   in_window_ = in_window_ || dxy_sq <= xy_goal_tolerance_sq_;
   current_xy_speed_sq_ = hypot_sq(vel.x, vel.y);

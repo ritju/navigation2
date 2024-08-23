@@ -350,6 +350,7 @@ PlannerServer::computePlanThroughPoses()
   auto goal = action_server_poses_->get_current_goal();
   auto result = std::make_shared<ActionThroughPoses::Result>();
   nav_msgs::msg::Path concat_path;
+   
 
   try {
     if (isServerInactive(action_server_poses_) || isCancelRequested(action_server_poses_)) {
@@ -360,7 +361,16 @@ PlannerServer::computePlanThroughPoses()
 
     getPreemptedGoalIfRequested(action_server_poses_, goal);
 
-    if (goal->goals.size() == 0) {
+    std::vector<geometry_msgs::msg::PoseStamped> filtered_goals;  
+    for (const auto& currentGoal : goal->goals) {  
+      unsigned int mx, my;  
+      costmap_->worldToMap(currentGoal.pose.position.x, currentGoal.pose.position.y, mx, my); 
+      if (costmap_->getCost(mx, my) < 253) {   
+        filtered_goals.push_back(currentGoal);   
+      }  
+    } 
+
+    if (filtered_goals.empty()) {
       RCLCPP_WARN(
         get_logger(),
         "Compute path through poses requested a plan with no viapoint poses, returning.");
@@ -376,14 +386,14 @@ PlannerServer::computePlanThroughPoses()
     // Get consecutive paths through these points
     std::vector<geometry_msgs::msg::PoseStamped>::iterator goal_iter;
     geometry_msgs::msg::PoseStamped curr_start, curr_goal;
-    for (unsigned int i = 0; i != goal->goals.size(); i++) {
+    for (size_t i = 0; i < filtered_goals.size(); ++i) {
       // Get starting point
       if (i == 0) {
         curr_start = start;
       } else {
-        curr_start = goal->goals[i - 1];
+        curr_start = filtered_goals[i - 1];
       }
-      curr_goal = goal->goals[i];
+      curr_goal = filtered_goals[i];
 
       // Transform them into the global frame
       if (!transformPosesToGlobalFrame(action_server_poses_, curr_start, curr_goal)) {
