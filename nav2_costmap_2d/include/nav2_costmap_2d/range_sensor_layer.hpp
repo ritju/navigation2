@@ -180,7 +180,7 @@ private:
    */
   inline void update_cell(
     double ox, double oy, double ot,
-    double r, double nx, double ny, bool clear);
+    double r, double nx, double ny, bool clear, std::string ultrasonic_name);
 
   /**
    * @brief Find probability value of a cost

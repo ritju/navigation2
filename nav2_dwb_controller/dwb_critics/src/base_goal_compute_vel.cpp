@@ -18,6 +18,31 @@ namespace dwb_critics
   if (!node) {
     throw std::runtime_error{"Failed to lock node"};
   }
+  nav2_util::declare_parameter_if_not_declared(
+    node, dwb_plugin_name_ + "." + name_ + ".max_distance",
+    rclcpp::ParameterValue(1.0));
+  node->get_parameter(dwb_plugin_name_ + "." + name_ + ".max_distance", max_distance_);
+  nav2_util::declare_parameter_if_not_declared(
+    node, dwb_plugin_name_ + "." + name_ + ".min_x",
+    rclcpp::ParameterValue(0.4));
+  node->get_parameter(dwb_plugin_name_ + "." + name_ + ".min_x", min_x_);
+  nav2_util::declare_parameter_if_not_declared(
+    node, dwb_plugin_name_ + "." + name_ + ".nav_x",
+    rclcpp::ParameterValue(0.4));
+  node->get_parameter(dwb_plugin_name_ + "." + name_ + ".nav_x", nav_x_);
+  nav2_util::declare_parameter_if_not_declared(
+    node, dwb_plugin_name_ + "." + name_ + ".max_xt",
+    rclcpp::ParameterValue(0.6));
+  node->get_parameter(dwb_plugin_name_ + "." + name_ + ".max_xt", max_xt_);
+  nav2_util::declare_parameter_if_not_declared(
+    node, dwb_plugin_name_ + "." + name_ + ".min_distance",
+    rclcpp::ParameterValue(0.4));
+  node->get_parameter(dwb_plugin_name_ + "." + name_ + ".min_distance", min_distance_);
+  nav2_util::declare_parameter_if_not_declared(
+    node, dwb_plugin_name_ + "." + name_ + ".max_x",
+    rclcpp::ParameterValue(0.8));
+  node->get_parameter(dwb_plugin_name_ + "." + name_ + ".max_x", max_x_);
+
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(node->get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
   command_publisher_ = node->create_publisher<geometry_msgs::msg::Pose>("distance", 10);
@@ -82,37 +107,39 @@ double BaseGoalComputeVelCritic::scoreTrajectory(const dwb_msgs::msg::Trajectory
     double s = 80;
     // 跟随模式下，机器人速度根据行人速度与行人距离进行调节
     if(follow_person_){
-      // 原地旋转，机器人转角速度匹配行人移动角度
-      if(dxy < 0.7){
-        if ((traj.velocity.x < 0.01 &&   
-             ((difference < -0.7 && traj.velocity.theta < -0.68 && traj.velocity.theta >= -0.72) ||  
-              (difference > 0.7 && traj.velocity.theta >= 0.68 && traj.velocity.theta < 0.72) ||  
-              (fabs(difference) <= 0.7 && fabs(difference - traj.velocity.theta) < 0.05)))  
-        ){  
-          s = 0;  
+      if(dxy < min_distance_ - 0.2){
+        if(traj.velocity.x < 0.01){
+          s = 0;
         }
       }
-      // 1.5m内限制速度为0.3
-      else if(dxy < 1.5){
-        if(traj.velocity.x >= 0.3 && traj.velocity.x < 0.32){
+      else if(dxy < min_distance_){
+        if(fabs(traj.velocity.x - min_x_ - 0.1) < 0.03){
           s = 0;
         }
       }
       // 机器人速度匹配行人速度，同时限制机器人最小速度为0.3（看需求，可以不限制）
-      else{
-        if ((dx <= 0.3 && traj.velocity.x >= 0.3 && traj.velocity.x < 0.32) ||  
-            (dx <= 0.6 && fabs(dx - traj.velocity.x) < 0.05)){  
+      else if(dxy < max_distance_){
+        if ((dx <= min_x_ && dxy > (max_distance_ + min_distance_)/2 && fabs(traj.velocity.x - min_x_ + 0.2) < 0.03) ||
+            (dx <= min_x_ && dxy <= (max_distance_ + min_distance_)/2 && fabs(traj.velocity.x - min_x_) < 0.03) ||  
+            (dx > min_x_ && dxy > max_distance_ - 0.2 && fabs(traj.velocity.x - dx - 0.1) < 0.03) ||
+            (dx > min_x_ && dxy < min_distance_ + 0.2 && fabs(traj.velocity.x - dx + 0.1) < 0.03) ||
+            (dx > min_x_ && dxy >= min_distance_ + 0.2 && dxy <= max_distance_ - 0.2 && fabs(traj.velocity.x - dx) < 0.03)){  
             s = 0;  
         }
       }
+      else{
+        if(traj.velocity.x > 0.1){
+          s = 0;
+        }
+      }
       // 限制线速度与角速度同时过高，否则容易漂移 
-      if(traj.velocity.x > 0.1 && traj.velocity.theta > 0.4){
+      if(traj.velocity.x > max_xt_ && fabs(traj.velocity.theta) > max_xt_){
         s += 80;
       }
     }
-    // 带人模式下，直接限制速度在0.4内 
+    // 带人模式下
     else{
-      s = (traj.velocity.x <= 0.4) ? 0 : 80; 
+      s = (traj.velocity.x <= nav_x_) ? 0 : 80; 
     }
 
     return s;

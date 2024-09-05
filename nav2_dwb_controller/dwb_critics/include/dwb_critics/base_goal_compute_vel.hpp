@@ -23,6 +23,7 @@ public:
     double scoreTrajectory(const dwb_msgs::msg::Trajectory2D & traj) override;
 
 private:
+    double max_distance_,min_x_,nav_x_,max_xt_,min_distance_,max_x_;
     double difference;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_{nullptr};
     std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -59,6 +60,7 @@ private:
         tf2::fromMsg(msg->orientation, q);
         tf2::Matrix3x3(q).getRPY(r, p, y);
         pose_z = y;
+        // RCLCPP_INFO(rclcpp::get_logger("distance"), "distance in goal theta: %f", pose_z);
     } 
     std::deque<double> queue_dxy;
 
