@@ -244,6 +244,9 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   // person_subscribe_ = create_subscription<nav2_msgs::msg::DetectResult>("person_detected", 10, std::bind(&ControllerServer::personsubscribecallback, this, std::placeholders::_1));
   // dropsignal_subscribe_ = create_subscription<std_msgs::msg::Bool>("drop_signal", 10, std::bind(&ControllerServer::dropsignalsubscribecallback, this, std::placeholders::_1));
   following_person_subscribe_ = create_subscription<std_msgs::msg::Bool>("following_person", rclcpp::SensorDataQoS(rclcpp::KeepLast(1)).transient_local().reliable(), std::bind(&ControllerServer::followingpersonsubscribecallback, this, std::placeholders::_1)); 
+  isgoalsreach_sub_ = create_subscription<std_msgs::msg::Bool>(
+    "goals_is_reach", rclcpp::QoS(10),
+    std::bind(&ControllerServer::isgoalsreachCallback, this, std::placeholders::_1));
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
@@ -316,6 +319,7 @@ ControllerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   vel_publisher_.reset();
   speed_limit_sub_.reset();
   following_person_subscribe_.reset();
+  isgoalsreach_sub_.reset();
   // person_subscribe_.reset();
   // localization_subscribe_.reset();
   // dropsignal_subscribe_.reset();
@@ -488,7 +492,7 @@ void ControllerServer::computeControl()
       computeAndPublishVelocity();
       // RCLCPP_INFO(rclcpp::get_logger("test"),"*************pub cmd**********");
 
-      if (isGoalReached()) {
+      if (isGoalReached() && isgoalsreach) {
         RCLCPP_INFO(get_logger(), "Reached the goal!");
         break;
       }

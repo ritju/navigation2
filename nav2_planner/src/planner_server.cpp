@@ -44,7 +44,8 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
   gp_loader_("nav2_core", "nav2_core::GlobalPlanner"),
   default_ids_{"GridBased"},
   default_types_{"nav2_navfn_planner/NavfnPlanner"},
-  costmap_(nullptr)
+  costmap_(nullptr),
+  costmap_local(nullptr)
 {
   RCLCPP_INFO(get_logger(), "Creating");
 
@@ -62,15 +63,15 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
   // Setup the global costmap
   costmap_ros_ = std::make_shared<nav2_costmap_2d::Costmap2DROS>(
     "global_costmap", std::string{get_namespace()}, "global_costmap");
-
-  // Launch a thread to run the costmap node
-  costmap_thread_ = std::make_unique<nav2_util::NodeThread>(costmap_ros_);
+  costmap_ros_local = std::make_shared<nav2_costmap_2d::Costmap2DROS>(
+    "local_costmap", std::string{get_namespace()}, "local_costmap");
 }
 
 PlannerServer::~PlannerServer()
 {
   planners_.clear();
   costmap_thread_.reset();
+  costmap_thread_local.reset();
 }
 
 nav2_util::CallbackReturn
@@ -80,12 +81,19 @@ PlannerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
 
   costmap_ros_->configure();
   costmap_ = costmap_ros_->getCostmap();
+  costmap_ros_local->configure();
+  costmap_local = costmap_ros_local->getCostmap();
+
+  // Launch a thread to run the costmap node
+  costmap_thread_ = std::make_unique<nav2_util::NodeThread>(costmap_ros_);
+  costmap_thread_local = std::make_unique<nav2_util::NodeThread>(costmap_ros_local);
 
   RCLCPP_DEBUG(
     get_logger(), "Costmap size: %d,%d",
     costmap_->getSizeInCellsX(), costmap_->getSizeInCellsY());
 
   tf_ = costmap_ros_->getTfBuffer();
+  tf_local = costmap_ros_local->getTfBuffer();
 
   planner_types_.resize(planner_ids_.size());
 
@@ -102,6 +110,9 @@ PlannerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
         planner_ids_[i].c_str(), planner_types_[i].c_str());
       planner->configure(node, planner_ids_[i], tf_, costmap_ros_);
       planners_.insert({planner_ids_[i], planner});
+      nav2_core::GlobalPlanner::Ptr planner_local =
+        gp_loader_.createUniqueInstance(planner_types_[i]);
+      planner_local->configure(node, planner_ids_[i], tf_local, costmap_ros_local);
     } catch (const pluginlib::PluginlibException & ex) {
       RCLCPP_FATAL(
         get_logger(), "Failed to create global planner. Exception: %s",
@@ -109,6 +120,7 @@ PlannerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
       return nav2_util::CallbackReturn::FAILURE;
     }
   }
+  
 
   for (size_t i = 0; i != planner_ids_.size(); i++) {
     planner_ids_concat_ += planner_ids_[i] + std::string(" ");
@@ -132,6 +144,8 @@ PlannerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
 
   // Initialize pubs & subs
   plan_publisher_ = create_publisher<nav_msgs::msg::Path>("plan", 1);
+  backgoals_publisher_ = create_publisher<nav_msgs::msg::Path>("back_goals", 1);
+  isgoalsreach_publisher_ = create_publisher<std_msgs::msg::Bool>("goals_is_reach", 1);
 
   // Create the action servers for path planning to a pose and through poses
   action_server_pose_ = std::make_unique<ActionServerToPose>(
@@ -159,9 +173,12 @@ PlannerServer::on_activate(const rclcpp_lifecycle::State & /*state*/)
   RCLCPP_INFO(get_logger(), "Activating");
 
   plan_publisher_->on_activate();
+  backgoals_publisher_->on_activate();
+  isgoalsreach_publisher_->on_activate();
   action_server_pose_->activate();
   action_server_poses_->activate();
   costmap_ros_->activate();
+  costmap_ros_local->activate();
 
   PlannerMap::iterator it;
   for (it = planners_.begin(); it != planners_.end(); ++it) {
@@ -194,7 +211,10 @@ PlannerServer::on_deactivate(const rclcpp_lifecycle::State & /*state*/)
   action_server_pose_->deactivate();
   action_server_poses_->deactivate();
   plan_publisher_->on_deactivate();
+  backgoals_publisher_->on_deactivate();
+  isgoalsreach_publisher_->on_deactivate();
   costmap_ros_->deactivate();
+  costmap_ros_local->deactivate();
 
   PlannerMap::iterator it;
   for (it = planners_.begin(); it != planners_.end(); ++it) {
@@ -217,8 +237,11 @@ PlannerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   action_server_pose_.reset();
   action_server_poses_.reset();
   plan_publisher_.reset();
+  backgoals_publisher_.reset();
+  isgoalsreach_publisher_.reset();
   tf_.reset();
   costmap_ros_->cleanup();
+  costmap_ros_local->cleanup();
 
   PlannerMap::iterator it;
   for (it = planners_.begin(); it != planners_.end(); ++it) {
@@ -226,6 +249,7 @@ PlannerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   }
   planners_.clear();
   costmap_ = nullptr;
+  costmap_local = nullptr;
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
@@ -253,6 +277,9 @@ void PlannerServer::waitForCostmap()
   // Don't compute a plan until costmap is valid (after clear costmap)
   rclcpp::Rate r(100);
   while (!costmap_ros_->isCurrent()) {
+    r.sleep();
+  }
+  while (!costmap_ros_local->isCurrent()) {
     r.sleep();
   }
 }
@@ -361,14 +388,32 @@ PlannerServer::computePlanThroughPoses()
 
     getPreemptedGoalIfRequested(action_server_poses_, goal);
 
-    std::vector<geometry_msgs::msg::PoseStamped> filtered_goals;  
+    std::vector<geometry_msgs::msg::PoseStamped> filtered_goals_;  
+    // 遍历 goal->goals  
     for (const auto& currentGoal : goal->goals) {  
-      unsigned int mx, my;  
-      costmap_->worldToMap(currentGoal.pose.position.x, currentGoal.pose.position.y, mx, my); 
-      if (costmap_->getCost(mx, my) < 253) {   
-        filtered_goals.push_back(currentGoal);   
-      }  
+        unsigned int mx, my;  
+        costmap_->worldToMap(currentGoal.pose.position.x, currentGoal.pose.position.y, mx, my);  
+        if (costmap_->getCost(mx, my) < 253) {  
+            filtered_goals_.push_back(currentGoal);   
+        }  
     } 
+    std::vector<geometry_msgs::msg::PoseStamped> filtered_goals;  
+    nav_msgs::msg::Path back_goals;
+    back_goals.header.stamp = rclcpp::Time();
+    back_goals.header.frame_id = "map";
+    // geometry_msgs::msg::PoseStamped pose;
+    for (size_t i = 0; i < filtered_goals_.size(); ++i){
+      unsigned int mx, my; 
+      if(costmap_local->worldToMap(filtered_goals_[i].pose.position.x, filtered_goals_[i].pose.position.y, mx, my) && costmap_local->getCost(mx, my) >= 253){
+        back_goals.poses.push_back(filtered_goals_[i]);
+      } 
+      else{
+        filtered_goals.push_back(filtered_goals_[i]); 
+      }
+    }
+    if (backgoals_publisher_->is_activated() && back_goals.poses.size() > 0) {
+      backgoals_publisher_->publish(std::move(back_goals));
+    }
 
     if (filtered_goals.empty()) {
       RCLCPP_WARN(
@@ -386,7 +431,15 @@ PlannerServer::computePlanThroughPoses()
     // Get consecutive paths through these points
     std::vector<geometry_msgs::msg::PoseStamped>::iterator goal_iter;
     geometry_msgs::msg::PoseStamped curr_start, curr_goal;
+    double goal_dis = 0;
+    geometry_msgs::msg::PoseStamped last = filtered_goals[0];
     for (size_t i = 0; i < filtered_goals.size(); ++i) {
+      double g_x = filtered_goals[i].pose.position.x;
+      double g_y = filtered_goals[i].pose.position.y;
+      double sq_dist = sqrt((g_x- last.pose.position.x) * (g_x - last.pose.position.x) + (g_y - last.pose.position.y) * (g_y - last.pose.position.y));
+      goal_dis += sq_dist;
+      last.pose.position.x = g_x;
+      last.pose.position.y = g_y;
       // Get starting point
       if (i == 0) {
         curr_start = start;
@@ -413,6 +466,12 @@ PlannerServer::computePlanThroughPoses()
         concat_path.poses.end(), curr_path.poses.begin(), curr_path.poses.end());
       concat_path.header = curr_path.header;
     }
+    std_msgs::msg::Bool checkmsg;
+    checkmsg.data = false;
+    if(goal_dis < 1.0){
+      checkmsg.data = true;
+    }
+    isgoalsreach_publisher_->publish(checkmsg);
 
     // Publish the plan for visualization purposes
     result->path = concat_path;

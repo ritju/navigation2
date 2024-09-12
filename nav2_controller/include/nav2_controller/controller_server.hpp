@@ -234,6 +234,7 @@ protected:
   std::unique_ptr<nav2_controller::DropSubscriber> drop_sub_;
   rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::Twist>::SharedPtr vel_publisher_;
   rclcpp::Subscription<nav2_msgs::msg::SpeedLimit>::SharedPtr speed_limit_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr isgoalsreach_sub_;
 
   // Progress Checker Plugin
   pluginlib::ClassLoader<nav2_core::ProgressChecker> progress_checker_loader_;
@@ -310,24 +311,10 @@ private:
   double timeout = 0;
   rclcpp::Time starttime;
   bool timeout_update;
-  // rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr localization_subscribe_;
-  // void localizationsubscribecallback(const std_msgs::msg::Float32::SharedPtr msg)
-  // {
-  //   if(msg->data < 0.35){
-  //     lcz = 0;
-  //     above_threshold = true;
-  //   }
-  //   else if(msg->data >= 0.35 && msg->data < 0.75 && above_threshold){
-  //     lcz = 0;
-  //   }
-  //   else if(msg->data >= 0.75 && above_threshold){
-  //     lcz = 2;
-  //     above_threshold = false;
-  //   }
-  //   else{
-  //     lcz = 1;
-  //   }
-  // }
+  bool isgoalsreach = true;
+  void isgoalsreachCallback(const std_msgs::msg::Bool::SharedPtr msg){
+    isgoalsreach = msg->data;
+  }
 };
 
 }  // namespace nav2_controller

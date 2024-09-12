@@ -39,6 +39,7 @@
 #include "pluginlib/class_list_macros.hpp"
 #include "nav2_core/global_planner.hpp"
 #include "nav2_msgs/srv/is_path_valid.hpp"
+#include "std_msgs/msg/bool.hpp"
 
 namespace nav2_planner
 {
@@ -242,14 +243,21 @@ protected:
 
   // TF buffer
   std::shared_ptr<tf2_ros::Buffer> tf_;
+  std::shared_ptr<tf2_ros::Buffer> tf_local;
 
   // Global Costmap
   std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros_;
   std::unique_ptr<nav2_util::NodeThread> costmap_thread_;
   nav2_costmap_2d::Costmap2D * costmap_;
+  std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros_local;
+  std::unique_ptr<nav2_util::NodeThread> costmap_thread_local;
+  nav2_costmap_2d::Costmap2D * costmap_local;
 
   // Publishers for the path
   rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr plan_publisher_;
+  rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr backgoals_publisher_;
+  rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Bool>::SharedPtr isgoalsreach_publisher_;
+  
 
   // Service to deterime if the path is valid
   rclcpp::Service<nav2_msgs::srv::IsPathValid>::SharedPtr is_path_valid_service_;
