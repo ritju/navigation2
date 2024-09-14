@@ -44,8 +44,7 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
   gp_loader_("nav2_core", "nav2_core::GlobalPlanner"),
   default_ids_{"GridBased"},
   default_types_{"nav2_navfn_planner/NavfnPlanner"},
-  costmap_(nullptr),
-  costmap_local(nullptr)
+  costmap_(nullptr)
 {
   RCLCPP_INFO(get_logger(), "Creating");
 
@@ -63,15 +62,12 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
   // Setup the global costmap
   costmap_ros_ = std::make_shared<nav2_costmap_2d::Costmap2DROS>(
     "global_costmap", std::string{get_namespace()}, "global_costmap");
-  costmap_ros_local = std::make_shared<nav2_costmap_2d::Costmap2DROS>(
-    "local_costmap", std::string{get_namespace()}, "local_costmap");
 }
 
 PlannerServer::~PlannerServer()
 {
   planners_.clear();
   costmap_thread_.reset();
-  costmap_thread_local.reset();
 }
 
 nav2_util::CallbackReturn
@@ -81,19 +77,15 @@ PlannerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
 
   costmap_ros_->configure();
   costmap_ = costmap_ros_->getCostmap();
-  costmap_ros_local->configure();
-  costmap_local = costmap_ros_local->getCostmap();
 
   // Launch a thread to run the costmap node
   costmap_thread_ = std::make_unique<nav2_util::NodeThread>(costmap_ros_);
-  costmap_thread_local = std::make_unique<nav2_util::NodeThread>(costmap_ros_local);
 
   RCLCPP_DEBUG(
     get_logger(), "Costmap size: %d,%d",
     costmap_->getSizeInCellsX(), costmap_->getSizeInCellsY());
 
   tf_ = costmap_ros_->getTfBuffer();
-  tf_local = costmap_ros_local->getTfBuffer();
 
   planner_types_.resize(planner_ids_.size());
 
@@ -110,9 +102,6 @@ PlannerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
         planner_ids_[i].c_str(), planner_types_[i].c_str());
       planner->configure(node, planner_ids_[i], tf_, costmap_ros_);
       planners_.insert({planner_ids_[i], planner});
-      nav2_core::GlobalPlanner::Ptr planner_local =
-        gp_loader_.createUniqueInstance(planner_types_[i]);
-      planner_local->configure(node, planner_ids_[i], tf_local, costmap_ros_local);
     } catch (const pluginlib::PluginlibException & ex) {
       RCLCPP_FATAL(
         get_logger(), "Failed to create global planner. Exception: %s",
@@ -178,7 +167,6 @@ PlannerServer::on_activate(const rclcpp_lifecycle::State & /*state*/)
   action_server_pose_->activate();
   action_server_poses_->activate();
   costmap_ros_->activate();
-  costmap_ros_local->activate();
 
   PlannerMap::iterator it;
   for (it = planners_.begin(); it != planners_.end(); ++it) {
@@ -214,7 +202,6 @@ PlannerServer::on_deactivate(const rclcpp_lifecycle::State & /*state*/)
   backgoals_publisher_->on_deactivate();
   isgoalsreach_publisher_->on_deactivate();
   costmap_ros_->deactivate();
-  costmap_ros_local->deactivate();
 
   PlannerMap::iterator it;
   for (it = planners_.begin(); it != planners_.end(); ++it) {
@@ -241,7 +228,6 @@ PlannerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   isgoalsreach_publisher_.reset();
   tf_.reset();
   costmap_ros_->cleanup();
-  costmap_ros_local->cleanup();
 
   PlannerMap::iterator it;
   for (it = planners_.begin(); it != planners_.end(); ++it) {
@@ -249,7 +235,6 @@ PlannerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   }
   planners_.clear();
   costmap_ = nullptr;
-  costmap_local = nullptr;
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
@@ -277,9 +262,6 @@ void PlannerServer::waitForCostmap()
   // Don't compute a plan until costmap is valid (after clear costmap)
   rclcpp::Rate r(100);
   while (!costmap_ros_->isCurrent()) {
-    r.sleep();
-  }
-  while (!costmap_ros_local->isCurrent()) {
     r.sleep();
   }
 }
@@ -388,33 +370,46 @@ PlannerServer::computePlanThroughPoses()
 
     getPreemptedGoalIfRequested(action_server_poses_, goal);
 
-    std::vector<geometry_msgs::msg::PoseStamped> filtered_goals_;  
-    // 遍历 goal->goals  
-    for (const auto& currentGoal : goal->goals) {  
-        unsigned int mx, my;  
-        costmap_->worldToMap(currentGoal.pose.position.x, currentGoal.pose.position.y, mx, my);  
-        if (costmap_->getCost(mx, my) < 253) {  
-            filtered_goals_.push_back(currentGoal);   
-        }  
-    } 
-    std::vector<geometry_msgs::msg::PoseStamped> filtered_goals;  
     nav_msgs::msg::Path back_goals;
     back_goals.header.stamp = rclcpp::Time();
     back_goals.header.frame_id = "map";
-    // geometry_msgs::msg::PoseStamped pose;
-    for (size_t i = 0; i < filtered_goals_.size(); ++i){
-      unsigned int mx, my; 
-      if(costmap_local->worldToMap(filtered_goals_[i].pose.position.x, filtered_goals_[i].pose.position.y, mx, my) && costmap_local->getCost(mx, my) >= 253){
-        back_goals.poses.push_back(filtered_goals_[i]);
-      } 
-      else{
-        filtered_goals.push_back(filtered_goals_[i]); 
+    geometry_msgs::msg::PoseStamped last = goal->goals[0];
+    double local_goal_dist = 0;
+    for (size_t i = 1; i < goal->goals.size(); ++i){
+      double g_x = goal->goals[i].pose.position.x;
+      double g_y = goal->goals[i].pose.position.y;
+      double sq_dist = sqrt((g_x- last.pose.position.x) * (g_x - last.pose.position.x) + (g_y - last.pose.position.y) * (g_y - last.pose.position.y));
+      local_goal_dist += sq_dist;
+      if(local_goal_dist >= 2.0){
+        break;
       }
+      last.pose.position.x = g_x;
+      last.pose.position.y = g_y;
+      unsigned int mx, my; 
+      costmap_->worldToMap(goal->goals[i].pose.position.x, goal->goals[i].pose.position.y, mx, my);  
+      if (costmap_->getCost(mx, my) >= 253) {  
+        back_goals.poses.push_back(goal->goals[i]);  
+      } 
     }
-    if (backgoals_publisher_->is_activated() && back_goals.poses.size() > 0) {
-      backgoals_publisher_->publish(std::move(back_goals));
-    }
+    // for (size_t i = 0; i < back_goals.poses.size(); ++i){
+    //   RCLCPP_INFO(rclcpp::get_logger("planner"), "*pub back goal:%f,%f***********",back_goals.poses[i].pose.position.x,back_goals.poses[i].pose.position.y);
+    // }
+    backgoals_publisher_->publish(back_goals);
 
+    std::vector<geometry_msgs::msg::PoseStamped> filtered_goals;  
+    // 遍历 goal->goals  
+    for (const auto& currentGoal : goal->goals) {  
+        unsigned int mx, my;  
+        // 将当前 PoseStamped 的位置转换为 map 坐标  
+        costmap_->worldToMap(currentGoal.pose.position.x, currentGoal.pose.position.y, mx, my);  
+        // 检查成本是否小于 253  
+        if (costmap_->getCost(mx, my) < 253) {  
+            // 由于 currentGoal 是 const 引用，我们需要创建一个副本  
+            // 如果 PoseStamped 是可复制的（通常应该是），则可以直接添加到 vector 中  
+            filtered_goals.push_back(currentGoal);  
+            // 注意：如果 PoseStamped 很大或者包含指针等复杂结构，则可能需要考虑深拷贝或特殊处理  
+        }  
+    } 
     if (filtered_goals.empty()) {
       RCLCPP_WARN(
         get_logger(),
@@ -431,15 +426,10 @@ PlannerServer::computePlanThroughPoses()
     // Get consecutive paths through these points
     std::vector<geometry_msgs::msg::PoseStamped>::iterator goal_iter;
     geometry_msgs::msg::PoseStamped curr_start, curr_goal;
-    double goal_dis = 0;
-    geometry_msgs::msg::PoseStamped last = filtered_goals[0];
+    // int j = 1;
+    // RCLCPP_INFO(rclcpp::get_logger("planner"), "******goal size: %lu***********",filtered_goals.size());
     for (size_t i = 0; i < filtered_goals.size(); ++i) {
-      double g_x = filtered_goals[i].pose.position.x;
-      double g_y = filtered_goals[i].pose.position.y;
-      double sq_dist = sqrt((g_x- last.pose.position.x) * (g_x - last.pose.position.x) + (g_y - last.pose.position.y) * (g_y - last.pose.position.y));
-      goal_dis += sq_dist;
-      last.pose.position.x = g_x;
-      last.pose.position.y = g_y;
+      // RCLCPP_INFO(rclcpp::get_logger("planner"), "******goal dis: %f***********",goal_dis);
       // Get starting point
       if (i == 0) {
         curr_start = start;
@@ -447,6 +437,7 @@ PlannerServer::computePlanThroughPoses()
         curr_start = filtered_goals[i - 1];
       }
       curr_goal = filtered_goals[i];
+      // j = 1;
 
       // Transform them into the global frame
       if (!transformPosesToGlobalFrame(action_server_poses_, curr_start, curr_goal)) {
@@ -468,7 +459,7 @@ PlannerServer::computePlanThroughPoses()
     }
     std_msgs::msg::Bool checkmsg;
     checkmsg.data = false;
-    if(goal_dis < 1.0){
+    if(local_goal_dist < 1.0){
       checkmsg.data = true;
     }
     isgoalsreach_publisher_->publish(checkmsg);

@@ -23,6 +23,7 @@
 #include "nav2_util/geometry_utils.hpp"
 #include "nav2_util/robot_utils.hpp"
 #include "behaviortree_cpp_v3/action_node.h"
+#include "nav_msgs/msg/path.hpp"
 
 namespace nav2_behavior_tree
 {
@@ -49,6 +50,7 @@ public:
   }
 
 private:
+  
   void halt() override {}
   BT::NodeStatus tick() override;
 
@@ -56,6 +58,15 @@ private:
   std::string robot_base_frame_, global_frame_;
   double transform_tolerance_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
+  nav_msgs::msg::Path back_poses_;
+  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr command_subscribe_;
+  void command_callback(const nav_msgs::msg::Path::SharedPtr msg){
+    back_poses_ = *msg;
+  }
+  // nav2_util::LifecycleNode::SharedPtr node;
+  rclcpp::Node::SharedPtr node;
+  rclcpp::CallbackGroup::SharedPtr callback_group_;
+  rclcpp::executors::SingleThreadedExecutor callback_group_executor_;
 };
 
 }  // namespace nav2_behavior_tree
