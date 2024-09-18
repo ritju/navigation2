@@ -375,6 +375,7 @@ PlannerServer::computePlanThroughPoses()
     back_goals.header.frame_id = "map";
     geometry_msgs::msg::PoseStamped last = goal->goals[0];
     double local_goal_dist = 0;
+    std::vector<int> startEndPairs;
     for (size_t i = 1; i < goal->goals.size(); ++i){
       double g_x = goal->goals[i].pose.position.x;
       double g_y = goal->goals[i].pose.position.y;
@@ -388,26 +389,30 @@ PlannerServer::computePlanThroughPoses()
       unsigned int mx, my; 
       costmap_->worldToMap(goal->goals[i].pose.position.x, goal->goals[i].pose.position.y, mx, my);  
       if (costmap_->getCost(mx, my) >= 253) {  
-        back_goals.poses.push_back(goal->goals[i]);  
+        int startindex = (i>0) ? i-1 : 0;
+        int endindex = std::min(static_cast<int>(i + 1), static_cast<int>(goal->goals.size() - 1));
+        if (!startEndPairs.empty() && startEndPairs.back() >= startindex) {  
+            startEndPairs.back() = endindex;  
+        } else {   
+            startEndPairs.push_back(startindex);  
+            startEndPairs.push_back(endindex);  
+        } 
+        // back_goals.poses.push_back(goal->goals[i]);  
       } 
     }
-    // for (size_t i = 0; i < back_goals.poses.size(); ++i){
-    //   RCLCPP_INFO(rclcpp::get_logger("planner"), "*pub back goal:%f,%f***********",back_goals.poses[i].pose.position.x,back_goals.poses[i].pose.position.y);
-    // }
+    for (size_t i = 0; i < startEndPairs.size(); i += 2) {  
+      for (int j = startEndPairs[i]; j <= startEndPairs[i + 1]; ++j) {  
+        back_goals.poses.push_back(goal->goals[j]);
+      }  
+    } 
     backgoals_publisher_->publish(back_goals);
 
     std::vector<geometry_msgs::msg::PoseStamped> filtered_goals;  
-    // 遍历 goal->goals  
     for (const auto& currentGoal : goal->goals) {  
         unsigned int mx, my;  
-        // 将当前 PoseStamped 的位置转换为 map 坐标  
         costmap_->worldToMap(currentGoal.pose.position.x, currentGoal.pose.position.y, mx, my);  
-        // 检查成本是否小于 253  
         if (costmap_->getCost(mx, my) < 253) {  
-            // 由于 currentGoal 是 const 引用，我们需要创建一个副本  
-            // 如果 PoseStamped 是可复制的（通常应该是），则可以直接添加到 vector 中  
             filtered_goals.push_back(currentGoal);  
-            // 注意：如果 PoseStamped 很大或者包含指针等复杂结构，则可能需要考虑深拷贝或特殊处理  
         }  
     } 
     if (filtered_goals.empty()) {
@@ -426,10 +431,7 @@ PlannerServer::computePlanThroughPoses()
     // Get consecutive paths through these points
     std::vector<geometry_msgs::msg::PoseStamped>::iterator goal_iter;
     geometry_msgs::msg::PoseStamped curr_start, curr_goal;
-    // int j = 1;
-    // RCLCPP_INFO(rclcpp::get_logger("planner"), "******goal size: %lu***********",filtered_goals.size());
     for (size_t i = 0; i < filtered_goals.size(); ++i) {
-      // RCLCPP_INFO(rclcpp::get_logger("planner"), "******goal dis: %f***********",goal_dis);
       // Get starting point
       if (i == 0) {
         curr_start = start;
@@ -437,7 +439,6 @@ PlannerServer::computePlanThroughPoses()
         curr_start = filtered_goals[i - 1];
       }
       curr_goal = filtered_goals[i];
-      // j = 1;
 
       // Transform them into the global frame
       if (!transformPosesToGlobalFrame(action_server_poses_, curr_start, curr_goal)) {
