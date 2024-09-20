@@ -134,7 +134,6 @@ PlannerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   // Initialize pubs & subs
   plan_publisher_ = create_publisher<nav_msgs::msg::Path>("plan", 1);
   backgoals_publisher_ = create_publisher<nav_msgs::msg::Path>("back_goals", 1);
-  isgoalsreach_publisher_ = create_publisher<std_msgs::msg::Bool>("goals_is_reach", 1);
 
   // Create the action servers for path planning to a pose and through poses
   action_server_pose_ = std::make_unique<ActionServerToPose>(
@@ -163,7 +162,6 @@ PlannerServer::on_activate(const rclcpp_lifecycle::State & /*state*/)
 
   plan_publisher_->on_activate();
   backgoals_publisher_->on_activate();
-  isgoalsreach_publisher_->on_activate();
   action_server_pose_->activate();
   action_server_poses_->activate();
   costmap_ros_->activate();
@@ -200,7 +198,6 @@ PlannerServer::on_deactivate(const rclcpp_lifecycle::State & /*state*/)
   action_server_poses_->deactivate();
   plan_publisher_->on_deactivate();
   backgoals_publisher_->on_deactivate();
-  isgoalsreach_publisher_->on_deactivate();
   costmap_ros_->deactivate();
 
   PlannerMap::iterator it;
@@ -225,7 +222,6 @@ PlannerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   action_server_poses_.reset();
   plan_publisher_.reset();
   backgoals_publisher_.reset();
-  isgoalsreach_publisher_.reset();
   tf_.reset();
   costmap_ros_->cleanup();
 
@@ -458,12 +454,6 @@ PlannerServer::computePlanThroughPoses()
         concat_path.poses.end(), curr_path.poses.begin(), curr_path.poses.end());
       concat_path.header = curr_path.header;
     }
-    std_msgs::msg::Bool checkmsg;
-    checkmsg.data = false;
-    if(local_goal_dist < 1.0){
-      checkmsg.data = true;
-    }
-    isgoalsreach_publisher_->publish(checkmsg);
 
     // Publish the plan for visualization purposes
     result->path = concat_path;
