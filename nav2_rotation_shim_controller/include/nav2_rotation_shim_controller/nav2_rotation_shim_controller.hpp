@@ -176,6 +176,12 @@ protected:
   // Dynamic parameters handler
   std::mutex mutex_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;
+  bool update_current_path_; //通过直角点时，判断是否需要更新全局路径
+  double perpendicular_distance_; //机器人距离直角点的距离
+  double perpendicular_angle_; //判定直角点的角度
+  double straight_cmd_vel_; //设定前进速度
+  int perpendicular_check_size_; //机器人位姿向前取全局路径点数
+  bool iscollision_; //是否碰撞标识位
 };
 
 }  // namespace nav2_rotation_shim_controller

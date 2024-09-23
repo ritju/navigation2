@@ -29,7 +29,12 @@ namespace nav2_rotation_shim_controller
 RotationShimController::RotationShimController()
 : lp_loader_("nav2_core", "nav2_core::Controller"),
   primary_controller_(nullptr),
-  path_updated_(false)
+  path_updated_(false),
+  update_current_path_(true),
+  perpendicular_distance_(0.15),
+  perpendicular_angle_(125),
+  straight_cmd_vel_(0.5),
+  iscollision_(false)
 {
 }
 
@@ -61,6 +66,15 @@ void RotationShimController::configure(
     node, plugin_name_ + ".simulate_ahead_time", rclcpp::ParameterValue(1.0));
   nav2_util::declare_parameter_if_not_declared(
     node, plugin_name_ + ".primary_controller", rclcpp::PARAMETER_STRING);
+  //增加参数赋值
+  nav2_util::declare_parameter_if_not_declared(
+    node, plugin_name_ + ".perpendicular_distance", rclcpp::ParameterValue(0.15));
+  nav2_util::declare_parameter_if_not_declared(
+    node, plugin_name_ + ".perpendicular_angle", rclcpp::ParameterValue(125.0));
+  nav2_util::declare_parameter_if_not_declared(
+    node, plugin_name_ + ".straight_cmd_vel", rclcpp::ParameterValue(0.5));
+  nav2_util::declare_parameter_if_not_declared(
+    node, plugin_name_ + ".perpendicular_check_size", rclcpp::ParameterValue(20));
 
   node->get_parameter(plugin_name_ + ".angular_dist_threshold", angular_dist_threshold_);
   node->get_parameter(plugin_name_ + ".forward_sampling_distance", forward_sampling_distance_);
@@ -69,6 +83,11 @@ void RotationShimController::configure(
     rotate_to_heading_angular_vel_);
   node->get_parameter(plugin_name_ + ".max_angular_accel", max_angular_accel_);
   node->get_parameter(plugin_name_ + ".simulate_ahead_time", simulate_ahead_time_);
+  //增加参数赋值
+  node->get_parameter(plugin_name_ + ".perpendicular_distance", perpendicular_distance_);
+  node->get_parameter(plugin_name_ + ".perpendicular_angle", perpendicular_angle_);
+  node->get_parameter(plugin_name_ + ".straight_cmd_vel", straight_cmd_vel_);
+  node->get_parameter(plugin_name_ + ".perpendicular_check_size", perpendicular_check_size_);
 
   primary_controller = node->get_parameter(plugin_name_ + ".primary_controller").as_string();
   node->get_parameter("controller_frequency", control_frequency);
@@ -140,6 +159,8 @@ geometry_msgs::msg::TwistStamped RotationShimController::computeVelocityCommands
   const geometry_msgs::msg::Twist & velocity,
   nav2_core::GoalChecker * goal_checker)
 {
+  static geometry_msgs::msg::Pose last_pose;
+  static bool perpendicular_pose_change = false;
   if (path_updated_) {
     std::lock_guard<std::mutex> lock_reinit(mutex_);
     try {
@@ -149,14 +170,81 @@ geometry_msgs::msg::TwistStamped RotationShimController::computeVelocityCommands
 
         angular_distance_to_heading =
         std::atan2(sampled_pt_base.position.y, sampled_pt_base.position.x);
-      }   
-      if ((fabs(angular_distance_to_heading) > angular_dist_threshold_)  && (fabs(velocity.linear.x) < 0.1)) {
+      }
+
+      // 查找直角点pose
+      size_t count = 0;
+      double last_to_new_dis = 0;
+      for (size_t i = 3; i < current_path_.poses.size() - 3 && i < size_t(perpendicular_check_size_); ++i)
+      {
+        double x0 = current_path_.poses.at(i).pose.position.x;
+        double y0 = current_path_.poses.at(i).pose.position.y;
+        double x1 = current_path_.poses.at(i - 3).pose.position.x;
+        double y1 = current_path_.poses.at(i - 3).pose.position.y;
+        double x2 = current_path_.poses.at(i + 3).pose.position.x;
+        double y2 = current_path_.poses.at(i + 3).pose.position.y;
+
+        double dot = (x1 - x0) * (x2 - x0) + (y1 - y0) * (y2 - y0);
+        double lenth_1 = std::sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
+        double lenth_2 = std::sqrt((x2 - x0) * (x2 - x0) + (y2 - y0) * (y2 - y0));
+        double temp_theta = std::acos(dot / (lenth_1 * lenth_2)) * 180 / M_PI;
+        // 更新直角点pose，判断是否需要更新全局路径
+        if (temp_theta < perpendicular_angle_)
+        {
+          count = i;
+          last_to_new_dis = sqrt(pow(last_pose.position.x - current_path_.poses.at(count).pose.position.x, 2) + 
+                                 pow(last_pose.position.y - current_path_.poses.at(count).pose.position.y, 2));
+          if (last_pose.position.x == 0 && last_pose.position.y == 0)
+          {
+            last_pose = current_path_.poses.at(count).pose;
+          }
+          else if (last_to_new_dis > 0.2)
+          {
+            last_pose = current_path_.poses.at(count).pose;
+            perpendicular_pose_change = true;
+          }
+          else
+          {
+            perpendicular_pose_change = false;
+          }
+          break;
+        }
+      }
+      // 如果直角点没有更新，驶向直角点
+      if (count != 0 && velocity.linear.x > 0.1 && !perpendicular_pose_change)
+      {
+        update_current_path_ = false;
+        auto perpendicular_pose = current_path_.poses.at(count);
+        geometry_msgs::msg::Pose perpendicular_pose_base = transformPoseToBaseFrame(perpendicular_pose);
+          
+        if (perpendicular_pose_base.position.x > perpendicular_distance_)
+        {
+          geometry_msgs::msg::TwistStamped straight_cmd_vel;
+          straight_cmd_vel.header = pose.header;
+          straight_cmd_vel.twist.linear.x = straight_cmd_vel_;
+          geometry_msgs::msg::PoseStamped pre_pose;
+          pre_pose = pose;
+          pre_pose.pose.position.x += straight_cmd_vel.twist.linear.x * control_duration_;
+          isCollisionFree(straight_cmd_vel, 0, pre_pose);
+          if(!iscollision_)
+          {
+            return straight_cmd_vel;
+          }
+        }
+      }
+      update_current_path_ = true;
+  
+      if (fabs(angular_distance_to_heading) > angular_dist_threshold_) {   
+      // if ((fabs(angular_distance_to_heading) > angular_dist_threshold_)  && (fabs(velocity.linear.x) < 0.1)) {
         RCLCPP_DEBUG(
           logger_,
           "Robot is not within the new path's rough heading, rotating to heading...");
         last_state_ = true;
         rotate_shim_cmd_vel_ = computeRotateToHeadingCommand(angular_distance_to_heading, pose, velocity);
-        return rotate_shim_cmd_vel_;
+        if(!iscollision_)
+        {
+          return rotate_shim_cmd_vel_;
+        }
       } else {
         RCLCPP_DEBUG(
           logger_,
@@ -168,7 +256,7 @@ geometry_msgs::msg::TwistStamped RotationShimController::computeVelocityCommands
             geometry_msgs::msg::TwistStamped cmd_vel;
             cmd_vel.header = pose.header;
             cmd_vel.twist.angular.z = 0;
-            sleep(3);
+            sleep(0.1);
             return cmd_vel;
           }
         else
@@ -309,21 +397,35 @@ void RotationShimController::isCollisionFree(
     if (footprint_cost == static_cast<double>(NO_INFORMATION) &&
       costmap_ros_->getLayeredCostmap()->isTrackingUnknown())
     {
-      throw std::runtime_error("RotationShimController detected a potential collision ahead!");
+      iscollision_ = true;
+      // throw std::runtime_error("RotationShimController detected a potential collision ahead!");
     }
 
     if (footprint_cost >= static_cast<double>(LETHAL_OBSTACLE)) {
-      throw std::runtime_error("RotationShimController detected collision ahead!");
+      iscollision_ = true;
+      // throw std::runtime_error("RotationShimController detected collision ahead!");
     }
   }
 }
 
 void RotationShimController::setPlan(const nav_msgs::msg::Path & path)
 {
-  path_updated_ = true;
-  current_path_ = path;
-  primary_controller_->setPlan(path);
-}
+  // 如果不更新输入的全局路径，更新当前全局路径时间戳
+  if (update_current_path_)
+  {
+    path_updated_ = true;
+    current_path_ = path;
+    primary_controller_->setPlan(path);
+  }
+  else
+  {
+    current_path_.header.stamp = rclcpp::Time();
+    for (size_t i=0; i < current_path_.poses.size(); ++i)
+    {
+      current_path_.poses.at(i).header.stamp = rclcpp::Time();
+    }
+  }
+  
 
 void RotationShimController::setSpeedLimit(const double & speed_limit, const bool & percentage)
 {

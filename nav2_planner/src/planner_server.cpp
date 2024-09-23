@@ -331,7 +331,9 @@ bool PlannerServer::validatePath(
       get_logger(), "Planning algorithm %s failed to generate a valid"
       " path to (%.2f, %.2f)", planner_id.c_str(),
       goal.pose.position.x, goal.pose.position.y);
-    action_server->terminate_current();
+    // 若全局路径划失败跳过此点继续，不终止action
+    // action_server->terminate_current();
+    (void)action_server;
     return false;
   }
 
@@ -446,7 +448,9 @@ PlannerServer::computePlanThroughPoses()
 
       // check path for validity
       if (!validatePath(action_server_poses_, curr_goal, curr_path, goal->planner_id)) {
-        return;
+        // 若全局路径划失败跳过此点继续，不终止action
+        // return;
+        continue;
       }
 
       // Concatenate paths together
