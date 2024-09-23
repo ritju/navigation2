@@ -18,7 +18,7 @@
 #include <vector>
 #include <memory>
 #include <string>
-
+#include <deque>
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav2_util/geometry_utils.hpp"
 #include "nav2_util/robot_utils.hpp"
