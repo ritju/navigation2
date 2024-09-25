@@ -131,7 +131,7 @@ planner_server:
         max_iterations: 1000
         w_smooth: 0.3
         w_data: 0.2
-        tolerance: 1e-10
+        tolerance: 1.0e-10
         do_refinement: true               # Whether to recursively run the smoother 3 times on the results from prior runs to refine the results further
 ```
 
@@ -188,7 +188,7 @@ When tuning, the "reasonable" range for each penalty is listed below. While you 
 - Change: 0.0 - 0.3
 - Reverse: 1.3 - 5.0
 
-Note that change penalty must be greater than 0.0. The Non-staight, reverse, and cost penalties must be greater than 1.0, strictly.
+Note that change penalty must be greater than 0.0. The non-straight, reverse, and cost penalties must be greater than 1.0, strictly.
 
 ### No path found for clearly valid goals or long compute times
 

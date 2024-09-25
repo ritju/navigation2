@@ -31,7 +31,7 @@ using rcl_interfaces::msg::ParameterType;
 
 SmacPlannerLattice::SmacPlannerLattice()
 : _a_star(nullptr),
-  _collision_checker(nullptr, 1),
+  _collision_checker(nullptr, 1, nullptr),
   _smoother(nullptr),
   _costmap(nullptr)
 {
@@ -169,7 +169,7 @@ void SmacPlannerLattice::configure(
   // increments causing "wobbly" checks that could cause larger robots to virtually show collisions
   // in valid configurations. This approximation helps to bound orientation error for all checks
   // in exchange for slight inaccuracies in the collision headings in terminal search states.
-  _collision_checker = GridCollisionChecker(_costmap, 72u);
+  _collision_checker = GridCollisionChecker(_costmap, 72u, node);
   _collision_checker.setFootprint(
     costmap_ros->getRobotFootprint(),
     costmap_ros->getUseRadius(),
@@ -243,6 +243,10 @@ nav_msgs::msg::Path SmacPlannerLattice::createPlan(
   std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*(_costmap->getMutex()));
 
   // Set collision checker and costmap information
+  _collision_checker.setFootprint(
+    _costmap_ros->getRobotFootprint(),
+    _costmap_ros->getUseRadius(),
+    findCircumscribedCost(_costmap_ros));
   _a_star->setCollisionChecker(&_collision_checker);
 
   // Set starting point, in A* bin search coordinates

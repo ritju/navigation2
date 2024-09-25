@@ -182,6 +182,7 @@ protected:
   double straight_cmd_vel_; //设定前进速度
   int perpendicular_check_size_; //机器人位姿向前取全局路径点数
   bool iscollision_; //是否碰撞标识位
+  bool is_input_path_updated_; //current_path是否更新为输入plan标识
 };
 
 }  // namespace nav2_rotation_shim_controller
