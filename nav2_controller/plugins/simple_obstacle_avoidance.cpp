@@ -13,6 +13,8 @@
 #include "tf2/utils.h"
 #pragma GCC diagnostic pop
 
+#include <Eigen/Dense>
+
 using rcl_interfaces::msg::ParameterType;
 using std::placeholders::_1;
 
@@ -44,6 +46,19 @@ void SimpleObstacleAvoidance::initialize(
   node->get_parameter(plugin_name + ".local_height", local_height_);
   costmap_ros_ = costmap_ros;
   costmap_ = costmap_ros_->getCostmap();
+  std::vector<geometry_msgs::msg::Point> footprint = costmap_ros_->getRobotFootprint();
+  // footprint_w = fabs(footprint[0].y);
+  footprint_h_front = fabs(footprint[0].x);
+  footprint_h_back = fabs(footprint[0].x);
+  for (unsigned int i = 1; i < footprint.size(); ++i) {
+    if(footprint_h_front < fabs(footprint[i].x)){
+      footprint_h_front = fabs(footprint[i].x);
+    }
+    if(footprint_h_back > fabs(footprint[i].x)){
+      footprint_h_back = fabs(footprint[i].x);
+    }
+  }
+  RCLCPP_INFO(rclcpp::get_logger("simple_obstacle"), "footprint: %f, %f", footprint_h_front, footprint_h_back);
   
   // Add callback for dynamic parameters
   dyn_params_handler_ = node->add_on_set_parameters_callback(
@@ -72,42 +87,31 @@ bool SimpleObstacleAvoidance::isGoalOccupied(double goal_x, double goal_y){
 }
 bool SimpleObstacleAvoidance::isobstacleback()
 {
-  // RCLCPP_INFO(rclcpp::get_logger("TEST"), "width: %f, height: %f", local_width_,local_height_);
-  std::vector<tf2::Vector3> footprint_pose;
-  tf2::Vector3 c1(local_width_,local_height_,0);
-  unsigned int s[15][2];
-  for (double x = -0.65; x < -0.54; x += 0.05) {
-    for (double y = -0.1; y < 0.11; y += 0.05) {
-      footprint_pose.push_back(tf2::Vector3(x, y, 0));
-    }
-  }
-  std::vector<tf2::Vector3> odom_pose;
-  bool tferr = true;
-  while(tferr){
-    try {
-      tferr = false;
-      geometry_msgs::msg::TransformStamped transform_stamped;
-      transform_stamped = costmap_ros_->getTfBuffer()->lookupTransform("base_footprint", "odom", tf2::TimePointZero);
-      tf2::Matrix3x3 rotation_matrix(
-      tf2::Quaternion(
-      transform_stamped.transform.rotation.x,
-      transform_stamped.transform.rotation.y,
-      transform_stamped.transform.rotation.z,
-      transform_stamped.transform.rotation.w));
-      for(int i=0;i<15;i++){
-        odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[i] + c1);
-      }  
-      for(int i=0;i<15;i++){ 
-        s[i][0] = static_cast<unsigned int>(odom_pose[i][0] / 0.05);
-        s[i][1] = static_cast<unsigned int>(odom_pose[i][1] / 0.05);
-        if(costmap_->getCost(s[i][0],s[i][1]) >= 253){
-          return true;
-        }
+  geometry_msgs::msg::TransformStamped t;
+  try {
+        t = costmap_ros_->getTfBuffer()->lookupTransform(
+          "odom", "base_link",
+          tf2::TimePointZero);
+      } catch (const tf2::TransformException & ex) {
       }
-    }
-    catch (tf2::TransformException& e) {
-      tferr = true;
-      continue;
+  double robot_x = t.transform.translation.x;
+  double robot_y = t.transform.translation.y;
+  geometry_msgs::msg::Quaternion q = t.transform.rotation;
+  Eigen::Quaterniond eigen_q(q.w, q.x, q.y, q.z);
+  double yaw = atan2(2.0 * (eigen_q.w() * eigen_q.z() + eigen_q.x() * eigen_q.y()),  
+                  1.0 - 2.0 * (eigen_q.y() * eigen_q.y() + eigen_q.z() * eigen_q.z()));
+  double cos_th = cos(yaw);
+  double sin_th = sin(yaw);
+  
+
+  for (double x = -footprint_h_back - 0.1; x < -footprint_h_back + 0.21; x += 0.05) {
+    for (double y = -0.15; y < 0.15; y += 0.05) {
+      unsigned int map_x,map_y;
+      double g_x = robot_x + x * cos_th - y * sin_th;
+      double g_y = robot_y + x * sin_th + y * cos_th;
+      if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 253){
+        return true;
+      }
     }
   }
   return false;
@@ -132,42 +136,33 @@ bool SimpleObstacleAvoidance::isobstacleultraforward()
 }
 bool SimpleObstacleAvoidance::isobstacleultra()
 {
-  std::vector<tf2::Vector3> footprint_pose;
-  tf2::Vector3 c1(local_width_,local_height_,0);
-  unsigned int s[15][2];
-  for (double x = 0.3; x < 0.41; x += 0.05) {
-    for (double y = -0.1; y < 0.11; y += 0.05) {
-      footprint_pose.push_back(tf2::Vector3(x, y, 0));
-    }
-  }
-  std::vector<tf2::Vector3> odom_pose;
-  bool tferr = true;
-  while(tferr){
-    try {
-      tferr = false;
-      geometry_msgs::msg::TransformStamped transform_stamped;
-      transform_stamped = costmap_ros_->getTfBuffer()->lookupTransform("base_footprint", "odom", tf2::TimePointZero);
-      tf2::Matrix3x3 rotation_matrix(
-      tf2::Quaternion(
-      transform_stamped.transform.rotation.x,
-      transform_stamped.transform.rotation.y,
-      transform_stamped.transform.rotation.z,
-      transform_stamped.transform.rotation.w));
-      for(int i=0;i<15;i++){
-        odom_pose.push_back(rotation_matrix.inverse() * footprint_pose[i] + c1);
-      }  
-      for(int i=0;i<15;i++){ 
-        s[i][0] = static_cast<unsigned int>(odom_pose[i][0] / 0.05);
-        s[i][1] = static_cast<unsigned int>(odom_pose[i][1] / 0.05);
-        if(costmap_->getCost(s[i][0],s[i][1]) >= 253){
-          ultra_count++;
-          return true;
-        }
+  
+  geometry_msgs::msg::TransformStamped t;
+  try {
+        t = costmap_ros_->getTfBuffer()->lookupTransform(
+          "odom", "base_link",
+          tf2::TimePointZero);
+      } catch (const tf2::TransformException & ex) {
       }
-    }
-    catch (tf2::TransformException& e) {
-      tferr = true;
-      continue;
+  double robot_x = t.transform.translation.x;
+  double robot_y = t.transform.translation.y;
+  geometry_msgs::msg::Quaternion q = t.transform.rotation;
+  Eigen::Quaterniond eigen_q(q.w, q.x, q.y, q.z);
+  double yaw = atan2(2.0 * (eigen_q.w() * eigen_q.z() + eigen_q.x() * eigen_q.y()),  
+                  1.0 - 2.0 * (eigen_q.y() * eigen_q.y() + eigen_q.z() * eigen_q.z()));
+  double cos_th = cos(yaw);
+  double sin_th = sin(yaw);
+  
+
+  for (double x = footprint_h_front - 0.2; x < footprint_h_front + 0.01; x += 0.05) {
+    for (double y = -0.15; y < 0.15; y += 0.05) {
+      unsigned int map_x,map_y;
+      double g_x = robot_x + x * cos_th - y * sin_th;
+      double g_y = robot_y + x * sin_th + y * cos_th;
+      if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 253){
+        ultra_count++;
+        return true;
+      }
     }
   }
   ultra_count = 0;
