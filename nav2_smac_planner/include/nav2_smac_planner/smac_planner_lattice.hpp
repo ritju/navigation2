@@ -31,6 +31,7 @@
 #include "nav2_util/lifecycle_node.hpp"
 #include "nav2_util/node_utils.hpp"
 #include "tf2/utils.h"
+#include "nav2_costmap_2d/exceptions.hpp"
 
 namespace nav2_smac_planner
 {

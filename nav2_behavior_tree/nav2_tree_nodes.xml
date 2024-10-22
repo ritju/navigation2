@@ -227,6 +227,13 @@
       <input_port name="localization_score_topic">Topic for localization score info</input_port>
     </Condition>
 
+    <Condition ID="IsPedestrianFront">
+      <input_port name="pedestrain_distance">Pedestrain_distance to base_link in meter</input_port>
+      <input_port name="person_detected_topic">Topic for person_detected info</input_port>
+      <input_port name="global_frame">Global frame</input_port>
+      <input_port name="robot_base_frame">Robot base frame</input_port>
+    </Condition>
+
     <Condition ID="DistanceTraveled">
       <input_port name="distance">Distance to check if passed</input_port>
       <input_port name="global_frame">reference frame to check in</input_port>

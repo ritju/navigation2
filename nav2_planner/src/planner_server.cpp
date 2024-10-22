@@ -434,8 +434,17 @@ PlannerServer::computePlanThroughPoses()
       if (i == 0) {
         curr_start = start;
       } else {
-        curr_start = filtered_goals[i - 1];
-      }
+        // curr_start = filtered_goals[i - 1];
+          if (concat_path.poses.size() > 0)
+          {
+            curr_start = concat_path.poses.back();
+            curr_start.header = concat_path.header;
+          }
+          else
+          {
+            curr_start = start;
+          }
+        }
       curr_goal = filtered_goals[i];
 
       // Transform them into the global frame

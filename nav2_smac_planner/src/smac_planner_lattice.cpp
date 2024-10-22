@@ -249,6 +249,44 @@ nav_msgs::msg::Path SmacPlannerLattice::createPlan(
     findCircumscribedCost(_costmap_ros));
   _a_star->setCollisionChecker(&_collision_checker);
 
+  try
+  {
+    geometry_msgs::msg::Pose2D pose2d;
+    pose2d.x = goal.pose.position.x;
+    pose2d.y = goal.pose.position.y;
+    pose2d.theta = tf2::getYaw(goal.pose.orientation);
+    double footprint_cost = 0.0;
+    footprint_cost = _collision_checker.footprintCostAtPose(pose2d.x, pose2d.y, pose2d.theta, _costmap_ros->getRobotFootprint());
+    RCLCPP_INFO(_logger, "(pose2d.x, pose2d.y): (%f, %f) !", pose2d.x, pose2d.y);
+    RCLCPP_INFO(_logger, "footprint_cost: %f !", footprint_cost);
+    using nav2_costmap_2d::LETHAL_OBSTACLE;
+    if (footprint_cost == LETHAL_OBSTACLE) {
+      nav_msgs::msg::Path plan;
+      plan.header.stamp = _clock->now();
+      plan.header.frame_id = _global_frame;
+      return plan;
+  }
+  }
+  catch (const nav2_costmap_2d::IllegalPoseException & e) {
+    RCLCPP_ERROR(_logger, "%s", e.what());
+    // nav_msgs::msg::Path plan;
+    // plan.header.stamp = _clock->now();
+    // plan.header.frame_id = _global_frame;
+    // return plan;
+  } catch (const nav2_costmap_2d::CollisionCheckerException & e) {
+    RCLCPP_ERROR(_logger, "%s", e.what());
+    // nav_msgs::msg::Path plan;
+    // plan.header.stamp = _clock->now();
+    // plan.header.frame_id = _global_frame;
+    // return plan;
+  } catch (...) {
+    RCLCPP_ERROR(_logger, "Failed to check pose score!");
+    // nav_msgs::msg::Path plan;
+    // plan.header.stamp = _clock->now();
+    // plan.header.frame_id = _global_frame;
+    // return plan;
+  }
+
   // Set starting point, in A* bin search coordinates
   unsigned int mx, my;
   _costmap->worldToMap(start.pose.position.x, start.pose.position.y, mx, my);

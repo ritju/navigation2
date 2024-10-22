@@ -27,6 +27,7 @@
 #include "nav2_util/robot_utils.hpp"
 #include "nav2_util/geometry_utils.hpp"
 #include "nav2_util/odometry_utils.hpp"
+#include "std_msgs/msg/bool.hpp"
 
 namespace nav2_bt_navigator
 {
@@ -113,6 +114,7 @@ protected:
 
   // Odometry smoother object
   std::shared_ptr<nav2_util::OdomSmoother> odom_smoother_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr receive_new_goal_;
 };
 
 }  // namespace nav2_bt_navigator

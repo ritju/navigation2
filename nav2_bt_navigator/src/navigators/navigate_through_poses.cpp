@@ -44,6 +44,7 @@ NavigateThroughPosesNavigator::configure(
 
   // Odometry smoother object for getting current speed
   odom_smoother_ = odom_smoother;
+  receive_new_goal_ = node->create_publisher<std_msgs::msg::Bool>("receive_new_goal", 1);
 
   return true;
 }
@@ -213,7 +214,15 @@ NavigateThroughPosesNavigator::initializeGoalPoses(ActionT::Goal::ConstSharedPtr
   blackboard->set<int>("number_recoveries", 0);  // NOLINT
 
   // Update the goal pose on the blackboard
-  blackboard->set<Goals>(goals_blackboard_id_, goal->poses);
+  Goals add_pose_index_poses = goal->poses;
+  for(uint32_t i = 0; i < add_pose_index_poses.size(); ++i)
+  {
+    add_pose_index_poses.at(i).pose.position.z = i;
+  }
+  blackboard->set<Goals>(goals_blackboard_id_, add_pose_index_poses);
+  std_msgs::msg::Bool msg;
+  msg.data = true;
+  receive_new_goal_->publish(msg);
 }
 
 }  // namespace nav2_bt_navigator
