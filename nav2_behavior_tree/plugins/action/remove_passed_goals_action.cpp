@@ -32,7 +32,7 @@ RemovePassedGoals::RemovePassedGoals(
   viapoint_achieved_radius_(0.5),
   look_ahead_distance_(3.0),
   checked_path_received_(false),
-  receive_new_goal_(true),
+  receive_new_goal_(false),
   count(0)
   // occupied_path_received_(false)
 {
@@ -60,32 +60,37 @@ RemovePassedGoals::RemovePassedGoals(
 
   checked_path_sub_ = node->create_subscription<nav_msgs::msg::Path>("checked_path", qos, 
                       std::bind(&RemovePassedGoals::removed_path_callback, this, std::placeholders::_1), sub_option);
-  
-  // occupied_path_sub_ = node->create_subscription<nav_msgs::msg::Path>("occupied_path", qos, 
-  //                     std::bind(&RemovePassedGoals::occupied_path_callback, this, std::placeholders::_1), sub_option);
-  
-  receive_new_sub_ = node->create_subscription<std_msgs::msg::Bool>("receive_new_goal", 1, 
-                      std::bind(&RemovePassedGoals::receive_new_goal_callback, this, std::placeholders::_1), sub_option);
-
 }
 
 inline BT::NodeStatus RemovePassedGoals::tick()
 {
 
   setStatus(BT::NodeStatus::RUNNING);
-
   Goals goal_poses;
   getInput("input_goals", goal_poses);
+  if (goal_poses.size() > 0)
+  {
+    if (goal_poses.front().pose.orientation.w == 2.0)
+    {
+      receive_new_goal_ = true;
+      count = 0;
+      passed_poses_indexes_.clear();
+      for (auto &pose : goal_poses)
+      {
+        pose.pose.orientation.w = 1.0;
+      }
+    }
+  }
   
-  if (!receive_new_goal_ && checked_path_received_ && removed_path_.poses.size() > 0 && count > 10)
+  if (!receive_new_goal_ && checked_path_received_ && removed_path_.poses.size() > 0 && count > 60)
   {
     goal_poses = removed_path_.poses;
   }
+  receive_new_goal_ = false;
   removed_path_.poses.clear();
   ++count;
-
   checked_path_received_ = false;
-  receive_new_goal_ = false;
+  
   callback_group_executor_.spin_some();
   if (goal_poses.empty()) {
     setOutput("output_goals", goal_poses);
@@ -178,14 +183,6 @@ void RemovePassedGoals::removed_path_callback(const nav_msgs::msg::Path &msg)
 {
   checked_path_received_ = true;
   removed_path_ = msg;
-}
-
-void RemovePassedGoals::receive_new_goal_callback(const std_msgs::msg::Bool &msg)
-{
-  receive_new_goal_ = msg.data;
-  removed_path_.poses.clear();
-  passed_poses_indexes_.clear();
-  count = 0;
 }
 
 } 

@@ -71,16 +71,9 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr removed_path_pub_;
   rclcpp::Publisher<capella_ros_msg::msg::PassedPosesIndex>::SharedPtr passed_poses_index_pub_;
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr checked_path_sub_;
-  // rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr occupied_path_sub_;
-  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr receive_new_sub_;
   void removed_path_callback(const nav_msgs::msg::Path &msg);
-  // void occupied_path_callback(const nav_msgs::msg::Path &msg);
-  void receive_new_goal_callback(const std_msgs::msg::Bool &msg);
-  // Goals goal_poses_;
   nav_msgs::msg::Path removed_path_;
-  // nav_msgs::msg::Path occupied_path_;
   bool checked_path_received_, receive_new_goal_;
-  // bool occupied_path_received_;
   std::vector<uint32_t> passed_poses_indexes_;
   int count;
 };
