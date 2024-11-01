@@ -257,8 +257,8 @@ nav_msgs::msg::Path SmacPlannerLattice::createPlan(
     pose2d.theta = tf2::getYaw(goal.pose.orientation);
     double footprint_cost = 0.0;
     footprint_cost = _collision_checker.footprintCostAtPose(pose2d.x, pose2d.y, pose2d.theta, _costmap_ros->getRobotFootprint());
-    RCLCPP_INFO(_logger, "(pose2d.x, pose2d.y): (%f, %f) !", pose2d.x, pose2d.y);
-    RCLCPP_INFO(_logger, "footprint_cost: %f !", footprint_cost);
+    // RCLCPP_INFO(_logger, "(pose2d.x, pose2d.y): (%f, %f) !", pose2d.x, pose2d.y);
+    // RCLCPP_INFO(_logger, "footprint_cost: %f !", footprint_cost);
     using nav2_costmap_2d::LETHAL_OBSTACLE;
     if (footprint_cost == LETHAL_OBSTACLE) {
       nav_msgs::msg::Path plan;

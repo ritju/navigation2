@@ -24,10 +24,6 @@
 #include "nav2_util/robot_utils.hpp"
 #include "behaviortree_cpp_v3/action_node.h"
 #include "nav_msgs/msg/path.hpp"
-#include "nav2_costmap_2d/costmap_2d_ros.hpp"
-#include "nav2_costmap_2d/costmap_subscriber.hpp"
-#include "nav2_costmap_2d/footprint_subscriber.hpp"
-#include "nav2_costmap_2d/costmap_topic_collision_checker.hpp"
 #include "nav2_msgs/msg/costmap.hpp"
 #include "nav2_util/lifecycle_node.hpp"
 #include "std_msgs/msg/bool.hpp"
@@ -86,6 +82,7 @@ private:
   bool checked_path_received_, receive_new_goal_;
   // bool occupied_path_received_;
   std::vector<uint32_t> passed_poses_indexes_;
+  int count;
 };
 
 }  // namespace nav2_behavior_tree

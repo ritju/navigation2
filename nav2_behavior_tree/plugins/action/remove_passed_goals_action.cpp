@@ -32,7 +32,8 @@ RemovePassedGoals::RemovePassedGoals(
   viapoint_achieved_radius_(0.5),
   look_ahead_distance_(3.0),
   checked_path_received_(false),
-  receive_new_goal_(true)
+  receive_new_goal_(true),
+  count(0)
   // occupied_path_received_(false)
 {
   getInput("radius", viapoint_achieved_radius_);
@@ -76,50 +77,13 @@ inline BT::NodeStatus RemovePassedGoals::tick()
   Goals goal_poses;
   getInput("input_goals", goal_poses);
   
-  RCLCPP_INFO(node->get_logger(), "First goal_poses.size: %ld , receive_new_goal_: %d!", goal_poses.size(), receive_new_goal_);
-  // if (!receive_new_goal_ && checked_path_received_ && removed_path_.poses.size() > 0 && !occupied_path_received_)
-  if (!receive_new_goal_ && checked_path_received_ && removed_path_.poses.size() > 0)
+  if (!receive_new_goal_ && checked_path_received_ && removed_path_.poses.size() > 0 && count > 10)
   {
-    if (goal_poses.size() > 0)
-    {
-      std::vector<geometry_msgs::msg::PoseStamped> partial_goals;
-      partial_goals = goal_poses.size() > 10 ? (std::vector(goal_poses.begin(), goal_poses.begin() + 10)) : 
-                    (std::vector(goal_poses.begin(), goal_poses.end()));
-      std::vector<geometry_msgs::msg::PoseStamped>::iterator it;
-      for (it = removed_path_.poses.begin(); it != removed_path_.poses.begin() + 10 && it != removed_path_.poses.end();)
-      {
-        if (std::find_if(partial_goals.begin(), partial_goals.end(), 
-          [=](const geometry_msgs::msg::PoseStamped& pose)
-          {return ((pose.pose.position.x == it->pose.position.x) && (pose.pose.position.y == it->pose.position.y));}) == 
-          partial_goals.end())
-        {
-          it = removed_path_.poses.erase(it);
-        }
-        else
-        {
-          ++it;
-        }
-      }
-      if (removed_path_.poses.size() > 0)
-      {
-        goal_poses = removed_path_.poses;
-      }
-    }
-    removed_path_.poses.clear();
+    goal_poses = removed_path_.poses;
   }
-  // if (!receive_new_goal_ && occupied_path_.poses.size() > 0 && goal_poses.size() > 0)
-  // {
-  //   RCLCPP_INFO(node->get_logger(), "Insert occupied pose: %ld !", occupied_path_.poses.size());
-  //   for (auto &pose : occupied_path_.poses)
-  //   {
-  //     pose.header.stamp = goal_poses.begin()->header.stamp;
-  //   }
-  //   occupied_path_.header.stamp = goal_poses.begin()->header.stamp;
-  //   goal_poses.insert(goal_poses.end(), occupied_path_.poses.begin(), occupied_path_.poses.end());
-  //   occupied_path_.poses.clear();
-  //   RCLCPP_INFO(node->get_logger(), "Goal_poses after occupied, size(): %ld !", goal_poses.size());
-  // }
-  
+  removed_path_.poses.clear();
+  ++count;
+
   checked_path_received_ = false;
   receive_new_goal_ = false;
   callback_group_executor_.spin_some();
@@ -169,9 +133,6 @@ inline BT::NodeStatus RemovePassedGoals::tick()
     return BT::NodeStatus::FAILURE;
   }
 
-  // goal_poses_ = goal_poses;
-
-
   double dist_to_goal;
   uint32_t indexes_size = passed_poses_indexes_.size();
   while (goal_poses.size() > 1) {
@@ -179,15 +140,22 @@ inline BT::NodeStatus RemovePassedGoals::tick()
     if (dist_to_goal > viapoint_achieved_radius_) {
       break;
     }
-    passed_poses_indexes_.emplace_back(goal_poses[0].pose.position.z);
+    if (passed_poses_indexes_.size() > 0 && passed_poses_indexes_.back() != static_cast<uint32_t>(goal_poses[0].pose.position.z))
+    {
+      passed_poses_indexes_.emplace_back(static_cast<uint32_t>(goal_poses[0].pose.position.z));
+    }
+    else if (passed_poses_indexes_.size() == 0)
+    {
+      passed_poses_indexes_.emplace_back(static_cast<uint32_t>(goal_poses[0].pose.position.z));
+    }
     goal_poses.erase(goal_poses.begin());
   }
   if (goal_poses.size() == 1)
   {
     dist_to_goal = euclidean_distance(goal_poses[0].pose, current_pose.pose);
-    if (dist_to_goal < 1.0 && passed_poses_indexes_.back() != goal_poses[0].pose.position.z)
+    if (dist_to_goal < 1.0 && passed_poses_indexes_.back() != static_cast<uint32_t>(goal_poses[0].pose.position.z))
     {
-      passed_poses_indexes_.emplace_back(goal_poses[0].pose.position.z);
+      passed_poses_indexes_.emplace_back(static_cast<uint32_t>(goal_poses[0].pose.position.z));
     }
   }
   if (passed_poses_indexes_.size() > indexes_size)
@@ -197,17 +165,11 @@ inline BT::NodeStatus RemovePassedGoals::tick()
     passed_poses_index_pub_->publish(msg);
   }
       
-    
-
-  RCLCPP_INFO(node->get_logger(), "Goal_poses end,size(): %ld !", goal_poses.size());
   nav_msgs::msg::Path path_msg;
   path_msg.header.frame_id = "map";
   path_msg.header.stamp = node->get_clock()->now();
   path_msg.poses = std::vector(goal_poses.begin(), goal_poses.end());
   removed_path_pub_->publish(path_msg);
-  // occupied_path_received_ = false;
-
-  // RCLCPP_INFO(node->get_logger(), "Set path, path lenth: %ld !", goal_poses.size());
   setOutput("output_goals", goal_poses);
   return BT::NodeStatus::SUCCESS;
 }
@@ -218,18 +180,12 @@ void RemovePassedGoals::removed_path_callback(const nav_msgs::msg::Path &msg)
   removed_path_ = msg;
 }
 
-// void RemovePassedGoals::occupied_path_callback(const nav_msgs::msg::Path &msg)
-// {
-
-//   occupied_path_ = msg;
-// }
-
 void RemovePassedGoals::receive_new_goal_callback(const std_msgs::msg::Bool &msg)
 {
   receive_new_goal_ = msg.data;
   removed_path_.poses.clear();
-  // occupied_path_received_ = true;
   passed_poses_indexes_.clear();
+  count = 0;
 }
 
 } 
