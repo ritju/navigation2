@@ -84,7 +84,28 @@ inline BT::NodeStatus RemovePassedGoals::tick()
   
   if (!receive_new_goal_ && checked_path_received_ && removed_path_.poses.size() > 0 && count > 60)
   {
-    goal_poses = removed_path_.poses;
+    if (goal_poses.size() > 0)
+    {
+      std::vector<geometry_msgs::msg::PoseStamped>::iterator it;
+      for (it = removed_path_.poses.begin(); it != removed_path_.poses.begin() + 10 && it != removed_path_.poses.end();)
+      {
+        if (std::find_if(goal_poses.begin(), goal_poses.end(), 
+          [=](const geometry_msgs::msg::PoseStamped& pose)
+          {return ((pose.pose.position.x == it->pose.position.x) && (pose.pose.position.y == it->pose.position.y));}) == 
+          goal_poses.end())
+        {
+          it = removed_path_.poses.erase(it);
+        }
+        else
+        {
+          ++it;
+        }
+      }
+      if (removed_path_.poses.size() > 0)
+      {
+        goal_poses = removed_path_.poses;
+      }
+    }
   }
   receive_new_goal_ = false;
   removed_path_.poses.clear();
@@ -145,7 +166,12 @@ inline BT::NodeStatus RemovePassedGoals::tick()
     if (dist_to_goal > viapoint_achieved_radius_) {
       break;
     }
-    if (passed_poses_indexes_.size() > 0 && passed_poses_indexes_.back() != static_cast<uint32_t>(goal_poses[0].pose.position.z))
+    // if (passed_poses_indexes_.size() > 0 && passed_poses_indexes_.back() != static_cast<uint32_t>(goal_poses[0].pose.position.z))
+    if (passed_poses_indexes_.size() > 0 && 
+        std::find_if(passed_poses_indexes_.begin(), passed_poses_indexes_.end(), 
+          [=](const uint32_t& index)
+          {return (index == static_cast<uint32_t>(goal_poses[0].pose.position.z));}) == 
+          passed_poses_indexes_.end())
     {
       passed_poses_indexes_.emplace_back(static_cast<uint32_t>(goal_poses[0].pose.position.z));
     }
@@ -158,7 +184,11 @@ inline BT::NodeStatus RemovePassedGoals::tick()
   if (goal_poses.size() == 1)
   {
     dist_to_goal = euclidean_distance(goal_poses[0].pose, current_pose.pose);
-    if (dist_to_goal < 1.0 && passed_poses_indexes_.back() != static_cast<uint32_t>(goal_poses[0].pose.position.z))
+    if (dist_to_goal < 1.0 && 
+        std::find_if(passed_poses_indexes_.begin(), passed_poses_indexes_.end(), 
+          [=](const uint32_t& index)
+          {return (index == static_cast<uint32_t>(goal_poses[0].pose.position.z));}) == 
+          passed_poses_indexes_.end())
     {
       passed_poses_indexes_.emplace_back(static_cast<uint32_t>(goal_poses[0].pose.position.z));
     }
