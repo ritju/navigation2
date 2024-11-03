@@ -44,8 +44,6 @@ NavigateThroughPosesNavigator::configure(
 
   // Odometry smoother object for getting current speed
   odom_smoother_ = odom_smoother;
-  receive_new_goal_ = node->create_publisher<std_msgs::msg::Bool>("receive_new_goal", 1);
-
   return true;
 }
 
