@@ -47,7 +47,7 @@ void SimpleObstacleAvoidance::initialize(
   costmap_ros_ = costmap_ros;
   costmap_ = costmap_ros_->getCostmap();
   std::vector<geometry_msgs::msg::Point> footprint = costmap_ros_->getRobotFootprint();
-  // footprint_w = fabs(footprint[0].y);
+  footprint_w = fabs(footprint[0].y);
   footprint_h_front = fabs(footprint[0].x);
   footprint_h_back = fabs(footprint[0].x);
   for (unsigned int i = 1; i < footprint.size(); ++i) {
@@ -58,7 +58,7 @@ void SimpleObstacleAvoidance::initialize(
       footprint_h_back = fabs(footprint[i].x);
     }
   }
-  RCLCPP_INFO(rclcpp::get_logger("simple_obstacle"), "footprint: %f, %f", footprint_h_front, footprint_h_back);
+  // RCLCPP_INFO(rclcpp::get_logger("simple_obstacle"), "footprint: %f, %f", footprint_h_front, footprint_h_back);
   
   // Add callback for dynamic parameters
   dyn_params_handler_ = node->add_on_set_parameters_callback(
@@ -102,18 +102,37 @@ bool SimpleObstacleAvoidance::isobstacleback()
                   1.0 - 2.0 * (eigen_q.y() * eigen_q.y() + eigen_q.z() * eigen_q.z()));
   double cos_th = cos(yaw);
   double sin_th = sin(yaw);
-  
-
-  for (double x = -footprint_h_back - 0.1; x < -footprint_h_back + 0.21; x += 0.05) {
-    for (double y = -0.15; y < 0.15; y += 0.05) {
+  for (double x = -footprint_h_back - 0.3; x <= -footprint_h_back; x += 0.05) {
+    for (double y = -footprint_w; y < footprint_w; y += 0.1) {
       unsigned int map_x,map_y;
       double g_x = robot_x + x * cos_th - y * sin_th;
       double g_y = robot_y + x * sin_th + y * cos_th;
-      if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 253){
+      if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 254){
         return true;
       }
     }
   }
+  
+  // for (double x = -footprint_h_back - 0.3; x <= -footprint_h_back; x += 0.05) {
+  //   unsigned int map_x,map_y;
+  //   double g_x = robot_x + x * cos_th;
+  //   double g_y = robot_y + x * sin_th;
+  //   if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 254){
+  //     return true;
+  //   }
+  // }
+  
+
+  // for (double x = -footprint_h_back + 0.1; x < -footprint_h_back + 0.31; x += 0.05) {
+  //   for (double y = -0.15; y < 0.15; y += 0.05) {
+  //     unsigned int map_x,map_y;
+  //     double g_x = robot_x + x * cos_th - y * sin_th;
+  //     double g_y = robot_y + x * sin_th + y * cos_th;
+  //     if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 254){
+  //       return true;
+  //     }
+  //   }
+  // }
   return false;
 }
 bool SimpleObstacleAvoidance::isobstacleultraforward()
@@ -152,19 +171,40 @@ bool SimpleObstacleAvoidance::isobstacleultra()
                   1.0 - 2.0 * (eigen_q.y() * eigen_q.y() + eigen_q.z() * eigen_q.z()));
   double cos_th = cos(yaw);
   double sin_th = sin(yaw);
-  
 
-  for (double x = footprint_h_front - 0.2; x < footprint_h_front + 0.01; x += 0.05) {
-    for (double y = -0.15; y < 0.15; y += 0.05) {
+  for (double x = footprint_h_front; x <= footprint_h_front + 0.15; x += 0.05) {
+    for (double y = -footprint_w; y < footprint_w; y += 0.1) {
       unsigned int map_x,map_y;
       double g_x = robot_x + x * cos_th - y * sin_th;
       double g_y = robot_y + x * sin_th + y * cos_th;
-      if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 253){
+      if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 254){
         ultra_count++;
         return true;
       }
     }
   }
+  for (double x = footprint_h_front; x <= footprint_h_front + 0.3; x += 0.05) {
+    unsigned int map_x,map_y;
+    double g_x = robot_x + x * cos_th;
+    double g_y = robot_y + x * sin_th;
+    if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 254){
+      ultra_count++;
+      return true;
+    }
+  }
+  
+
+  // for (double x = footprint_h_front - 0.2; x < footprint_h_front + 0.01; x += 0.05) {
+  //   for (double y = -0.15; y < 0.15; y += 0.05) {
+  //     unsigned int map_x,map_y;
+  //     double g_x = robot_x + x * cos_th - y * sin_th;
+  //     double g_y = robot_y + x * sin_th + y * cos_th;
+  //     if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 253){
+  //       ultra_count++;
+  //       return true;
+  //     }
+  //   }
+  // }
   ultra_count = 0;
   return false;
 }
