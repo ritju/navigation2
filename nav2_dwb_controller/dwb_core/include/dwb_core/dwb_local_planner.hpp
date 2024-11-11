@@ -50,6 +50,7 @@
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include "pluginlib/class_loader.hpp"
 #include "pluginlib/class_list_macros.hpp"
+#include "nav2_costmap_2d/footprint_collision_checker.hpp"
 
 namespace dwb_core
 {
@@ -157,6 +158,11 @@ public:
       traj_generator_->setSpeedLimit(speed_limit, percentage);
     }
   }
+  bool is_obstacle_ultra();
+  bool is_obstacle_back();
+  bool rotation_reverse();
+  bool isCollisionPre(const geometry_msgs::msg::Twist & cmd_vel, const geometry_msgs::msg::PoseStamped & pose);
+  bool is_rotation_to_included_angle();
 
 protected:
   /**
@@ -201,6 +207,7 @@ protected:
   bool debug_trajectory_details_;
   rclcpp::Duration transform_tolerance_{0, 0};
   bool shorten_transformed_plan_;
+  double forward_prune_distance_;
 
   /**
    * @brief try to resolve a possibly shortened critic name with the default namespaces and the suffix "Critic"
@@ -236,9 +243,17 @@ protected:
   std::string dwb_plugin_name_;
 
   bool short_circuit_trajectory_evaluation_;
-private:
-  double goal_x;
-  double goal_y;
+  // double difference;
+  bool update = false;
+  rclcpp::Time start_time_;
+  double rotation_sign = -1.0;
+  bool is_update_obstacle_front = false;
+  bool is_update_reverse = false;
+  geometry_msgs::msg::Pose2D robot_pose_in_obstacle;
+  double footprint_h_front,footprint_h_back, footprint_w;
+  std::unique_ptr<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>
+  collision_checker_;
+  bool stop_move = false;
 };
 
 }  // namespace dwb_core

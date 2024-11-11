@@ -55,6 +55,7 @@
 #include "pluginlib/class_list_macros.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
+#include <Eigen/Dense>
 
 using nav2_util::declare_parameter_if_not_declared;
 using nav2_util::geometry_utils::euclidean_distance;
@@ -94,6 +95,9 @@ void DWBLocalPlanner::configure(
     node, dwb_plugin_name_ + ".prune_distance",
     rclcpp::ParameterValue(2.0));
   declare_parameter_if_not_declared(
+    node, dwb_plugin_name_ + ".forward_prune_distance",
+    rclcpp::ParameterValue(2.0));
+  declare_parameter_if_not_declared(
     node, dwb_plugin_name_ + ".debug_trajectory_details",
     rclcpp::ParameterValue(false));
   declare_parameter_if_not_declared(
@@ -118,6 +122,7 @@ void DWBLocalPlanner::configure(
 
   node->get_parameter(dwb_plugin_name_ + ".prune_plan", prune_plan_);
   node->get_parameter(dwb_plugin_name_ + ".prune_distance", prune_distance_);
+  node->get_parameter(dwb_plugin_name_ + ".forward_prune_distance", forward_prune_distance_);
   node->get_parameter(dwb_plugin_name_ + ".debug_trajectory_details", debug_trajectory_details_);
   node->get_parameter(dwb_plugin_name_ + ".trajectory_generator_name", traj_generator_name);
   node->get_parameter(
@@ -131,6 +136,20 @@ void DWBLocalPlanner::configure(
   traj_generator_ = traj_gen_loader_.createUniqueInstance(traj_generator_name);
 
   traj_generator_->initialize(node, dwb_plugin_name_);
+  std::vector<geometry_msgs::msg::Point> footprint = costmap_ros_->getRobotFootprint();
+  footprint_w = fabs(footprint[0].y);
+  footprint_h_front = fabs(footprint[0].x);
+  footprint_h_back = fabs(footprint[0].x);
+  for (unsigned int i = 1; i < footprint.size(); ++i) {
+    if(footprint_h_front < fabs(footprint[i].x)){
+      footprint_h_front = fabs(footprint[i].x);
+    }
+    if(footprint_h_back > fabs(footprint[i].x)){
+      footprint_h_back = fabs(footprint[i].x);
+    }
+  }
+  collision_checker_ = std::make_unique<nav2_costmap_2d::
+      FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>(costmap_ros->getCostmap());
 
   try {
     loadCritics();
@@ -234,7 +253,209 @@ DWBLocalPlanner::setPlan(const nav_msgs::msg::Path & path)
   traj_generator_->reset();
 
   pub_->publishGlobalPlan(path2d);
+  
   global_plan_ = path2d;
+}
+
+bool DWBLocalPlanner::is_obstacle_ultra()
+{
+  std::string globalfameid = costmap_ros_->getGlobalFrameID();
+  geometry_msgs::msg::TransformStamped t;
+  try {
+        t = costmap_ros_->getTfBuffer()->lookupTransform(
+          globalfameid, "base_link",
+          tf2::TimePointZero);
+      } catch (const tf2::TransformException & ex) {
+      }
+  double robot_x = t.transform.translation.x;
+  double robot_y = t.transform.translation.y;
+  geometry_msgs::msg::Quaternion q = t.transform.rotation;
+  Eigen::Quaterniond eigen_q(q.w, q.x, q.y, q.z);
+  double yaw = atan2(2.0 * (eigen_q.w() * eigen_q.z() + eigen_q.x() * eigen_q.y()),  
+                  1.0 - 2.0 * (eigen_q.y() * eigen_q.y() + eigen_q.z() * eigen_q.z()));
+  double cos_th = cos(yaw);
+  double sin_th = sin(yaw);
+  for (double x = footprint_h_front; x <= footprint_h_front + 0.15; x += 0.05) {
+    for (double y = -footprint_w; y < footprint_w; y += 0.1) {
+      unsigned int map_x,map_y;
+      double g_x = robot_x + x * cos_th - y * sin_th;
+      double g_y = robot_y + x * sin_th + y * cos_th;
+      if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 254){
+        robot_pose_in_obstacle.x = robot_x;
+        robot_pose_in_obstacle.y = robot_y;
+        if(yaw > 0){
+          robot_pose_in_obstacle.theta = yaw - M_PI;
+        }
+        else{
+          robot_pose_in_obstacle.theta = M_PI + yaw;
+        }
+        return true;
+      }
+    }
+  }
+  for (double x = footprint_h_front; x <= footprint_h_front + 0.8; x += 0.05) {
+    unsigned int map_x,map_y;
+    double g_x = robot_x + x * cos_th;
+    double g_y = robot_y + x * sin_th;
+    if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 254){
+      robot_pose_in_obstacle.x = robot_x;
+      robot_pose_in_obstacle.y = robot_y;
+      if(yaw > 0){
+        robot_pose_in_obstacle.theta = yaw - M_PI;
+      }
+      else{
+        robot_pose_in_obstacle.theta = M_PI + yaw;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+bool DWBLocalPlanner::is_obstacle_back()
+{
+  std::string globalfameid = costmap_ros_->getGlobalFrameID();
+  geometry_msgs::msg::TransformStamped t;
+  try {
+        t = costmap_ros_->getTfBuffer()->lookupTransform(
+          globalfameid, "base_link",
+          tf2::TimePointZero);
+      } catch (const tf2::TransformException & ex) {
+      }
+  double robot_x = t.transform.translation.x;
+  double robot_y = t.transform.translation.y;
+  geometry_msgs::msg::Quaternion q = t.transform.rotation;
+  Eigen::Quaterniond eigen_q(q.w, q.x, q.y, q.z);
+  double yaw = atan2(2.0 * (eigen_q.w() * eigen_q.z() + eigen_q.x() * eigen_q.y()),  
+                  1.0 - 2.0 * (eigen_q.y() * eigen_q.y() + eigen_q.z() * eigen_q.z()));
+  double cos_th = cos(yaw);
+  double sin_th = sin(yaw);
+  for (double x = -footprint_h_back - 0.2; x <= -footprint_h_back; x += 0.05) {
+    for (double y = -footprint_w; y < footprint_w; y += 0.1) {
+      unsigned int map_x,map_y;
+      double g_x = robot_x + x * cos_th - y * sin_th;
+      double g_y = robot_y + x * sin_th + y * cos_th;
+      if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 254){
+        return true;
+      }
+    }
+  }
+  for (double x = -footprint_h_back - 0.35; x <= -footprint_h_back; x += 0.05) {
+    unsigned int map_x,map_y;
+    double g_x = robot_x + x * cos_th;
+    double g_y = robot_y + x * sin_th;
+    if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 254){
+      return true;
+    }
+  }
+  return false;
+}
+
+bool DWBLocalPlanner::is_rotation_to_included_angle(){
+  std::string globalfameid = costmap_ros_->getGlobalFrameID();
+  geometry_msgs::msg::TransformStamped t;
+  try {
+        t = costmap_ros_->getTfBuffer()->lookupTransform(
+          globalfameid, "base_link",
+          tf2::TimePointZero);
+      } catch (const tf2::TransformException & ex) {
+      }
+  geometry_msgs::msg::Quaternion q = t.transform.rotation;
+  Eigen::Quaterniond eigen_q(q.w, q.x, q.y, q.z);
+  double yaw = atan2(2.0 * (eigen_q.w() * eigen_q.z() + eigen_q.x() * eigen_q.y()),  
+                  1.0 - 2.0 * (eigen_q.y() * eigen_q.y() + eigen_q.z() * eigen_q.z())); 
+  double pose_z = robot_pose_in_obstacle.theta;
+  double difference = pose_z - yaw;
+  if (difference < -M_PI) {
+    difference = 2 * M_PI + difference;
+  } 
+  if (difference > M_PI) {  
+    difference = -2 * M_PI + difference;  
+  } 
+  if(fabs(difference) < 0.2){
+    return false;
+  }
+  return true;
+}
+
+bool DWBLocalPlanner::rotation_reverse(){
+  std::string globalfameid = costmap_ros_->getGlobalFrameID();
+  geometry_msgs::msg::TransformStamped t;
+  try {
+        t = costmap_ros_->getTfBuffer()->lookupTransform(
+          globalfameid, "base_link",
+          tf2::TimePointZero);
+      } catch (const tf2::TransformException & ex) {
+      }
+  geometry_msgs::msg::Quaternion q = t.transform.rotation;
+  Eigen::Quaterniond eigen_q(q.w, q.x, q.y, q.z);
+  double yaw = atan2(2.0 * (eigen_q.w() * eigen_q.z() + eigen_q.x() * eigen_q.y()),  
+                  1.0 - 2.0 * (eigen_q.y() * eigen_q.y() + eigen_q.z() * eigen_q.z())); 
+  double pose_z = robot_pose_in_obstacle.theta;
+  double difference = pose_z - yaw;
+  if (difference < -M_PI) {
+    difference = 2 * M_PI + difference;
+  } 
+  if (difference > M_PI) {  
+    difference = -2 * M_PI + difference;  
+  } 
+  if(fabs(difference) < 0.2){
+    return false;
+  }
+  rotation_sign = -1.0;
+  geometry_msgs::msg::Twist cmd_vel_2d;
+  cmd_vel_2d.linear.x = 0;
+  cmd_vel_2d.linear.y = 0;
+  cmd_vel_2d.angular.z = -0.9;
+  geometry_msgs::msg::PoseStamped pose;
+  pose.pose.position.x = t.transform.translation.x;
+  pose.pose.position.y = t.transform.translation.y;
+  pose.pose.orientation = t.transform.rotation;
+
+  stop_move = false;
+  if(isCollisionPre(cmd_vel_2d, pose)){
+    cmd_vel_2d.angular.z = 0.9;
+    if(isCollisionPre(cmd_vel_2d, pose)){
+      stop_move = true;
+      return false;
+    }
+    else{
+      rotation_sign = 1.0;
+      return true;
+    }
+  }
+  return true;
+}
+
+bool DWBLocalPlanner::isCollisionPre(
+  const geometry_msgs::msg::Twist & cmd_vel,
+  const geometry_msgs::msg::PoseStamped & pose)
+{
+  // Simulate rotation ahead by time in control frequency increments
+  double simulated_time = 0.0;
+  double initial_yaw = tf2::getYaw(pose.pose.orientation);
+  double yaw = 0.0;
+  double footprint_cost = 0.0;
+
+  while (simulated_time < 2) {
+    simulated_time += 0.1;
+    yaw = initial_yaw + cmd_vel.angular.z * simulated_time;
+    using namespace nav2_costmap_2d;  // NOLINT
+    footprint_cost = collision_checker_->footprintCostAtPose(
+      pose.pose.position.x, pose.pose.position.y,
+      yaw, costmap_ros_->getRobotFootprint());
+
+    if (footprint_cost == static_cast<double>(NO_INFORMATION) &&
+      costmap_ros_->getLayeredCostmap()->isTrackingUnknown())
+    {
+      return true;
+    }
+
+    if (footprint_cost >= static_cast<double>(LETHAL_OBSTACLE)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 geometry_msgs::msg::TwistStamped
@@ -243,6 +464,9 @@ DWBLocalPlanner::computeVelocityCommands(
   const geometry_msgs::msg::Twist & velocity,
   nav2_core::GoalChecker * /*goal_checker*/)
 {
+  nav_2d_msgs::msg::Twist2D cur_vel = nav_2d_utils::twist3Dto2D(velocity);
+  
+
   std::shared_ptr<dwb_msgs::msg::LocalPlanEvaluation> results = nullptr;
   if (pub_->shouldRecordEvaluation()) {
     results = std::make_shared<dwb_msgs::msg::LocalPlanEvaluation>();
@@ -255,11 +479,78 @@ DWBLocalPlanner::computeVelocityCommands(
     pub_->publishEvaluation(results);
     geometry_msgs::msg::TwistStamped cmd_vel;
     cmd_vel.twist = nav_2d_utils::twist2Dto3D(cmd_vel2d.velocity);
+    if(is_obstacle_ultra()  && cur_vel.x > 0.1 && fabs(cmd_vel.twist.linear.x) > 0.1 && fabs(cur_vel.theta) < 0.1 && global_plan_.poses.size() > 40){
+      is_update_obstacle_front = true;
+    }
+    bool switch_state = false;
+   
+    while(is_update_obstacle_front){
+      if(rotation_reverse()){
+        // RCLCPP_INFO(rclcpp::get_logger("planner"), "444444444444");
+        is_update_reverse = true;
+      }
+      while(is_update_reverse){
+        is_update_obstacle_front = true;
+        geometry_msgs::msg::Twist cmd_vel_2d;
+        cmd_vel_2d.linear.x = 0;
+        cmd_vel_2d.linear.y = 0;
+        cmd_vel_2d.angular.z = 0.2 * rotation_sign;
+        pub_->publishCmdvel(cmd_vel_2d);
+        if(!is_rotation_to_included_angle()){
+          // RCLCPP_INFO(rclcpp::get_logger("planner"), "5555555555");
+          is_update_reverse = false;
+        }
+        continue;
+      }
+      if(stop_move){
+        is_update_obstacle_front = false;
+        geometry_msgs::msg::Twist cmd_vel_2d;
+        cmd_vel_2d.linear.x = 0;
+        cmd_vel_2d.linear.y = 0;
+        cmd_vel_2d.angular.z = 0;
+        pub_->publishCmdvel(cmd_vel_2d);
+        // RCLCPP_INFO(rclcpp::get_logger("planner"), "666666666666");
+        continue;
+      }
+      // is_update_reverse = true;
+      rclcpp::Clock steady_clock_{RCL_STEADY_TIME};
+      start_time_= steady_clock_.now();
+      while(!is_obstacle_back() && !update){
+        // RCLCPP_INFO(rclcpp::get_logger("planner"), "77777777777");
+        is_update_obstacle_front = true;
+        if(steady_clock_.now().seconds() - start_time_.seconds() > 10.0){
+          update = true;
+        }
+        geometry_msgs::msg::Twist cmd_vel_2d;
+        cmd_vel_2d.linear.x = -0.2;
+        cmd_vel_2d.linear.y = 0;
+        cmd_vel_2d.angular.z = 0;
+        pub_->publishCmdvel(cmd_vel_2d);
+        switch_state = true;
+        continue;
+      }
+      update = false;
+      is_update_obstacle_front = false;
+      cmd_vel.twist.linear.x = 0;
+      cmd_vel.twist.angular.z = 0;
+    }
+    if(switch_state){
+      geometry_msgs::msg::Twist cmd_vel_2d;
+      cmd_vel_2d.linear.x = 0;
+      cmd_vel_2d.linear.y = 0;
+      cmd_vel_2d.angular.z = 0;
+      pub_->publishCmdvel(cmd_vel_2d);
+      sleep(1);
+      cmd_vel.twist.linear.x = 0;
+      cmd_vel.twist.angular.z = 0;
+      switch_state = false;
+    }
+    // RCLCPP_INFO(rclcpp::get_logger("planner"), "8888888888");
     return cmd_vel;
   } catch (const nav2_core::PlannerException & e) {
     pub_->publishEvaluation(results);
     throw;
-  }
+  } 
 }
 
 void
@@ -292,13 +583,17 @@ DWBLocalPlanner::computeVelocityCommands(
 
   nav_2d_msgs::msg::Path2D transformed_plan;
   nav_2d_msgs::msg::Pose2DStamped goal_pose;
+  nav_2d_msgs::msg::Pose2DStamped front_pose;
+  // front_pose.pose.x = pose.pose.x + 0.8 * cos(pose.pose.theta);
+  // front_pose.pose.y = pose.pose.y + 0.8 * sin(pose.pose.theta);
+  // front_pose.pose.theta = pose.pose.theta;
+  // RCLCPP_INFO(rclcpp::get_logger("dwb"), "pose: %f,%f", pose.pose.x,pose.pose.y);
+  // RCLCPP_INFO(rclcpp::get_logger("dwb"), "front pose: %f,%f", front_pose.pose.x,front_pose.pose.y);
 
   prepareGlobalPlan(pose, transformed_plan, goal_pose);
 
   nav2_costmap_2d::Costmap2D * costmap = costmap_ros_->getCostmap();
   std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*(costmap->getMutex()));
-  goal_x=goal_pose.pose.x;
-  goal_y=goal_pose.pose.y;
 
   for (TrajectoryCritic::Ptr & critic : critics_) {
     if (!critic->prepare(pose.pose, velocity, goal_pose.pose, transformed_plan)) {
@@ -313,7 +608,6 @@ DWBLocalPlanner::computeVelocityCommands(
     nav_2d_msgs::msg::Twist2DStamped cmd_vel;
     cmd_vel.header.stamp = clock_->now();
     cmd_vel.velocity = best.traj.velocity;
-    // RCLCPP_INFO(rclcpp::get_logger("critics"),"**************best vel: %f",best.traj.velocity.x);
 
     // debrief stateful scoring functions
     for (TrajectoryCritic::Ptr & critic : critics_) {
@@ -351,6 +645,7 @@ DWBLocalPlanner::coreScoringAlgorithm(
 {
   nav_2d_msgs::msg::Twist2D twist;
   dwb_msgs::msg::Trajectory2D traj;
+  // dwb_msgs::msg::Trajectory2D front_traj;
   dwb_msgs::msg::TrajectoryScore best, worst;
   best.total = -1;
   worst.total = -1;
@@ -359,21 +654,31 @@ DWBLocalPlanner::coreScoringAlgorithm(
   traj_generator_->startNewIteration(velocity);
   while (traj_generator_->hasMoreTwists()) {
     twist = traj_generator_->nextTwist();
-    // RCLCPP_INFO(rclcpp::get_logger("critics"),"x: %f",twist.x);
-
-    // nav_2d_msgs::msg::Path2D transformed_plan;
-    // double dy = goal_y-pose.y;
-    // double dx = goal_x-pose.x;
-    // while(twist.x <= 0.2 && dx * dx + dy * dy>=0.5 && fabs(angles::shortest_angular_distance(pose.theta, atan2(dy,dx)))<=0.5*M_PI){     
-    //   twist = traj_generator_->nextTwist();
+    // nav_2d_msgs::msg::Twist2D front_twist,front_velocity;
+    // front_twist.theta = twist.theta;
+    // front_velocity.theta = velocity.theta;
+    // if(front_twist.theta != 0){
+    //   front_twist.x = sqrt(0.09*front_twist.theta*front_twist.theta+twist.x*twist.x);
     // }
-    // while(fabs(velocity.theta)<=0.01 && fabs(velocity.x)<=0.01 && fabs(twist.theta)>=0.02){
-    //   twist = traj_generator_->nextTwist();
+    // else{
+    //   front_twist.x = twist.x;
     // }
-   
-    // RCLCPP_INFO(rclcpp::get_logger("critics"),"theta: %f",twist.theta);
-
+    // if(front_velocity.theta != 0){
+    //   front_velocity.x = sqrt(0.09*front_velocity.theta*front_velocity.theta+velocity.x*velocity.x);
+    // }
+    // else{
+    //   front_velocity.x = velocity.x;
+    // }
     traj = traj_generator_->generateTrajectory(pose, velocity, twist);
+    // front_traj.velocity = traj.velocity;
+    // geometry_msgs::msg::Pose2D front_pose;
+    // for(unsigned int i=0;i<traj.poses.size();i++){
+    //     front_pose.x = traj.poses[i].x + 0.8 * cos(traj.poses[i].theta);
+    //     front_pose.y = traj.poses[i].y + 0.8 * sin(traj.poses[i].theta);
+    //     front_pose.theta = traj.poses[i].theta;
+    //     front_traj.poses.push_back(front_pose);
+    // }
+    // front_traj.time_offsets = traj.time_offsets;
 
     try {
       dwb_msgs::msg::TrajectoryScore score = scoreTrajectory(traj, best.total);
@@ -447,11 +752,6 @@ DWBLocalPlanner::scoreTrajectory(
     cs.raw_score = critic_score;
     score.scores.push_back(cs);
     score.total += critic_score * cs.scale;
-    // std::ofstream out;
-    // out.open("critics.txt",std::ios::out|std::ios::app);
-    // out<<cs.name.c_str()<<": "<<critic_score<<", scale: "<<cs.scale<<std::endl;
-    // out.close();
-    //RCLCPP_INFO(rclcpp::get_logger("critics"),"%s : %f, scale: %f",cs.name.c_str(),critic_score,cs.scale);
     if (short_circuit_trajectory_evaluation_ && best_score > 0 && score.total > best_score) {
       // since we keep adding positives, once we are worse than the best, we will stay worse
       break;
@@ -484,7 +784,6 @@ DWBLocalPlanner::transformGlobalPlan(
   double dist_threshold = std::max(costmap->getSizeInCellsX(), costmap->getSizeInCellsY()) *
     costmap->getResolution() / 2.0;
 
-
   // If prune_plan is enabled (it is by default) then we want to restrict the
   // plan to distances within that range as well.
   double prune_dist = prune_distance_;
@@ -499,12 +798,13 @@ DWBLocalPlanner::transformGlobalPlan(
     transform_start_threshold = dist_threshold;
   }
 
-  // Set the maximum distance we'll include points after the part of the part of
-  // the plan near the robot (the end of the plan). This determines the amount
-  // of the plan passed on to the critics
+  // Set the maximum distance we'll include points after the part of the plan
+  // near the robot (the end of the plan). This determines the amount of the
+  // plan passed on to the critics
   double transform_end_threshold;
+  double forward_prune_dist = forward_prune_distance_;
   if (shorten_transformed_plan_) {
-    transform_end_threshold = std::min(dist_threshold, prune_dist);
+    transform_end_threshold = std::min(dist_threshold, forward_prune_dist);
   } else {
     transform_end_threshold = dist_threshold;
   }

@@ -87,10 +87,11 @@ bool SimpleObstacleAvoidance::isGoalOccupied(double goal_x, double goal_y){
 }
 bool SimpleObstacleAvoidance::isobstacleback()
 {
+  std::string globalfameid = costmap_ros_->getGlobalFrameID();
   geometry_msgs::msg::TransformStamped t;
   try {
         t = costmap_ros_->getTfBuffer()->lookupTransform(
-          "odom", "base_link",
+          globalfameid, "base_link",
           tf2::TimePointZero);
       } catch (const tf2::TransformException & ex) {
       }
@@ -155,11 +156,11 @@ bool SimpleObstacleAvoidance::isobstacleultraforward()
 }
 bool SimpleObstacleAvoidance::isobstacleultra()
 {
-  
+  std::string globalfameid = costmap_ros_->getGlobalFrameID();
   geometry_msgs::msg::TransformStamped t;
   try {
         t = costmap_ros_->getTfBuffer()->lookupTransform(
-          "odom", "base_link",
+          globalfameid, "base_link",
           tf2::TimePointZero);
       } catch (const tf2::TransformException & ex) {
       }
