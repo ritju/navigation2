@@ -293,21 +293,65 @@ bool DWBLocalPlanner::is_obstacle_ultra()
       }
     }
   }
-  for (double x = footprint_h_front; x <= footprint_h_front + 0.8; x += 0.05) {
-    unsigned int map_x,map_y;
-    double g_x = robot_x + x * cos_th;
-    double g_y = robot_y + x * sin_th;
-    if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 254){
-      robot_pose_in_obstacle.x = robot_x;
-      robot_pose_in_obstacle.y = robot_y;
-      if(yaw > 0){
-        robot_pose_in_obstacle.theta = yaw - M_PI;
+  for (double x = footprint_h_front + 0.15; x <= footprint_h_front + 0.3; x += 0.1) {
+    for (double y = -footprint_w / 2; y < footprint_w / 2; y += 0.05) {
+      unsigned int map_x,map_y;
+      double g_x = robot_x + x * cos_th - y * sin_th;
+      double g_y = robot_y + x * sin_th + y * cos_th;
+      if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 254){
+        robot_pose_in_obstacle.x = robot_x;
+        robot_pose_in_obstacle.y = robot_y;
+        if(yaw > 0){
+          robot_pose_in_obstacle.theta = yaw - M_PI;
+        }
+        else{
+          robot_pose_in_obstacle.theta = M_PI + yaw;
+        }
+        return true;
       }
-      else{
-        robot_pose_in_obstacle.theta = M_PI + yaw;
-      }
-      return true;
     }
+  }
+  for (double x = footprint_h_front + 0.3; x <= footprint_h_front + 0.8; x += 0.05) {
+    for (double y = -0.05; y < 0.05; y += 0.05) {
+      unsigned int map_x,map_y;
+      double g_x = robot_x + x * cos_th - y * sin_th;
+      double g_y = robot_y + x * sin_th + y * cos_th;
+      if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 254){
+        robot_pose_in_obstacle.x = robot_x;
+        robot_pose_in_obstacle.y = robot_y;
+        if(yaw > 0){
+          robot_pose_in_obstacle.theta = yaw - M_PI;
+        }
+        else{
+          robot_pose_in_obstacle.theta = M_PI + yaw;
+        }
+        return true;
+      }
+    }
+  }
+  // for (double x = footprint_h_front + 0.4; x <= footprint_h_front + 0.8; x += 0.05) {
+  //   unsigned int map_x,map_y;
+  //   double g_x = robot_x + x * cos_th;
+  //   double g_y = robot_y + x * sin_th;
+  //   if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 254){
+  //     robot_pose_in_obstacle.x = robot_x;
+  //     robot_pose_in_obstacle.y = robot_y;
+  //     if(yaw > 0){
+  //       robot_pose_in_obstacle.theta = yaw - M_PI;
+  //     }
+  //     else{
+  //       robot_pose_in_obstacle.theta = M_PI + yaw;
+  //     }
+  //     return true;
+  //   }
+  // }
+  robot_pose_in_obstacle.x = robot_x;
+  robot_pose_in_obstacle.y = robot_y;
+  if(yaw > 0){
+    robot_pose_in_obstacle.theta = yaw - M_PI;
+  }
+  else{
+    robot_pose_in_obstacle.theta = M_PI + yaw;
   }
   return false;
 }
@@ -330,7 +374,7 @@ bool DWBLocalPlanner::is_obstacle_back()
                   1.0 - 2.0 * (eigen_q.y() * eigen_q.y() + eigen_q.z() * eigen_q.z()));
   double cos_th = cos(yaw);
   double sin_th = sin(yaw);
-  for (double x = -footprint_h_back - 0.2; x <= -footprint_h_back; x += 0.05) {
+  for (double x = -footprint_h_back - 0.35; x <= -footprint_h_back; x += 0.05) {
     for (double y = -footprint_w; y < footprint_w; y += 0.1) {
       unsigned int map_x,map_y;
       double g_x = robot_x + x * cos_th - y * sin_th;
@@ -340,14 +384,14 @@ bool DWBLocalPlanner::is_obstacle_back()
       }
     }
   }
-  for (double x = -footprint_h_back - 0.35; x <= -footprint_h_back; x += 0.05) {
-    unsigned int map_x,map_y;
-    double g_x = robot_x + x * cos_th;
-    double g_y = robot_y + x * sin_th;
-    if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 254){
-      return true;
-    }
-  }
+  // for (double x = -footprint_h_back - 0.35; x <= -footprint_h_back; x += 0.05) {
+  //   unsigned int map_x,map_y;
+  //   double g_x = robot_x + x * cos_th;
+  //   double g_y = robot_y + x * sin_th;
+  //   if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 254){
+  //     return true;
+  //   }
+  // }
   return false;
 }
 
