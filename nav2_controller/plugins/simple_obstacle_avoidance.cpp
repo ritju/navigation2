@@ -103,7 +103,7 @@ bool SimpleObstacleAvoidance::isobstacleback()
                   1.0 - 2.0 * (eigen_q.y() * eigen_q.y() + eigen_q.z() * eigen_q.z()));
   double cos_th = cos(yaw);
   double sin_th = sin(yaw);
-  for (double x = -footprint_h_back - 0.35; x <= -footprint_h_back; x += 0.05) {
+  for (double x = -footprint_h_back - 0.35; x <= -footprint_h_back + 0.2; x += 0.05) {
     for (double y = -footprint_w; y < footprint_w; y += 0.1) {
       unsigned int map_x,map_y;
       double g_x = robot_x + x * cos_th - y * sin_th;

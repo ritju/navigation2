@@ -426,6 +426,20 @@ void ControllerServer::computeControl()
         return;
       }
       
+      nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
+      if(fabs(twist.x) < 0.1 && obstacle_avoidance_->isobstacleback() && !obstacle_avoidance_->isobstacleultra()){
+        geometry_msgs::msg::TwistStamped velocity;
+        velocity.twist.angular.x = 0;
+        velocity.twist.angular.y = 0;
+        velocity.twist.angular.z = 0;
+        velocity.twist.linear.x = 0.2;
+        velocity.twist.linear.y = 0;
+        velocity.twist.linear.z = 0;
+        velocity.header.frame_id = costmap_ros_->getBaseFrameID();
+        velocity.header.stamp = now();
+        publishVelocity(velocity);
+        continue; 
+      }
       if(obstacle_avoidance_->isobstacleultraforward() && !obstacle_avoidance_->isobstacleback()){
         geometry_msgs::msg::TwistStamped velocity;
         velocity.twist.angular.x = 0;
