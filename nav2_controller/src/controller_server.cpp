@@ -426,56 +426,48 @@ void ControllerServer::computeControl()
         return;
       }
       
-      nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
-      // if(obstacle_avoidance_->isobstacleback()){
-      //   RCLCPP_INFO(rclcpp::get_logger("test"),"*************");
-      // }
-      // RCLCPP_INFO(rclcpp::get_logger("test"),"111111111111");
-      if(isSameDirect() && fabs(twist.theta) < 0.2){
+      if(obstacle_avoidance_->isobstacleultraforward() && !obstacle_avoidance_->isobstacleback()){
+        geometry_msgs::msg::TwistStamped velocity;
+        velocity.twist.angular.x = 0;
+        velocity.twist.angular.y = 0;
+        velocity.twist.angular.z = 0;
+        velocity.twist.linear.x = -0.2;
+        velocity.twist.linear.y = 0;
+        velocity.twist.linear.z = 0;
+        velocity.header.frame_id = costmap_ros_->getBaseFrameID();
+        velocity.header.stamp = now();
+        publishVelocity(velocity);
+        // RCLCPP_INFO(rclcpp::get_logger("test"),"111111111111");
+        continue; 
+      }
+      if(obstacle_avoidance_->isobstacleultra() && !obstacle_avoidance_->isobstacleback()){
+        publishZeroVelocity();
+        sleep(1);
         // RCLCPP_INFO(rclcpp::get_logger("test"),"222222222222");
-        if(obstacle_avoidance_->isobstacleultraforward() && !obstacle_avoidance_->isobstacleback()){
-          geometry_msgs::msg::TwistStamped velocity;
-          velocity.twist.angular.x = 0;
-          velocity.twist.angular.y = 0;
-          velocity.twist.angular.z = 0;
-          velocity.twist.linear.x = -0.2;
-          velocity.twist.linear.y = 0;
-          velocity.twist.linear.z = 0;
-          velocity.header.frame_id = costmap_ros_->getBaseFrameID();
-          velocity.header.stamp = now();
-          publishVelocity(velocity);
-          // RCLCPP_INFO(rclcpp::get_logger("test"),"111111111111");
-          continue; 
-        }
-        if(obstacle_avoidance_->isobstacleultra() && !obstacle_avoidance_->isobstacleback()){
+        // stop = true;
+        continue;
+      }
+      if(obstacle_avoidance_->isobstacleultra() && obstacle_avoidance_->isobstacleback()){
+        // RCLCPP_INFO(rclcpp::get_logger("test"),"333333333333");
+        rclcpp::Clock steady_clock_{RCL_STEADY_TIME};
+        if(timeout <= 5){
+          if (!timeout_update)
+          {
+            starttime= steady_clock_.now();
+          }
+          timeout_update = true;
+          timeout = steady_clock_.now().seconds() - starttime.seconds();
           publishZeroVelocity();
           sleep(1);
-          // RCLCPP_INFO(rclcpp::get_logger("test"),"222222222222");
-          // stop = true;
           continue;
         }
-        if(obstacle_avoidance_->isobstacleultra() && obstacle_avoidance_->isobstacleback()){
-          // RCLCPP_INFO(rclcpp::get_logger("test"),"333333333333");
-          rclcpp::Clock steady_clock_{RCL_STEADY_TIME};
-          if(timeout <= 5){
-            if (!timeout_update)
-            {
-              starttime= steady_clock_.now();
-            }
-            timeout_update = true;
-            timeout = steady_clock_.now().seconds() - starttime.seconds();
-            publishZeroVelocity();
-            sleep(1);
-            continue;
-          }
-          else{
-            timeout = steady_clock_.now().seconds() - starttime.seconds();
-          }
+        else{
+          timeout = steady_clock_.now().seconds() - starttime.seconds();
         }
-        if(timeout > 25){
-          timeout = 0;
-          timeout_update = false;
-        }
+      }
+      if(timeout > 25){
+        timeout = 0;
+        timeout_update = false;
       }
       // // Drop proof
       if(drop_sub_->getdrop()){

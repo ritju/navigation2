@@ -152,7 +152,7 @@ bool SimpleObstacleAvoidance::isobstacleultra()
   double cos_th = cos(yaw);
   double sin_th = sin(yaw);
 
-  for (double x = footprint_h_front; x <= footprint_h_front + 0.15; x += 0.05) {
+  for (double x = footprint_h_front - 0.2; x <= footprint_h_front + 0.15; x += 0.05) {
     for (double y = -footprint_w; y < footprint_w; y += 0.1) {
       unsigned int map_x,map_y;
       double g_x = robot_x + x * cos_th - y * sin_th;
