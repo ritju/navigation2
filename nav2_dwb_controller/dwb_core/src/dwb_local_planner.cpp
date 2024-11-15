@@ -137,15 +137,21 @@ void DWBLocalPlanner::configure(
 
   traj_generator_->initialize(node, dwb_plugin_name_);
   std::vector<geometry_msgs::msg::Point> footprint = costmap_ros_->getRobotFootprint();
-  footprint_w = fabs(footprint[0].y);
-  footprint_h_front = fabs(footprint[0].x);
-  footprint_h_back = fabs(footprint[0].x);
+  footprint_w = footprint[0].y;
+  footprint_h_front = footprint[0].x;
+  footprint_h_back = footprint[0].x;
   for (unsigned int i = 1; i < footprint.size(); ++i) {
-    if(footprint_h_front < fabs(footprint[i].x)){
-      footprint_h_front = fabs(footprint[i].x);
+    if(footprint_h_front < footprint[i].x){
+      footprint_h_front = footprint[i].x;
     }
-    if(footprint_h_back > fabs(footprint[i].x)){
-      footprint_h_back = fabs(footprint[i].x);
+    if(footprint_h_back > footprint[i].x){
+      footprint_h_back = footprint[i].x;
+    }
+  }
+  footprint_h_back = fabs(footprint_h_back);
+  for (unsigned int i = 1; i < footprint.size(); ++i) {
+    if(footprint_w < fabs(footprint[i].y)){
+      footprint_w = fabs(footprint[i].y);
     }
   }
   collision_checker_ = std::make_unique<nav2_costmap_2d::
