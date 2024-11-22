@@ -137,23 +137,23 @@ void DWBLocalPlanner::configure(
 
   traj_generator_->initialize(node, dwb_plugin_name_);
   std::vector<geometry_msgs::msg::Point> footprint = costmap_ros_->getRobotFootprint();
-  footprint_w = footprint[0].y;
+  footprint_w_front = footprint[0].y;
+  footprint_w_back = footprint[0].y;
   footprint_h_front = footprint[0].x;
   footprint_h_back = footprint[0].x;
   for (unsigned int i = 1; i < footprint.size(); ++i) {
     if(footprint_h_front < footprint[i].x){
       footprint_h_front = footprint[i].x;
+      footprint_w_front = footprint[i].y;
     }
     if(footprint_h_back > footprint[i].x){
       footprint_h_back = footprint[i].x;
+      footprint_w_back = footprint[i].y;
     }
   }
   footprint_h_back = fabs(footprint_h_back);
-  for (unsigned int i = 1; i < footprint.size(); ++i) {
-    if(footprint_w < fabs(footprint[i].y)){
-      footprint_w = fabs(footprint[i].y);
-    }
-  }
+  footprint_w_front = fabs(footprint_w_front);
+  footprint_w_back = fabs(footprint_w_back);
   collision_checker_ = std::make_unique<nav2_costmap_2d::
       FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>(costmap_ros->getCostmap());
 
@@ -282,7 +282,7 @@ bool DWBLocalPlanner::is_obstacle_ultra()
   double cos_th = cos(yaw);
   double sin_th = sin(yaw);
   for (double x = footprint_h_front; x <= footprint_h_front + 0.15; x += 0.05) {
-    for (double y = -footprint_w; y < footprint_w; y += 0.1) {
+    for (double y = -footprint_w_front; y < footprint_w_front; y += 0.1) {
       unsigned int map_x,map_y;
       double g_x = robot_x + x * cos_th - y * sin_th;
       double g_y = robot_y + x * sin_th + y * cos_th;
@@ -300,7 +300,7 @@ bool DWBLocalPlanner::is_obstacle_ultra()
     }
   }
   for (double x = footprint_h_front + 0.15; x <= footprint_h_front + 0.3; x += 0.1) {
-    for (double y = -footprint_w / 2; y < footprint_w / 2; y += 0.05) {
+    for (double y = -footprint_w_front / 2; y < footprint_w_front / 2; y += 0.05) {
       unsigned int map_x,map_y;
       double g_x = robot_x + x * cos_th - y * sin_th;
       double g_y = robot_y + x * sin_th + y * cos_th;
@@ -381,7 +381,7 @@ bool DWBLocalPlanner::is_obstacle_back()
   double cos_th = cos(yaw);
   double sin_th = sin(yaw);
   for (double x = -footprint_h_back - 0.35; x <= -footprint_h_back; x += 0.05) {
-    for (double y = -footprint_w; y < footprint_w; y += 0.1) {
+    for (double y = -footprint_w_back; y < footprint_w_back; y += 0.1) {
       unsigned int map_x,map_y;
       double g_x = robot_x + x * cos_th - y * sin_th;
       double g_y = robot_y + x * sin_th + y * cos_th;

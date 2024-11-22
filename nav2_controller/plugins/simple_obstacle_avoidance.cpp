@@ -47,24 +47,24 @@ void SimpleObstacleAvoidance::initialize(
   costmap_ros_ = costmap_ros;
   costmap_ = costmap_ros_->getCostmap();
   std::vector<geometry_msgs::msg::Point> footprint = costmap_ros_->getRobotFootprint();
-  footprint_w = footprint[0].y;
+  footprint_w_front = footprint[0].y;
+  footprint_w_back = footprint[0].y;
   footprint_h_front = footprint[0].x;
   footprint_h_back = footprint[0].x;
   for (unsigned int i = 1; i < footprint.size(); ++i) {
     if(footprint_h_front < footprint[i].x){
       footprint_h_front = footprint[i].x;
+      footprint_w_front = footprint[i].y;
     }
     if(footprint_h_back > footprint[i].x){
       footprint_h_back = footprint[i].x;
+      footprint_w_back = footprint[i].y;
     }
   }
   footprint_h_back = fabs(footprint_h_back);
-  for (unsigned int i = 1; i < footprint.size(); ++i) {
-    if(footprint_w < fabs(footprint[i].y)){
-      footprint_w = fabs(footprint[i].y);
-    }
-  }
-  // RCLCPP_INFO(rclcpp::get_logger("simple_obstacle"), "footprint: %f, %f", footprint_h_front, footprint_h_back);
+  footprint_w_front = fabs(footprint_w_front);
+  footprint_w_back = fabs(footprint_w_back);
+  // RCLCPP_INFO(rclcpp::get_logger("simple_obstacle"), "footprint: %f, %f, %f, %f", footprint_h_front, footprint_h_back,footprint_w_front,footprint_w_back);
   
   // Add callback for dynamic parameters
   dyn_params_handler_ = node->add_on_set_parameters_callback(
@@ -91,6 +91,66 @@ bool SimpleObstacleAvoidance::isGoalOccupied(double goal_x, double goal_y){
   }
   return false;
 }
+bool SimpleObstacleAvoidance::is_collision_front()
+{
+  std::string globalfameid = costmap_ros_->getGlobalFrameID();
+  geometry_msgs::msg::TransformStamped t;
+  try {
+        t = costmap_ros_->getTfBuffer()->lookupTransform(
+          globalfameid, "base_link",
+          tf2::TimePointZero);
+      } catch (const tf2::TransformException & ex) {
+      }
+  double robot_x = t.transform.translation.x;
+  double robot_y = t.transform.translation.y;
+  geometry_msgs::msg::Quaternion q = t.transform.rotation;
+  Eigen::Quaterniond eigen_q(q.w, q.x, q.y, q.z);
+  double yaw = atan2(2.0 * (eigen_q.w() * eigen_q.z() + eigen_q.x() * eigen_q.y()),  
+                  1.0 - 2.0 * (eigen_q.y() * eigen_q.y() + eigen_q.z() * eigen_q.z()));
+  double cos_th = cos(yaw);
+  double sin_th = sin(yaw);
+  for (double x = footprint_h_front - 0.2; x <= footprint_h_front + 0.1; x += 0.05) {
+    for (double y = -footprint_w_front; y < footprint_w_front; y += 0.1) {
+      unsigned int map_x,map_y;
+      double g_x = robot_x + x * cos_th - y * sin_th;
+      double g_y = robot_y + x * sin_th + y * cos_th;
+      if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 254){
+        return true;
+      }
+    }
+  }
+  return false;
+}
+bool SimpleObstacleAvoidance::is_collision_back()
+{
+  std::string globalfameid = costmap_ros_->getGlobalFrameID();
+  geometry_msgs::msg::TransformStamped t;
+  try {
+        t = costmap_ros_->getTfBuffer()->lookupTransform(
+          globalfameid, "base_link",
+          tf2::TimePointZero);
+      } catch (const tf2::TransformException & ex) {
+      }
+  double robot_x = t.transform.translation.x;
+  double robot_y = t.transform.translation.y;
+  geometry_msgs::msg::Quaternion q = t.transform.rotation;
+  Eigen::Quaterniond eigen_q(q.w, q.x, q.y, q.z);
+  double yaw = atan2(2.0 * (eigen_q.w() * eigen_q.z() + eigen_q.x() * eigen_q.y()),  
+                  1.0 - 2.0 * (eigen_q.y() * eigen_q.y() + eigen_q.z() * eigen_q.z()));
+  double cos_th = cos(yaw);
+  double sin_th = sin(yaw);
+  for (double x = -footprint_h_back - 0.1; x <= -footprint_h_back + 0.2; x += 0.05) {
+    for (double y = -footprint_w_back; y < footprint_w_back; y += 0.1) {
+      unsigned int map_x,map_y;
+      double g_x = robot_x + x * cos_th - y * sin_th;
+      double g_y = robot_y + x * sin_th + y * cos_th;
+      if (costmap_ros_->getCostmap()->worldToMap(g_x, g_y, map_x, map_y) && costmap_ros_->getCostmap()->getCost(map_x, map_y) >= 254){
+        return true;
+      }
+    }
+  }
+  return false;
+}
 bool SimpleObstacleAvoidance::isobstacleback()
 {
   std::string globalfameid = costmap_ros_->getGlobalFrameID();
@@ -110,7 +170,7 @@ bool SimpleObstacleAvoidance::isobstacleback()
   double cos_th = cos(yaw);
   double sin_th = sin(yaw);
   for (double x = -footprint_h_back - 0.35; x <= -footprint_h_back + 0.2; x += 0.05) {
-    for (double y = -footprint_w; y < footprint_w; y += 0.1) {
+    for (double y = -footprint_w_back; y < footprint_w_back; y += 0.1) {
       unsigned int map_x,map_y;
       double g_x = robot_x + x * cos_th - y * sin_th;
       double g_y = robot_y + x * sin_th + y * cos_th;
@@ -159,7 +219,7 @@ bool SimpleObstacleAvoidance::isobstacleultra()
   double sin_th = sin(yaw);
 
   for (double x = footprint_h_front - 0.2; x <= footprint_h_front + 0.15; x += 0.05) {
-    for (double y = -footprint_w; y < footprint_w; y += 0.1) {
+    for (double y = -footprint_w_front; y < footprint_w_front; y += 0.1) {
       unsigned int map_x,map_y;
       double g_x = robot_x + x * cos_th - y * sin_th;
       double g_y = robot_y + x * sin_th + y * cos_th;
@@ -170,7 +230,7 @@ bool SimpleObstacleAvoidance::isobstacleultra()
     }
   }
   for (double x = footprint_h_front + 0.15; x <= footprint_h_front + 0.3; x += 0.05) {
-    for (double y = -footprint_w / 2; y < footprint_w / 2; y += 0.1) {
+    for (double y = -footprint_w_front / 2; y < footprint_w_front / 2; y += 0.1) {
       unsigned int map_x,map_y;
       double g_x = robot_x + x * cos_th - y * sin_th;
       double g_y = robot_y + x * sin_th + y * cos_th;

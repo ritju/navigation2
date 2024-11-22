@@ -250,7 +250,7 @@ protected:
   bool is_update_obstacle_front = false;
   bool is_update_reverse = false;
   geometry_msgs::msg::Pose2D robot_pose_in_obstacle;
-  double footprint_h_front,footprint_h_back, footprint_w;
+  double footprint_h_front,footprint_h_back, footprint_w_back, footprint_w_front;
   std::unique_ptr<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>
   collision_checker_;
   bool stop_move = false;

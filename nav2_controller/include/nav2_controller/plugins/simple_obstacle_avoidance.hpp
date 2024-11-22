@@ -200,6 +200,8 @@ public:
   bool isobstacleback() override;
   bool isobstacleultraforward() override;
   bool isobstacleultra() override;
+  bool is_collision_front() override;
+  bool is_collision_back() override;
 
 protected:
   double local_width_;
@@ -212,7 +214,7 @@ protected:
   nav2_costmap_2d::Costmap2D * costmap_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;
   std::string plugin_name_;
-  double footprint_h_front,footprint_h_back, footprint_w;
+  double footprint_h_front,footprint_h_back, footprint_w_back, footprint_w_front;
   rcl_interfaces::msg::SetParametersResult
   dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters);
 };

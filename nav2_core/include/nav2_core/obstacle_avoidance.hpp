@@ -9,8 +9,8 @@
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include "geometry_msgs/msg/pose.hpp"
 #include "geometry_msgs/msg/twist.hpp"
-#include "capella_ros_msg/msg/single_detector.hpp"
-#include "capella_ros_msg/msg/detect_result.hpp"
+// #include "capella_ros_msg/msg/single_detector.hpp"
+// #include "capella_ros_msg/msg/detect_result.hpp"
 #include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/bool.hpp"
 
@@ -32,6 +32,8 @@ public:
   virtual bool isobstacleback() = 0;
   virtual bool isobstacleultraforward() = 0;
   virtual bool isobstacleultra() = 0;
+  virtual bool is_collision_front() = 0;
+  virtual bool is_collision_back() = 0;
   
 };
 }  
