@@ -128,7 +128,7 @@ public:
    */
   void bufferIncomingRangeMsg(const sensor_msgs::msg::Range::SharedPtr range_message);
 
-private:
+protected:
   /**
    * @brief Processes all sensors into the costmap buffered from callbacks
    */
@@ -180,7 +180,7 @@ private:
    */
   inline void update_cell(
     double ox, double oy, double ot,
-    double r, double nx, double ny, bool clear, std::string ultrasonic_name);
+    double r, double nx, double ny, bool clear);
 
   /**
    * @brief Find probability value of a cost

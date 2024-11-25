@@ -160,7 +160,6 @@ void RangeSensorLayer::onInitialize()
       "topic %s", range_subs_.back()->get_topic_name());
   }
   global_frame_ = layered_costmap_->getGlobalFrameID();
-  
 }
 
 
@@ -268,14 +267,15 @@ void RangeSensorLayer::processFixedRangeMsg(sensor_msgs::msg::Range & range_mess
 
 void RangeSensorLayer::processVariableRangeMsg(sensor_msgs::msg::Range & range_message)
 {
-  if (range_message.range < range_message.min_range || ((range_message.range > range_message.max_range) && range_message.range < 4.5))
+  if (range_message.range < range_message.min_range || range_message.range >
+    range_message.max_range)
   {
     return;
   }
 
   bool clear_sensor_cone = false;
 
-  if (range_message.range >= 4.5 && clear_on_max_reading_) {
+  if (range_message.range >= range_message.max_range && clear_on_max_reading_) {
     clear_sensor_cone = true;
   }
 
@@ -302,7 +302,7 @@ void RangeSensorLayer::updateCostmap(
       global_frame_.c_str(), in.header.frame_id.c_str());
     return;
   }
-  // RCLCPP_INFO(logger_, "global frame is %s", global_frame_.c_str());
+
   tf_->transform(in, out, global_frame_, transform_tolerance_);
 
   double ox = out.point.x, oy = out.point.y;
@@ -389,8 +389,7 @@ void RangeSensorLayer::updateCostmap(
       if (update_xy_cell) {
         double wx, wy;
         mapToWorld(x, y, wx, wy);
-        std::string ultrasonic_name = range_message.header.frame_id;
-        update_cell(ox, oy, theta, range_message.range, wx, wy, clear_sensor_cone, ultrasonic_name);
+        update_cell(ox, oy, theta, range_message.range, wx, wy, clear_sensor_cone);
       }
     }
   }
@@ -401,7 +400,7 @@ void RangeSensorLayer::updateCostmap(
 
 void RangeSensorLayer::update_cell(
   double ox, double oy, double ot, double r,
-  double nx, double ny, bool clear, std::string ultrasonic_name)
+  double nx, double ny, bool clear)
 {
   unsigned int x, y;
   if (worldToMap(nx, ny, x, y)) {
@@ -413,52 +412,17 @@ void RangeSensorLayer::update_cell(
     if (!clear) {
       sensor = sensor_model(r, phi, theta);
     }
-    else
-    {
-      if(ultrasonic_name == "ultrasonic_sensor_link1")
-      {
-        RCLCPP_DEBUG_THROTTLE(logger_, *clock_, 1000, "%s receive no data: clearing...", ultrasonic_name.c_str());
-      }
-      if(ultrasonic_name == "ultrasonic_sensor_link2")
-      {
-        RCLCPP_DEBUG_THROTTLE(logger_, *clock_, 1000, "%s receive no data: clearing...", ultrasonic_name.c_str());
-      }
-      if(ultrasonic_name == "ultrasonic_sensor_link3")
-      {
-        RCLCPP_DEBUG_THROTTLE(logger_, *clock_, 1000, "%s receive no data: clearing...", ultrasonic_name.c_str());
-      }
-      if(ultrasonic_name == "ultrasonic_sensor_link4")
-      {
-        RCLCPP_DEBUG_THROTTLE(logger_, *clock_, 1000, "%s receive no data: clearing...", ultrasonic_name.c_str());
-      }
-      if(ultrasonic_name == "ultrasonic_sensor_link5")
-      {
-        RCLCPP_DEBUG_THROTTLE(logger_, *clock_, 1000, "%s receive no data: clearing...", ultrasonic_name.c_str());
-      }
-      if(ultrasonic_name == "ultrasonic_sensor_link6")
-      {
-        RCLCPP_DEBUG_THROTTLE(logger_, *clock_, 1000, "%s receive no data: clearing...", ultrasonic_name.c_str());
-      }
-      if(ultrasonic_name == "ultrasonic_sensor_link7")
-      {
-        RCLCPP_DEBUG_THROTTLE(logger_, *clock_, 1000, "%s receive no data: clearing...", ultrasonic_name.c_str());
-      }
-      
-      
-    }
-    // double prior = 1.0;
     double prior = to_prob(getCost(x, y));
     double prob_occ = sensor * prior;
     double prob_not = (1 - sensor) * (1 - prior);
     double new_prob = prob_occ / (prob_occ + prob_not);
-    // RCLCPP_INFO(logger_, "dx: %f %f | %f %f = %f", dx, dy, theta, phi, sensor);
-    // RCLCPP_INFO(logger_, "prior: %f | prob_occ: %f %f | %f", prior, prob_occ, prob_not, new_prob);
-    // RCLCPP_INFO(
-    //   logger_,
-    //   "%f %f | %f %f = %f", dx, dy, theta, phi, sensor);
-    // RCLCPP_INFO(
-    //   logger_,
-    //   "%f | %f %f | %f", prior, prob_occ, prob_not, new_prob);
+
+    RCLCPP_DEBUG(
+      logger_,
+      "%f %f | %f %f = %f", dx, dy, theta, phi, sensor);
+    RCLCPP_DEBUG(
+      logger_,
+      "%f | %f %f | %f", prior, prob_occ, prob_not, new_prob);
     unsigned char c = to_cost(new_prob);
     setCost(x, y, c);
   }
