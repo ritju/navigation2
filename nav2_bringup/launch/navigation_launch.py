@@ -56,6 +56,15 @@ def generate_launch_description():
     #              https://github.com/ros2/launch_ros/issues/56
     remappings = [('/tf', 'tf'),
                   ('/tf_static', 'tf_static')]
+    
+    if 'ROBOT_MODE' in os.environ:
+        if os.environ.get('ROBOT_MODE') == 'Single':
+            controller_cmd_vel_nav_topic = 'cmd_vel_nav'
+        elif os.environ.get('ROBOT_MODE') == 'Multi':
+            controller_cmd_vel_nav_topic = 'cmd_vel_nav_'
+    else:
+        controller_cmd_vel_nav_topic = 'cmd_vel_nav'
+        print("Not set controller_cmd_vel_nav_topic name: Single/Multi ! Use default value Single !")
 
     # Create our own temporary YAML files that include substitutions
     param_substitutions = {
@@ -117,7 +126,7 @@ def generate_launch_description():
                 respawn_delay=2.0,
                 parameters=[configured_params],
                 arguments=['--ros-args', '--log-level', log_level],
-                remappings=remappings + [('cmd_vel', 'cmd_vel_nav')]),
+                remappings=remappings + [('cmd_vel', controller_cmd_vel_nav_topic)]),
             Node(
                 package='nav2_smoother',
                 executable='smoother_server',
