@@ -405,12 +405,25 @@ PlannerServer::computePlanThroughPoses()
     } 
     backgoals_publisher_->publish(back_goals);
 
-    std::vector<geometry_msgs::msg::PoseStamped> filtered_goals;  
+    std::vector<geometry_msgs::msg::PoseStamped> filtered_goals;
+    double accumulate_distance = 0;
+    double dx, dy;   
     for (const auto& currentGoal : goal->goals) {  
         unsigned int mx, my;  
         costmap_->worldToMap(currentGoal.pose.position.x, currentGoal.pose.position.y, mx, my);  
         if (costmap_->getCost(mx, my) < 253) {  
-            filtered_goals.push_back(currentGoal);  
+            filtered_goals.push_back(currentGoal);
+            if (filtered_goals.size() > 2)
+            {
+              dx = filtered_goals.back().pose.position.x - filtered_goals.at(filtered_goals.size() - 2).pose.position.x;
+              dy = filtered_goals.back().pose.position.y - filtered_goals.at(filtered_goals.size() - 2).pose.position.y;
+              accumulate_distance += hypot(dx, dy);
+              RCLCPP_DEBUG(get_logger(), "Accumulate distance : %f !", accumulate_distance);
+            }
+            if (accumulate_distance > 10 && filtered_goals.size() > 2)
+            {
+              break;
+            }  
         }  
     } 
     if (filtered_goals.empty()) {
@@ -466,6 +479,12 @@ PlannerServer::computePlanThroughPoses()
       concat_path.poses.insert(
         concat_path.poses.end(), curr_path.poses.begin(), curr_path.poses.end());
       concat_path.header = curr_path.header;
+    }
+
+    if (concat_path.poses.size() == 0)
+    {
+      action_server_poses_->terminate_current();
+      return;
     }
 
     // Publish the plan for visualization purposes

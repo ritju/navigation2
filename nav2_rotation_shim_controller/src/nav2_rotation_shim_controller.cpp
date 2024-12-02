@@ -350,10 +350,21 @@ geometry_msgs::msg::PoseStamped RotationShimController::getSampledPathPt()
   double dx, dy;
 
   // Find the first point at least sampling distance away
+  double accumulate_distance = 0;
   for (unsigned int i = 1; i != current_path_.poses.size(); i++) {
-    dx = current_path_.poses[i].pose.position.x - start.position.x;
-    dy = current_path_.poses[i].pose.position.y - start.position.y;
-    if (hypot(dx, dy) >= forward_sampling_distance_) {
+    if (i == 1)
+    {
+      dx = current_path_.poses[i].pose.position.x - start.position.x;
+      dy = current_path_.poses[i].pose.position.y - start.position.y;
+      accumulate_distance += hypot(dx, dy);
+    }
+    else
+    {
+      dx = current_path_.poses[i].pose.position.x - current_path_.poses[i-1].pose.position.x;
+      dy = current_path_.poses[i].pose.position.y - current_path_.poses[i-1].pose.position.y; 
+      accumulate_distance += hypot(dx, dy);
+    }
+    if (accumulate_distance >= forward_sampling_distance_) {
       current_path_.poses[i].header.frame_id = current_path_.header.frame_id;
       current_path_.poses[i].header.stamp = clock_->now();  // Get current time transformation
       goal_distance_ = hypot(dx, dy);

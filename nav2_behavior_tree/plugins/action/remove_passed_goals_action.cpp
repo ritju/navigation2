@@ -91,7 +91,7 @@ inline BT::NodeStatus RemovePassedGoals::tick()
       {
         if (std::find_if(goal_poses.begin(), goal_poses.end(), 
           [=](const geometry_msgs::msg::PoseStamped& pose)
-          {return ((pose.pose.position.x == it->pose.position.x) && (pose.pose.position.y == it->pose.position.y));}) == 
+          {return ((pose.pose.position.z == it->pose.position.z));}) == 
           goal_poses.end())
         {
           it = removed_path_.poses.erase(it);

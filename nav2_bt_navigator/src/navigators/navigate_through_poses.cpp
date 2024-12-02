@@ -79,6 +79,12 @@ NavigateThroughPosesNavigator::goalReceived(ActionT::Goal::ConstSharedPtr goal)
       bt_xml_filename.c_str());
     return false;
   }
+  if (goal->poses.size() == 0)
+  {
+    RCLCPP_ERROR(
+      logger_, "Goal empty.");
+    return false;
+  }
 
   initializeGoalPoses(goal);
 
