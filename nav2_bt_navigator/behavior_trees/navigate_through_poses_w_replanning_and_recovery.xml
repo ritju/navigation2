@@ -5,18 +5,24 @@
 -->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+    <RecoveryNode number_of_retries="10000" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
-        <RateController hz="0.333">
-          <RecoveryNode number_of_retries="1" name="ComputePathThroughPoses">
+        <RateController hz="1.0">
+          <IsPedestrianFront pedestrain_distance = "2.0"/>
+        </RateController>
+        <RateController hz="5.0">
+          <IsCollision/>
+        </RateController>
+        <RateController hz="10.0">
+          <RecoveryNode number_of_retries="10" name="ComputePathThroughPoses">
             <ReactiveSequence>
-              <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.7"/>
+              <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.5"/>
               <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
             </ReactiveSequence>
             <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
         </RateController>
-        <RecoveryNode number_of_retries="1" name="FollowPath">
+        <RecoveryNode number_of_retries="10" name="FollowPath">
           <FollowPath path="{path}" controller_id="FollowPath"/>
           <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
         </RecoveryNode>
@@ -28,9 +34,13 @@
             <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
             <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
           </Sequence>
-          <Spin spin_dist="1.57"/>
+          <Fallback>
+            <IsCollision/>
+            <CollisionRecover/>
+          </Fallback>
+          <!-- <Spin spin_dist="1.57"/> -->
           <Wait wait_duration="5"/>
-          <BackUp backup_dist="0.30" backup_speed="0.05"/>
+          <!-- <BackUp backup_dist="0.30" backup_speed="0.05"/> -->
         </RoundRobin>
       </ReactiveFallback>
     </RecoveryNode>

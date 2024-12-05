@@ -44,7 +44,6 @@ NavigateThroughPosesNavigator::configure(
 
   // Odometry smoother object for getting current speed
   odom_smoother_ = odom_smoother;
-
   return true;
 }
 
@@ -78,6 +77,12 @@ NavigateThroughPosesNavigator::goalReceived(ActionT::Goal::ConstSharedPtr goal)
     RCLCPP_ERROR(
       logger_, "Error loading XML file: %s. Navigation canceled.",
       bt_xml_filename.c_str());
+    return false;
+  }
+  if (goal->poses.size() == 0)
+  {
+    RCLCPP_ERROR(
+      logger_, "Goal empty.");
     return false;
   }
 
@@ -213,7 +218,13 @@ NavigateThroughPosesNavigator::initializeGoalPoses(ActionT::Goal::ConstSharedPtr
   blackboard->set<int>("number_recoveries", 0);  // NOLINT
 
   // Update the goal pose on the blackboard
-  blackboard->set<Goals>(goals_blackboard_id_, goal->poses);
+  Goals add_pose_index_poses = goal->poses;
+  for(uint32_t i = 0; i < add_pose_index_poses.size(); ++i)
+  {
+    add_pose_index_poses.at(i).pose.position.z = i;
+    add_pose_index_poses.at(i).pose.orientation.w = 2.0;
+  }
+  blackboard->set<Goals>(goals_blackboard_id_, add_pose_index_poses);
 }
 
 }  // namespace nav2_bt_navigator

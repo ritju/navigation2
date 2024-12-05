@@ -27,6 +27,7 @@
 #include "nav2_util/robot_utils.hpp"
 #include "nav2_util/geometry_utils.hpp"
 #include "nav2_util/odometry_utils.hpp"
+#include "std_msgs/msg/bool.hpp"
 
 namespace nav2_bt_navigator
 {

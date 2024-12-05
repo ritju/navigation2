@@ -198,7 +198,11 @@
       <input_port name="server_timeout">Server timeout</input_port>
     </Action>
 
+    <Action ID="CollisionRecover"/>
+
     <!-- ############################### CONDITION NODES ############################## -->
+    <Condition ID="IsCollision"/>
+    
     <Condition ID="GoalReached">
         <input_port name="goal">Destination</input_port>
         <input_port name="global_frame">Reference frame</input_port>
@@ -225,6 +229,13 @@
     <Condition ID="IsLocalizationGood">
       <input_port name="min_localization_score">Min localization score for action</input_port>
       <input_port name="localization_score_topic">Topic for localization score info</input_port>
+    </Condition>
+
+    <Condition ID="IsPedestrianFront">
+      <input_port name="pedestrain_distance">Pedestrain_distance to base_link in meter</input_port>
+      <input_port name="person_detected_topic">Topic for person_detected info</input_port>
+      <input_port name="global_frame">Global frame</input_port>
+      <input_port name="robot_base_frame">Robot base frame</input_port>
     </Condition>
 
     <Condition ID="DistanceTraveled">

@@ -140,6 +140,15 @@ list(APPEND plugin_libs nav2_is_battery_low_condition_bt_node)
 add_library(nav2_is_localization_good_condition_bt_node SHARED plugins/condition/is_localization_status_good.cpp)
 list(APPEND plugin_libs nav2_is_localization_good_condition_bt_node)
 
+add_library(nav2_is_pedestrian_in_front_condition_bt_node SHARED plugins/condition/is_pedestrian_in_front.cpp)
+list(APPEND plugin_libs nav2_is_pedestrian_in_front_condition_bt_node)
+
+add_library(nav2_collision_recover_node SHARED plugins/action/collision_recover.cpp)
+list(APPEND plugin_libs nav2_collision_recover_node)
+
+add_library(nav2_is_collision_node SHARED plugins/condition/is_collision.cpp)
+list(APPEND plugin_libs nav2_is_collision_node)
+
 add_library(nav2_reinitialize_global_localization_service_bt_node SHARED plugins/action/reinitialize_global_localization_service.cpp)
 list(APPEND plugin_libs nav2_reinitialize_global_localization_service_bt_node)
 

@@ -425,63 +425,63 @@ void ControllerServer::computeControl()
         return;
       }
 
-      nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
-      if(!follow_person_ && isSameDirect()){
-          //ultra
-        if(obstacle_avoidance_->isobstacleultra() && obstacle_avoidance_->isobstacleback()){
-          // rclcpp::Clock steady_clock_{RCL_STEADY_TIME};
-          // if(timeout <= 5){
-          //   if(!timeout_update){
-          //     starttime = steady_clock_.now();
-          //   }
-          //   timeout_update = true;
-          //   timeout = steady_clock_.now().seconds() - starttime.seconds();
-          //   publishZeroVelocity();
-          //   sleep(1);
-          //   continue; 
-          // }
-          // else{
-          //   timeout = steady_clock_.now().seconds() - starttime.seconds();
-          // }
-          publishZeroVelocity();
-          sleep(1);
-          continue;  
-          // RCLCPP_INFO(rclcpp::get_logger("test"),"ultra obstacle and obstacle in back");
-        }
-        if(timeout > 25){
-          timeout = 0;
-          timeout_update = false;
-        }
-        if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && !obstacle_avoidance_->isobstacleback()){
-          geometry_msgs::msg::TwistStamped velocity;
-          velocity.twist.angular.x = 0;
-          velocity.twist.angular.y = 0;
-          velocity.twist.angular.z = 0;
-          velocity.twist.linear.x = -0.2;
-          velocity.twist.linear.y = 0;
-          velocity.twist.linear.z = 0;
-          velocity.header.frame_id = costmap_ros_->getBaseFrameID();
-          velocity.header.stamp = now();
-          // RCLCPP_INFO(rclcpp::get_logger("test"),"######### ultra back ###########");
-          publishVelocity(velocity);
-          continue; 
-        }
-        if(obstacle_avoidance_->isobstacleultra() && fabs(twist.theta) < 0.2 && !obstacle_avoidance_->isobstacleback()){
-          publishZeroVelocity();
-          sleep(1);
-          continue;
-        }
+      // nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
+      // if(!follow_person_ && isSameDirect()){
+      //     //ultra
+      //   if(obstacle_avoidance_->isobstacleultra() && obstacle_avoidance_->isobstacleback()){
+      //     // rclcpp::Clock steady_clock_{RCL_STEADY_TIME};
+      //     // if(timeout <= 5){
+      //     //   if(!timeout_update){
+      //     //     starttime = steady_clock_.now();
+      //     //   }
+      //     //   timeout_update = true;
+      //     //   timeout = steady_clock_.now().seconds() - starttime.seconds();
+      //     //   publishZeroVelocity();
+      //     //   sleep(1);
+      //     //   continue; 
+      //     // }
+      //     // else{
+      //     //   timeout = steady_clock_.now().seconds() - starttime.seconds();
+      //     // }
+      //     publishZeroVelocity();
+      //     sleep(1);
+      //     continue;  
+      //     // RCLCPP_INFO(rclcpp::get_logger("test"),"ultra obstacle and obstacle in back");
+      //   }
+      //   if(timeout > 25){
+      //     timeout = 0;
+      //     timeout_update = false;
+      //   }
+      //   if(obstacle_avoidance_->isobstacleultraforward() && fabs(twist.theta) < 0.2 && !obstacle_avoidance_->isobstacleback()){
+      //     geometry_msgs::msg::TwistStamped velocity;
+      //     velocity.twist.angular.x = 0;
+      //     velocity.twist.angular.y = 0;
+      //     velocity.twist.angular.z = 0;
+      //     velocity.twist.linear.x = -0.2;
+      //     velocity.twist.linear.y = 0;
+      //     velocity.twist.linear.z = 0;
+      //     velocity.header.frame_id = costmap_ros_->getBaseFrameID();
+      //     velocity.header.stamp = now();
+      //     // RCLCPP_INFO(rclcpp::get_logger("test"),"######### ultra back ###########");
+      //     publishVelocity(velocity);
+      //     continue; 
+      //   }
+      //   if(obstacle_avoidance_->isobstacleultra() && fabs(twist.theta) < 0.2 && !obstacle_avoidance_->isobstacleback()){
+      //     publishZeroVelocity();
+      //     sleep(1);
+      //     continue;
+      //   }
         
-      }
-      // // Drop proof
-      if(drop_sub_->getdrop()){
-        publishZeroVelocity();
-        break;
-      }
-      rclcpp::Rate r(100);
-      while (!costmap_ros_->isCurrent()) {
-        r.sleep();
-      }
+      // }
+      // // // Drop proof
+      // if(drop_sub_->getdrop()){
+      //   publishZeroVelocity();
+      //   break;
+      // }
+      // rclcpp::Rate r(100);
+      // while (!costmap_ros_->isCurrent()) {
+      //   r.sleep();
+      // }
 
       updateGlobalPath();
 
