@@ -198,7 +198,11 @@
       <input_port name="server_timeout">Server timeout</input_port>
     </Action>
 
+    <Action ID="CollisionRecover"/>
+
     <!-- ############################### CONDITION NODES ############################## -->
+    <Condition ID="IsCollision"/>
+    
     <Condition ID="GoalReached">
         <input_port name="goal">Destination</input_port>
         <input_port name="global_frame">Reference frame</input_port>
