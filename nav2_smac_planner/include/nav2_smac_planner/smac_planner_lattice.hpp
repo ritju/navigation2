@@ -108,7 +108,7 @@ protected:
   bool _allow_unknown;
   int _max_iterations;
   int _max_on_approach_iterations;
-  float _tolerance;
+  float _tolerance, _goal_occupied_tolerance;
   rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr _raw_plan_publisher;
   double _max_planning_time;
   double _lookup_table_size;

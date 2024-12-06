@@ -69,6 +69,9 @@ void SmacPlannerLattice::configure(
     node, name + ".tolerance", rclcpp::ParameterValue(0.25));
   _tolerance = static_cast<float>(node->get_parameter(name + ".tolerance").as_double());
   nav2_util::declare_parameter_if_not_declared(
+    node, name + ".goal_occupied_tolerance", rclcpp::ParameterValue(0.5));
+  _goal_occupied_tolerance = static_cast<float>(node->get_parameter(name + ".goal_occupied_tolerance").as_double());
+  nav2_util::declare_parameter_if_not_declared(
     node, name + ".allow_unknown", rclcpp::ParameterValue(true));
   node->get_parameter(name + ".allow_unknown", _allow_unknown);
   nav2_util::declare_parameter_if_not_declared(
@@ -248,44 +251,66 @@ nav_msgs::msg::Path SmacPlannerLattice::createPlan(
     _costmap_ros->getUseRadius(),
     findCircumscribedCost(_costmap_ros));
   _a_star->setCollisionChecker(&_collision_checker);
+  auto goal_with_tolerance = goal;
 
-  // try
-  // {
-  //   geometry_msgs::msg::Pose2D pose2d;
-  //   pose2d.x = goal.pose.position.x;
-  //   pose2d.y = goal.pose.position.y;
-  //   pose2d.theta = tf2::getYaw(goal.pose.orientation);
-  //   double footprint_cost = 0.0;
-  //   footprint_cost = _collision_checker.footprintCostAtPose(pose2d.x, pose2d.y, pose2d.theta, _costmap_ros->getRobotFootprint());
-  //   // RCLCPP_INFO(_logger, "(pose2d.x, pose2d.y): (%f, %f) !", pose2d.x, pose2d.y);
-  //   // RCLCPP_INFO(_logger, "footprint_cost: %f !", footprint_cost);
-  //   using nav2_costmap_2d::LETHAL_OBSTACLE;
-  //   if (footprint_cost == LETHAL_OBSTACLE) {
-  //     nav_msgs::msg::Path plan;
-  //     plan.header.stamp = _clock->now();
-  //     plan.header.frame_id = _global_frame;
-  //     return plan;
-  // }
-  // }
-  // catch (const nav2_costmap_2d::IllegalPoseException & e) {
-  //   RCLCPP_ERROR(_logger, "%s", e.what());
-  //   // nav_msgs::msg::Path plan;
-  //   // plan.header.stamp = _clock->now();
-  //   // plan.header.frame_id = _global_frame;
-  //   // return plan;
-  // } catch (const nav2_costmap_2d::CollisionCheckerException & e) {
-  //   RCLCPP_ERROR(_logger, "%s", e.what());
-  //   // nav_msgs::msg::Path plan;
-  //   // plan.header.stamp = _clock->now();
-  //   // plan.header.frame_id = _global_frame;
-  //   // return plan;
-  // } catch (...) {
-  //   RCLCPP_ERROR(_logger, "Failed to check pose score!");
-  //   // nav_msgs::msg::Path plan;
-  //   // plan.header.stamp = _clock->now();
-  //   // plan.header.frame_id = _global_frame;
-  //   // return plan;
-  // }
+  try
+  {
+    geometry_msgs::msg::Pose2D pose2d;
+    pose2d.x = goal.pose.position.x;
+    pose2d.y = goal.pose.position.y;
+    pose2d.theta = tf2::getYaw(goal.pose.orientation);
+    double footprint_cost = 0.0;
+    footprint_cost = _collision_checker.footprintCostAtPose(pose2d.x, pose2d.y, pose2d.theta, _costmap_ros->getRobotFootprint());
+    // RCLCPP_INFO(_logger, "(pose2d.x, pose2d.y): (%f, %f) !", pose2d.x, pose2d.y);
+    // RCLCPP_INFO(_logger, "footprint_cost: %f !", footprint_cost);
+    using nav2_costmap_2d::LETHAL_OBSTACLE;
+    if (footprint_cost == LETHAL_OBSTACLE) {
+      double goal_search_x = - _goal_occupied_tolerance;
+      double goal_search_y = - _goal_occupied_tolerance;
+      double min_dist = 0.05;
+      while (goal_search_x < _goal_occupied_tolerance + 0.1)
+      {
+        while (goal_search_y < _goal_occupied_tolerance + 0.1)
+        {
+          auto search_goal = goal;
+          search_goal.pose.position.x += goal_search_x;
+          search_goal.pose.position.y += goal_search_y;
+          footprint_cost = _collision_checker.footprintCostAtPose(search_goal.pose.position.x, search_goal.pose.position.y, pose2d.theta, _costmap_ros->getRobotFootprint());
+          if (footprint_cost != LETHAL_OBSTACLE)
+          {
+            double dist = sqrt(pow(goal_search_x, 2) + pow(goal_search_y, 2));
+            if (dist > min_dist)
+            {
+              goal_with_tolerance = search_goal;
+            }
+          }
+          goal_search_y += 0.1;
+        }
+        goal_search_x += 0.1;
+      }
+      RCLCPP_INFO(_logger, "Original goal.x: %f, goal.y: %f !", goal.pose.position.x, goal.pose.position.y);
+      RCLCPP_INFO(_logger, "Adjusted goal_with_tolerance.x: %f, goal_with_tolerance.y: %f !", goal_with_tolerance.pose.position.x, goal_with_tolerance.pose.position.y);
+  }
+  }
+  catch (const nav2_costmap_2d::IllegalPoseException & e) {
+    RCLCPP_ERROR(_logger, "%s", e.what());
+    // nav_msgs::msg::Path plan;
+    // plan.header.stamp = _clock->now();
+    // plan.header.frame_id = _global_frame;
+    // return plan;
+  } catch (const nav2_costmap_2d::CollisionCheckerException & e) {
+    RCLCPP_ERROR(_logger, "%s", e.what());
+    // nav_msgs::msg::Path plan;
+    // plan.header.stamp = _clock->now();
+    // plan.header.frame_id = _global_frame;
+    // return plan;
+  } catch (...) {
+    RCLCPP_ERROR(_logger, "Failed to check pose score!");
+    // nav_msgs::msg::Path plan;
+    // plan.header.stamp = _clock->now();
+    // plan.header.frame_id = _global_frame;
+    // return plan;
+  }
 
   // Set starting point, in A* bin search coordinates
   unsigned int mx, my;

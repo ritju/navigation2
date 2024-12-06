@@ -82,9 +82,9 @@ inline BT::NodeStatus RemovePassedGoals::tick()
     }
   }
   
-  if (!receive_new_goal_ && checked_path_received_ && removed_path_.poses.size() > 0 && count > 60)
+  if (!receive_new_goal_ && checked_path_received_ && count > 20)
   {
-    if (goal_poses.size() > 0)
+    if (goal_poses.size() > 0 && removed_path_.poses.size() > 0)
     {
       std::vector<geometry_msgs::msg::PoseStamped>::iterator it;
       for (it = removed_path_.poses.begin(); it != removed_path_.poses.begin() + 10 && it != removed_path_.poses.end();)
@@ -101,11 +101,8 @@ inline BT::NodeStatus RemovePassedGoals::tick()
           ++it;
         }
       }
-      if (removed_path_.poses.size() > 0)
-      {
-        goal_poses = removed_path_.poses;
-      }
     }
+    goal_poses = removed_path_.poses;
   }
   receive_new_goal_ = false;
   removed_path_.poses.clear();

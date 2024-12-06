@@ -357,6 +357,12 @@ PlannerServer::computePlanThroughPoses()
   auto goal = action_server_poses_->get_current_goal();
   auto result = std::make_shared<ActionThroughPoses::Result>();
   nav_msgs::msg::Path concat_path;
+
+  if (goal->goals.size() == 0)
+  {
+    action_server_poses_->terminate_current();
+    return;
+  }
    
 
   try {
