@@ -37,7 +37,7 @@ IsCollisionCondition::IsCollisionCondition(
   sub_option.callback_group = callback_group_;
   is_collision_sub_ = node_->create_subscription<std_msgs::msg::Bool>(
     is_collision_topic_,
-    rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local(),
+    rclcpp::QoS(rclcpp::KeepLast(1)).reliable(),
     std::bind(&IsCollisionCondition::iscollisionCallback, this, std::placeholders::_1),
     sub_option);
 }

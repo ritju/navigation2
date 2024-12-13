@@ -374,65 +374,7 @@ PlannerServer::computePlanThroughPoses()
 
     getPreemptedGoalIfRequested(action_server_poses_, goal);
 
-    nav_msgs::msg::Path back_goals;
-    back_goals.header.stamp = rclcpp::Time();
-    back_goals.header.frame_id = "map";
-    geometry_msgs::msg::PoseStamped last = goal->goals[0];
-    double local_goal_dist = 0;
-    std::vector<int> startEndPairs;
-    for (size_t i = 1; i < goal->goals.size(); ++i){
-      double g_x = goal->goals[i].pose.position.x;
-      double g_y = goal->goals[i].pose.position.y;
-      double sq_dist = sqrt((g_x- last.pose.position.x) * (g_x - last.pose.position.x) + (g_y - last.pose.position.y) * (g_y - last.pose.position.y));
-      local_goal_dist += sq_dist;
-      if(local_goal_dist >= 2.0){
-        break;
-      }
-      last.pose.position.x = g_x;
-      last.pose.position.y = g_y;
-      unsigned int mx, my; 
-      costmap_->worldToMap(goal->goals[i].pose.position.x, goal->goals[i].pose.position.y, mx, my);  
-      if (costmap_->getCost(mx, my) >= 253) {  
-        int startindex = (i>0) ? i-1 : 0;
-        int endindex = std::min(static_cast<int>(i + 1), static_cast<int>(goal->goals.size() - 1));
-        if (!startEndPairs.empty() && startEndPairs.back() >= startindex) {  
-            startEndPairs.back() = endindex;  
-        } else {   
-            startEndPairs.push_back(startindex);  
-            startEndPairs.push_back(endindex);  
-        } 
-        // back_goals.poses.push_back(goal->goals[i]);  
-      } 
-    }
-    for (size_t i = 0; i < startEndPairs.size(); i += 2) {  
-      for (int j = startEndPairs[i]; j <= startEndPairs[i + 1]; ++j) {  
-        back_goals.poses.push_back(goal->goals[j]);
-      }  
-    } 
-    backgoals_publisher_->publish(back_goals);
-
-    std::vector<geometry_msgs::msg::PoseStamped> filtered_goals;
-    double accumulate_distance = 0;
-    double dx, dy;   
-    for (const auto& currentGoal : goal->goals) {  
-        unsigned int mx, my;  
-        costmap_->worldToMap(currentGoal.pose.position.x, currentGoal.pose.position.y, mx, my);  
-        if (costmap_->getCost(mx, my) < 253) {  
-            filtered_goals.push_back(currentGoal);
-            if (filtered_goals.size() > 2)
-            {
-              dx = filtered_goals.back().pose.position.x - filtered_goals.at(filtered_goals.size() - 2).pose.position.x;
-              dy = filtered_goals.back().pose.position.y - filtered_goals.at(filtered_goals.size() - 2).pose.position.y;
-              accumulate_distance += hypot(dx, dy);
-              RCLCPP_DEBUG(get_logger(), "Accumulate distance : %f !", accumulate_distance);
-            }
-            if (accumulate_distance > 10 && filtered_goals.size() > 2)
-            {
-              break;
-            }  
-        }  
-    } 
-    if (filtered_goals.empty()) {
+    if (goal->goals.size() == 0) {
       RCLCPP_WARN(
         get_logger(),
         "Compute path through poses requested a plan with no viapoint poses, returning.");
@@ -446,9 +388,8 @@ PlannerServer::computePlanThroughPoses()
     }
 
     // Get consecutive paths through these points
-    std::vector<geometry_msgs::msg::PoseStamped>::iterator goal_iter;
     geometry_msgs::msg::PoseStamped curr_start, curr_goal;
-    for (size_t i = 0; i < filtered_goals.size(); ++i) {
+    for (size_t i = 0; i < goal->goals.size(); ++i) {
       // Get starting point
       if (i == 0) {
         curr_start = start;
@@ -464,7 +405,7 @@ PlannerServer::computePlanThroughPoses()
             curr_start = start;
           }
         }
-      curr_goal = filtered_goals[i];
+      curr_goal = goal->goals[i];
 
       // Transform them into the global frame
       if (!transformPosesToGlobalFrame(action_server_poses_, curr_start, curr_goal)) {
@@ -480,11 +421,28 @@ PlannerServer::computePlanThroughPoses()
         // return;
         continue;
       }
-
       // Concatenate paths together
       concat_path.poses.insert(
         concat_path.poses.end(), curr_path.poses.begin(), curr_path.poses.end());
       concat_path.header = curr_path.header;
+      double accumulate_distance = 0;
+      if (concat_path.poses.size() > 10)
+      {
+        for (size_t pose_num = 1; pose_num < concat_path.poses.size(); ++pose_num)
+        {
+          double dx = concat_path.poses.at(pose_num).pose.position.x -  concat_path.poses.at(pose_num-1).pose.position.x;
+          double dy = concat_path.poses.at(pose_num).pose.position.y -  concat_path.poses.at(pose_num-1).pose.position.y;
+          accumulate_distance += sqrt(pow(dx, 2) + pow(dy, 2));
+          if (accumulate_distance > 6)
+          {
+            break;
+          }
+        }
+      }
+      if (accumulate_distance > 6)
+      {
+        break;
+      }
     }
 
     if (concat_path.poses.size() == 0)
