@@ -32,6 +32,8 @@
 #include "nav2_util/lifecycle_node.hpp"
 #include "nav2_util/node_utils.hpp"
 #include "tf2/utils.h"
+#include "nav2_costmap_2d/exceptions.hpp"
+
 
 namespace nav2_smac_planner
 {
@@ -85,6 +87,9 @@ public:
   nav_msgs::msg::Path createPlan(
     const geometry_msgs::msg::PoseStamped & start,
     const geometry_msgs::msg::PoseStamped & goal) override;
+  
+  bool find_pose(geometry_msgs::msg::Pose2D original_pose, geometry_msgs::msg::Pose2D edge_pose, double d, geometry_msgs::msg::Pose2D &output_pose);
+  void calculate_line_param(double &x, double &y, double vx, double vy); 
 
 protected:
   /**
@@ -93,6 +98,7 @@ protected:
    */
   rcl_interfaces::msg::SetParametersResult
   dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters);
+
 
   std::unique_ptr<AStarAlgorithm<NodeHybrid>> _a_star;
   GridCollisionChecker _collision_checker;
@@ -115,6 +121,8 @@ protected:
   SearchInfo _search_info;
   double _max_planning_time;
   double _lookup_table_size;
+  double _goal_occupied_tolerance;
+  double _footprint_tolerance;
   double _minimum_turning_radius_global_coords;
   std::string _motion_model_for_search;
   MotionModel _motion_model;

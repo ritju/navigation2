@@ -40,7 +40,7 @@
 #include "nav2_core/global_planner.hpp"
 #include "nav2_msgs/srv/is_path_valid.hpp"
 #include "std_msgs/msg/bool.hpp"
-
+#include "nav2_costmap_2d/array_parser.hpp"
 namespace nav2_planner
 {
 /**
@@ -257,6 +257,8 @@ protected:
 
   // Service to deterime if the path is valid
   rclcpp::Service<nav2_msgs::srv::IsPathValid>::SharedPtr is_path_valid_service_;
+
+  bool rotation_goal_search_sigh_;
 };
 
 }  // namespace nav2_planner

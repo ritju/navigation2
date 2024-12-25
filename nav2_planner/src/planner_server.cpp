@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+
 #include <chrono>
 #include <cmath>
 #include <iomanip>
@@ -35,16 +36,143 @@
 using namespace std::chrono_literals;
 using rcl_interfaces::msg::ParameterType;
 using std::placeholders::_1;
+std::vector<geometry_msgs::msg::Point> rotate_vec;
+const char* ROTATE_POINTS = getenv("ROTATE_POINTS_FOR_GLOBAL_PLANNER");
+const char* FORBIDDEN_ROTATE_AREA_POINTS = getenv("FORBIDDEN_ROTATE_AREA_POINTS_FOR_GLOBAL_PLANNER");
+struct ForbiddenPoint
+{
+  double x1;
+  double y1;
+  double x2;
+  double y2;
+};
+std::vector<ForbiddenPoint> forbidden_area_vec;
 
 namespace nav2_planner
 {
+
+bool makeRotationGoalFromString(
+  const std::string & footprint_string,
+  std::vector<geometry_msgs::msg::Point> & footprint)
+{
+  std::string error;
+  std::vector<std::vector<float>> vvf = nav2_costmap_2d::parseVVF(footprint_string, error);
+
+  if (error != "") {
+    RCLCPP_ERROR(
+      rclcpp::get_logger(
+        "planner_server"), "Error parsing rotation goal parameter: '%s'", error.c_str());
+    RCLCPP_ERROR(
+      rclcpp::get_logger(
+        "planner_server"), "Rotation goal string was '%s'.", footprint_string.c_str());
+    return false;
+  }
+
+  // convert vvf into points.
+  if (vvf.size() < 1) {
+    RCLCPP_ERROR(
+      rclcpp::get_logger(
+        "planner_server"),
+      "You must specify at least one point for the robot footprint."); //NOLINT
+    return false;
+  }
+  footprint.reserve(vvf.size());
+  for (unsigned int i = 0; i < vvf.size(); i++) {
+    if (vvf[i].size() == 2) {
+      geometry_msgs::msg::Point point;
+      point.x = vvf[i][0];
+      point.y = vvf[i][1];
+      point.z = 0;
+      footprint.push_back(point);
+    } else {
+      RCLCPP_ERROR(
+        rclcpp::get_logger(
+          "planner_server"),
+        "Points in the rotation goal specification must be pairs of numbers. Found a point with %d numbers.", //NOLINT
+        static_cast<int>(vvf[i].size()));
+      return false;
+    }
+  }
+
+  return true;
+}
+bool makeForbiddenPointsFromString(
+  const std::string & forbidden_area_string,
+  std::vector<ForbiddenPoint> & forbidden_area)
+{
+  std::string error;
+  std::vector<std::vector<float>> vvf = nav2_costmap_2d::parseVVF(forbidden_area_string, error);
+
+  if (error != "") {
+    RCLCPP_ERROR(
+      rclcpp::get_logger(
+        "planner_server"), "Error parsing forbidden area parameter: '%s'", error.c_str());
+    RCLCPP_ERROR(
+      rclcpp::get_logger(
+        "planner_server"), "Forbidden area string was '%s'.", forbidden_area_string.c_str());
+    return false;
+  }
+
+  // convert vvf into points.
+  if (vvf.size() < 1) {
+    RCLCPP_ERROR(
+      rclcpp::get_logger(
+        "planner_server"),
+      "You must specify at least two points for forbidden area."); //NOLINT
+    return false;
+  }
+  forbidden_area.reserve(vvf.size());
+  for (unsigned int i = 0; i < vvf.size(); i++) {
+    if (vvf[i].size() == 4) {
+      ForbiddenPoint point;
+      point.x1 = vvf[i][0];
+      point.y1 = vvf[i][1];
+      point.x2 = vvf[i][2];
+      point.y2 = vvf[i][3];
+      forbidden_area.emplace_back(point);
+    } else {
+      RCLCPP_ERROR(
+        rclcpp::get_logger(
+          "planner_server"),
+        "Points in the forbidden area specification must be pairs of numbers. Found a point with %d numbers.", //NOLINT
+        static_cast<int>(vvf[i].size()));
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool IsGoalInForbiddenArea(const std::vector<ForbiddenPoint> forbidden_points, const geometry_msgs::msg::PoseStamped current_pose)
+{
+  for (auto point : forbidden_points)
+  {
+    double min_x = (point.x1 > point.x2) ? point.x2 : point.x1;
+    double max_x = (point.x1 > point.x2) ? point.x1 : point.x2;
+    double min_y = (point.y1 > point.y2) ? point.y2 : point.y1;
+    double max_y = (point.y1 > point.y2) ? point.y1 : point.y2;
+    if ((current_pose.pose.position.x > min_x && current_pose.pose.position.x < max_x) &&  
+        (current_pose.pose.position.y > min_y && current_pose.pose.position.y < max_y))
+    {
+      RCLCPP_INFO(
+        rclcpp::get_logger(
+          "planner_server"),
+        "IsGoalInForbiddenArea: True. Current_pose.pose.position.x: %f, current_pose.pose.position.y: %f, min_x: %f," 
+        "max_x: %f, min_y: %f, max_y: %f !", current_pose.pose.position.x, current_pose.pose.position.y, 
+        min_x, max_x, min_y, max_y); 
+      return true;
+    }
+  }
+  return false;
+}
 
 PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
 : nav2_util::LifecycleNode("planner_server", "", options),
   gp_loader_("nav2_core", "nav2_core::GlobalPlanner"),
   default_ids_{"GridBased"},
   default_types_{"nav2_navfn_planner/NavfnPlanner"},
-  costmap_(nullptr)
+  costmap_(nullptr),
+  rotation_goal_search_sigh_(false)
 {
   RCLCPP_INFO(get_logger(), "Creating");
 
@@ -62,6 +190,27 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
   // Setup the global costmap
   costmap_ros_ = std::make_shared<nav2_costmap_2d::Costmap2DROS>(
     "global_costmap", std::string{get_namespace()}, "global_costmap");
+  if (ROTATE_POINTS != nullptr)
+  {
+    std::string ratate_points_string(ROTATE_POINTS);
+    makeRotationGoalFromString(ratate_points_string, rotate_vec);
+    for (auto goal : rotate_vec)
+    {
+    RCLCPP_INFO(
+      get_logger(), "Goal.x: %f, goal.y: %f !", goal.x, goal.y);
+    }
+  }
+  if (FORBIDDEN_ROTATE_AREA_POINTS != nullptr)
+  {
+    std::string forbidden_area_points_string(FORBIDDEN_ROTATE_AREA_POINTS);
+    makeForbiddenPointsFromString(forbidden_area_points_string, forbidden_area_vec);
+    for (auto point : forbidden_area_vec)
+    {
+    RCLCPP_INFO(
+      get_logger(), "Point.x1: %f, point.y1: %f , point.x2: %f, point.y2: %f!", 
+      point.x1, point.y1, point.x2, point.y2);
+    }
+  }
 }
 
 PlannerServer::~PlannerServer()
@@ -360,7 +509,7 @@ PlannerServer::computePlanThroughPoses()
 
   if (goal->goals.size() == 0)
   {
-    action_server_poses_->terminate_current();
+    action_server_poses_->succeeded_current();
     return;
   }
    
@@ -378,7 +527,7 @@ PlannerServer::computePlanThroughPoses()
       RCLCPP_WARN(
         get_logger(),
         "Compute path through poses requested a plan with no viapoint poses, returning.");
-      action_server_poses_->terminate_current();
+      action_server_poses_->succeeded_current();
     }
 
     // Use start pose if provided otherwise use current robot pose
@@ -413,7 +562,14 @@ PlannerServer::computePlanThroughPoses()
       }
 
       // Get plan from start -> goal
+      auto plan_time = steady_clock_.now();
       nav_msgs::msg::Path curr_path = getPlan(curr_start, curr_goal, goal->planner_id);
+      auto duration = steady_clock_.now() - plan_time;
+      RCLCPP_WARN(
+        get_logger(),
+        "Plan time is %f",
+        duration.seconds());
+
 
       // check path for validity
       if (!validatePath(action_server_poses_, curr_goal, curr_path, goal->planner_id)) {
@@ -433,13 +589,13 @@ PlannerServer::computePlanThroughPoses()
           double dx = concat_path.poses.at(pose_num).pose.position.x -  concat_path.poses.at(pose_num-1).pose.position.x;
           double dy = concat_path.poses.at(pose_num).pose.position.y -  concat_path.poses.at(pose_num-1).pose.position.y;
           accumulate_distance += sqrt(pow(dx, 2) + pow(dy, 2));
-          if (accumulate_distance > 6)
+          if (accumulate_distance > 10)
           {
             break;
           }
         }
       }
-      if (accumulate_distance > 6)
+      if (accumulate_distance > 10)
       {
         break;
       }
@@ -447,7 +603,7 @@ PlannerServer::computePlanThroughPoses()
 
     if (concat_path.poses.size() == 0)
     {
-      action_server_poses_->terminate_current();
+      action_server_poses_->succeeded_current();
       return;
     }
 
@@ -508,7 +664,13 @@ PlannerServer::computePlan()
       return;
     }
 
+    auto plan_time = steady_clock_.now();
     result->path = getPlan(start, goal_pose, goal->planner_id);
+    auto duration = steady_clock_.now() - plan_time;
+      RCLCPP_WARN(
+        get_logger(),
+        "Plan time is %f",
+        duration.seconds());
 
     if (!validatePath(action_server_pose_, goal_pose, result->path, goal->planner_id)) {
       return;
@@ -543,13 +705,130 @@ PlannerServer::getPlan(
   const geometry_msgs::msg::PoseStamped & goal,
   const std::string & planner_id)
 {
+  
   RCLCPP_DEBUG(
     get_logger(), "Attempting to a find path from (%.2f, %.2f) to "
     "(%.2f, %.2f).", start.pose.position.x, start.pose.position.y,
     goal.pose.position.x, goal.pose.position.y);
 
   if (planners_.find(planner_id) != planners_.end()) {
-    return planners_[planner_id]->createPlan(start, goal);
+    auto path = planners_[planner_id]->createPlan(start, goal);
+    static rclcpp::Time start_time = steady_clock_.now();
+    auto rotate_goal = goal;
+    rotate_goal.header.stamp = get_clock()->now();
+    for (size_t i = 20; i < 40 && i < path.poses.size(); i+=2)
+    {
+      auto pose = path.poses.at(i);
+      // 搜索机器人是否要在狭窄走廊掉头
+      geometry_msgs::msg::PoseStamped goal_pose_in_base_link, current_pose;
+      nav2_util::getCurrentPose(current_pose, *tf_);
+      nav2_util::transformPoseInTargetFrame(pose, goal_pose_in_base_link, *tf_, costmap_ros_->getBaseFrameID());
+      unsigned int mx = 0;
+      unsigned int my = 0;
+      double min_y = -1.5, max_y = 1.5;
+      double sin_th = sin(tf2::getYaw(current_pose.pose.orientation));
+      double cos_th = cos(tf2::getYaw(current_pose.pose.orientation));
+      std::vector<geometry_msgs::msg::Pose2D> left_line, right_line;
+      if (goal_pose_in_base_link.pose.position.x < 0)
+      {
+        if (IsGoalInForbiddenArea(forbidden_area_vec, current_pose))
+        {
+          rotation_goal_search_sigh_ = true;
+          start_time = steady_clock_.now();
+          goto Search_ratate_goal;
+        }
+        for (double x = -0.5; x <= 1.0; x += 0.5)
+        {
+          for (double y = -0.05; y >= -1.5; y -= 0.05) {
+            double g_x = current_pose.pose.position.x + x * cos_th - y * sin_th;
+            double g_y = current_pose.pose.position.y + x * sin_th + y * cos_th;
+            if (costmap_->worldToMap(g_x, g_y, mx, my) && costmap_->getCost(mx, my) == nav2_costmap_2d::LETHAL_OBSTACLE){
+                    if (y > min_y)
+                    {
+                      min_y = y;
+                      geometry_msgs::msg::Pose2D left_lethal_pose;
+                      left_lethal_pose.x = g_x;
+                      left_lethal_pose.y = g_y;
+                      left_line.emplace_back(left_lethal_pose);
+                      break;
+                    }
+            }
+          }
+        }
+        for (double x = -0.5; x <= 1.0; x += 0.5)
+        {
+          for (double y = 0.05; y <= 1.5; y += 0.05) {
+            double g_x = current_pose.pose.position.x + x * cos_th - y * sin_th;
+            double g_y = current_pose.pose.position.y + x * sin_th + y * cos_th;
+            if (costmap_->worldToMap(g_x, g_y, mx, my) && costmap_->getCost(mx, my) == nav2_costmap_2d::LETHAL_OBSTACLE){
+                    if (y < max_y)
+                    {
+                      max_y = y;
+                      geometry_msgs::msg::Pose2D right_lethal_pose;
+                      right_lethal_pose.x = g_x;
+                      right_lethal_pose.y = g_y;
+                      right_line.emplace_back(right_lethal_pose);
+                      break;
+                    }
+            }
+          }
+        }
+        if (left_line.size() != 0 && right_line.size() != 0)
+        {
+          rotation_goal_search_sigh_ = true;
+          start_time = steady_clock_.now();
+        }
+        else if ((steady_clock_.now() - start_time).seconds() > 5.0)
+        {
+          rotation_goal_search_sigh_ = false;
+        }
+        RCLCPP_INFO(
+            get_logger(), "rotation_goal_search_sigh_: %d!", rotation_goal_search_sigh_);
+        Search_ratate_goal:
+        if (rotation_goal_search_sigh_)
+        {
+          RCLCPP_INFO(
+            get_logger(), "Obstacle around robot, move towards rotate pose!");
+          // 搜索最近的掉头点
+          double search_distance = std::numeric_limits<double>::infinity();
+          auto search_goal = rotate_goal;
+          auto search_goal_in_base_link = rotate_goal;
+          if (rotate_vec.size() > 0)
+          {
+            for (auto point : rotate_vec)
+            {
+              search_goal.pose.position.x = point.x;
+              search_goal.pose.position.y = point.y;
+              if (nav2_util::transformPoseInTargetFrame(search_goal, search_goal_in_base_link, *tf_, costmap_ros_->getBaseFrameID()) && 
+                  search_goal_in_base_link.pose.position.x > 0)
+              {
+                double base_link_to_search_goal_distance = sqrt(pow(search_goal_in_base_link.pose.position.x, 2) + 
+                                                                pow(search_goal_in_base_link.pose.position.y, 2));
+                if (base_link_to_search_goal_distance < search_distance)
+                {
+                  search_distance = base_link_to_search_goal_distance;
+                  rotate_goal.pose.position.x = point.x;
+                  rotate_goal.pose.position.y = point.y;
+                }
+              }
+              // RCLCPP_INFO(
+              //   get_logger(), "Search_goal_in_base_link.x: %f !", search_goal_in_base_link.pose.position.x);
+            }
+          }
+          if (nav2_util::transformPoseInTargetFrame(rotate_goal, search_goal_in_base_link, *tf_, costmap_ros_->getBaseFrameID()) && 
+                  search_goal_in_base_link.pose.position.x < 0)
+          {
+            RCLCPP_ERROR(
+            get_logger(), "Cannot find a suitable goal for robot to rotate ! Please assign a rotation point for this gallery !");
+            return nav_msgs::msg::Path();
+          }
+          path = planners_[planner_id]->createPlan(start, rotate_goal);
+          return path;
+        }
+      }
+      //
+    }
+    return path;
   } else {
     if (planners_.size() == 1 && planner_id.empty()) {
       RCLCPP_WARN_ONCE(

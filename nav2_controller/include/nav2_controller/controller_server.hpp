@@ -41,6 +41,8 @@
 #include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "nav2_controller/plugins/simple_obstacle_avoidance.hpp"
+#include "nav2_costmap_2d/array_parser.hpp"
+
 
 namespace nav2_controller
 {

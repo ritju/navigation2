@@ -32,9 +32,55 @@
 using namespace std::chrono_literals;
 using rcl_interfaces::msg::ParameterType;
 using std::placeholders::_1;
+std::vector<geometry_msgs::msg::Point> rotate_vec;
+const char* ROTATE_POINTS = getenv("ROTATE_POINTS_FOR_GLOBAL_PLANNER");
 
 namespace nav2_controller
 {
+bool makeRotationGoalFromString(
+  const std::string & footprint_string,
+  std::vector<geometry_msgs::msg::Point> & footprint)
+{
+  std::string error;
+  std::vector<std::vector<float>> vvf = nav2_costmap_2d::parseVVF(footprint_string, error);
+
+  if (error != "") {
+    RCLCPP_ERROR(
+      rclcpp::get_logger(
+        "planner_server"), "Error parsing rotation goal parameter: '%s'", error.c_str());
+    RCLCPP_ERROR(
+      rclcpp::get_logger(
+        "planner_server"), "Rotation goal string was '%s'.", footprint_string.c_str());
+    return false;
+  }
+
+  // convert vvf into points.
+  if (vvf.size() < 1) {
+    RCLCPP_ERROR(
+      rclcpp::get_logger(
+        "planner_server"),
+      "You must specify at least one point for the robot footprint."); //NOLINT
+    return false;
+  }
+  footprint.reserve(vvf.size());
+  for (unsigned int i = 0; i < vvf.size(); i++) {
+    if (vvf[i].size() == 2) {
+      geometry_msgs::msg::Point point;
+      point.x = vvf[i][0];
+      point.y = vvf[i][1];
+      point.z = 0;
+      footprint.push_back(point);
+    } else {
+      RCLCPP_ERROR(
+        rclcpp::get_logger(
+          "planner_server"),
+        "Points in the rotation goal specification must be pairs of numbers. Found a point with %d numbers.", //NOLINT
+        static_cast<int>(vvf[i].size()));
+      return false;
+    }
+  }
+  return true;
+}
 
 ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
 : nav2_util::LifecycleNode("controller_server", "", options),
@@ -585,6 +631,7 @@ void ControllerServer::setPlannerPath(const nav_msgs::msg::Path & path)
     get_logger(),
     "Providing path to the controller %s", current_controller_.c_str());
   if (path.poses.empty()) {
+    // action_server_->succeeded_current();
     throw nav2_core::PlannerException("Invalid path, Path is empty.");
   }
   controllers_[current_controller_]->setPlan(path);
@@ -727,6 +774,21 @@ void ControllerServer::publishZeroVelocity()
 bool ControllerServer::isGoalReached()
 {
   geometry_msgs::msg::PoseStamped pose;
+
+  if (ROTATE_POINTS != nullptr)
+  {
+    std::string ratate_points_string(ROTATE_POINTS);
+    makeRotationGoalFromString(ratate_points_string, rotate_vec);
+    for (auto goal : rotate_vec)
+    {
+      if (fabs(end_pose_.pose.position.x - goal.x) < 0.1 && 
+          fabs(end_pose_.pose.position.y - goal.y) < 0.1) {
+        RCLCPP_INFO(
+          get_logger(), "Reach rotate goal.x: %f, goal.y: %f !", goal.x, goal.y);
+        return false;
+      }
+    }
+  }
 
   if (!getRobotPose(pose) || current_path_.poses.size() > 40) {
     return false;

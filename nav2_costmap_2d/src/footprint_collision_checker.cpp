@@ -53,7 +53,7 @@ double FootprintCollisionChecker<CostmapT>::footprintCost(const Footprint footpr
 
   // get the cell coord of the first point
   if (!worldToMap(footprint[0].x, footprint[0].y, x0, y0)) {
-    return static_cast<double>(LETHAL_OBSTACLE);
+    return static_cast<double>(NO_INFORMATION);
   }
 
   // cache the start to eliminate a worldToMap call
@@ -64,7 +64,7 @@ double FootprintCollisionChecker<CostmapT>::footprintCost(const Footprint footpr
   for (unsigned int i = 0; i < footprint.size() - 1; ++i) {
     // get the cell coord of the second point
     if (!worldToMap(footprint[i + 1].x, footprint[i + 1].y, x1, y1)) {
-      return static_cast<double>(LETHAL_OBSTACLE);
+      return static_cast<double>(NO_INFORMATION);
     }
 
     footprint_cost = std::max(lineCost(x0, x1, y0, y1), footprint_cost);

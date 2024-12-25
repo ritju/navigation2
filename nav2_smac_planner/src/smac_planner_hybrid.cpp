@@ -84,6 +84,13 @@ void SmacPlannerHybrid::configure(
     node, name + ".tolerance", rclcpp::ParameterValue(0.25));
   _tolerance = static_cast<float>(node->get_parameter(name + ".tolerance").as_double());
   nav2_util::declare_parameter_if_not_declared(
+    node, name + ".goal_occupied_tolerance", rclcpp::ParameterValue(0.5));
+  _goal_occupied_tolerance = static_cast<float>(node->get_parameter(name + ".goal_occupied_tolerance").as_double());
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".footprint_tolerance", rclcpp::ParameterValue(0.1));
+  _footprint_tolerance = static_cast<float>(node->get_parameter(name + ".footprint_tolerance").as_double());
+
+  nav2_util::declare_parameter_if_not_declared(
     node, name + ".allow_unknown", rclcpp::ParameterValue(true));
   node->get_parameter(name + ".allow_unknown", _allow_unknown);
   nav2_util::declare_parameter_if_not_declared(
@@ -289,6 +296,120 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
     findCircumscribedCost(_costmap_ros));
   _a_star->setCollisionChecker(&_collision_checker);
 
+  auto goal_with_tolerance = goal;
+  try
+  {
+    geometry_msgs::msg::Pose2D pose2d;
+    pose2d.x = goal.pose.position.x;
+    pose2d.y = goal.pose.position.y;
+    pose2d.theta = tf2::getYaw(goal.pose.orientation);
+    double footprint_cost = 0.0;
+    footprint_cost = _collision_checker.footprintCostAtPose(pose2d.x, pose2d.y, pose2d.theta, _costmap_ros->getRobotFootprint());
+    // RCLCPP_INFO(_logger, "(pose2d.x, pose2d.y): (%f, %f) !", pose2d.x, pose2d.y);
+    // RCLCPP_INFO(_logger, "footprint_cost: %f !", footprint_cost);
+    using nav2_costmap_2d::LETHAL_OBSTACLE;
+    if (footprint_cost == LETHAL_OBSTACLE) {
+      double goal_search_x = - _goal_occupied_tolerance;
+      double goal_search_y = - _goal_occupied_tolerance;
+      double min_dist = 0.05;
+      while (goal_search_x < _goal_occupied_tolerance + 0.1)
+      {
+        while (goal_search_y < _goal_occupied_tolerance + 0.1)
+        {
+          auto search_goal = goal;
+          search_goal.pose.position.x += goal_search_x;
+          search_goal.pose.position.y += goal_search_y;
+          footprint_cost = _collision_checker.footprintCostAtPose(search_goal.pose.position.x, search_goal.pose.position.y, pose2d.theta, _costmap_ros->getRobotFootprint());
+          if (footprint_cost != LETHAL_OBSTACLE)
+          {
+            double dist = sqrt(pow(goal_search_x, 2) + pow(goal_search_y, 2));
+            if (dist > min_dist)
+            {
+              goal_with_tolerance = search_goal;
+            }
+          }
+          goal_search_y += 0.1;
+        }
+        goal_search_x += 0.1;
+      }
+      RCLCPP_INFO(_logger, "goal.x: %f, goal.y: %f !", goal.pose.position.x, goal.pose.position.y);
+      RCLCPP_INFO(_logger, "goal_with_tolerance.x: %f, goal_with_tolerance.y: %f !", goal_with_tolerance.pose.position.x, goal_with_tolerance.pose.position.y);
+  }
+  }
+  catch (const nav2_costmap_2d::IllegalPoseException & e) {
+    RCLCPP_ERROR(_logger, "%s", e.what());
+  } catch (const nav2_costmap_2d::CollisionCheckerException & e) {
+    RCLCPP_ERROR(_logger, "%s", e.what());
+  } catch (...) {
+    RCLCPP_ERROR(_logger, "Failed to check pose score!");
+  }
+
+  geometry_msgs::msg::Pose2D goal_pose2d, start_pose2d;
+  goal_pose2d.x = goal.pose.position.x;
+  goal_pose2d.y = goal.pose.position.y;
+  goal_pose2d.theta = tf2::getYaw(goal.pose.orientation);
+  start_pose2d.x = start.pose.position.x;
+  start_pose2d.y = start.pose.position.y;
+  start_pose2d.theta = tf2::getYaw(start.pose.orientation);
+  double yaw = atan2(goal_pose2d.y-start_pose2d.y, goal_pose2d.x-start_pose2d.x);
+  tf2::Quaternion quat;
+  quat.setRPY(0, 0, yaw);
+
+  // Setup message
+  nav_msgs::msg::Path plan;
+  plan.header.stamp = _clock->now();
+  plan.header.frame_id = _global_frame;
+  geometry_msgs::msg::PoseStamped pose;
+  pose.header = plan.header;
+  pose.pose.position.z = 0.0;
+  pose.pose.orientation.x = quat.x();
+  pose.pose.orientation.y = quat.y();
+  pose.pose.orientation.z = quat.z();
+  pose.pose.orientation.w = quat.w();
+
+  try
+  {
+    using nav2_costmap_2d::LETHAL_OBSTACLE;
+    double path_footprint_cost = 0.0;
+    double distance_start_to_goal = nav2_util::geometry_utils::euclidean_distance(start_pose2d, goal_pose2d);
+    nav2_costmap_2d::Footprint expand_footprint = _costmap_ros->getRobotFootprint();
+    for (auto &point : expand_footprint)
+    {
+      point.y = point.y < 0 ? point.y - _footprint_tolerance :  point.y + _footprint_tolerance;
+    }
+    for (double d = 0.05; d < distance_start_to_goal - 0.1; d+=0.05)
+    {
+          geometry_msgs::msg::Pose2D path_pose;
+          path_pose.theta = yaw;
+          find_pose(start_pose2d, goal_pose2d, d, path_pose);
+          path_footprint_cost = _collision_checker.footprintCostAtPose(path_pose.x, path_pose.y, path_pose.theta, expand_footprint);
+          if (path_footprint_cost != LETHAL_OBSTACLE)
+          {
+            pose.pose.position.x = path_pose.x;
+            pose.pose.position.y = path_pose.y;
+            plan.poses.emplace_back(pose);
+          }
+          else
+          {
+            plan.poses.clear();
+            break;
+          }
+    }
+    if (path_footprint_cost != LETHAL_OBSTACLE)
+    {
+      pose.pose = goal.pose;
+      plan.poses.emplace_back(pose);
+      return plan;
+    }
+  }
+  catch (const nav2_costmap_2d::IllegalPoseException & e) {
+    RCLCPP_ERROR(_logger, "%s", e.what());
+  } catch (const nav2_costmap_2d::CollisionCheckerException & e) {
+    RCLCPP_ERROR(_logger, "%s", e.what());
+  } catch (...) {
+    RCLCPP_ERROR(_logger, "Failed to check pose score!");
+  }
+
   // Set starting point, in A* bin search coordinates
   unsigned int mx, my;
   if (!costmap->worldToMap(start.pose.position.x, start.pose.position.y, mx, my)) {
@@ -321,16 +442,16 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   _a_star->setGoal(mx, my, orientation_bin_id);
 
   // Setup message
-  nav_msgs::msg::Path plan;
-  plan.header.stamp = _clock->now();
-  plan.header.frame_id = _global_frame;
-  geometry_msgs::msg::PoseStamped pose;
-  pose.header = plan.header;
-  pose.pose.position.z = 0.0;
-  pose.pose.orientation.x = 0.0;
-  pose.pose.orientation.y = 0.0;
-  pose.pose.orientation.z = 0.0;
-  pose.pose.orientation.w = 1.0;
+  // nav_msgs::msg::Path plan;
+  // plan.header.stamp = _clock->now();
+  // plan.header.frame_id = _global_frame;
+  // geometry_msgs::msg::PoseStamped pose;
+  // pose.header = plan.header;
+  // pose.pose.position.z = 0.0;
+  // pose.pose.orientation.x = 0.0;
+  // pose.pose.orientation.y = 0.0;
+  // pose.pose.orientation.z = 0.0;
+  // pose.pose.orientation.w = 1.0;
 
   // Compute plan
   NodeHybrid::CoordinateVector path;
@@ -395,6 +516,41 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
 #endif
 
   return plan;
+}
+
+bool SmacPlannerHybrid::find_pose(geometry_msgs::msg::Pose2D original_pose, geometry_msgs::msg::Pose2D edge_pose, double d, geometry_msgs::msg::Pose2D &output_pose) 
+{
+    // 计算法向量的单位向量
+    double vx = edge_pose.x - original_pose.x;
+    double vy = edge_pose.y - original_pose.y;
+    double param_x, param_y;
+    calculate_line_param(param_x, param_y, vx, vy);
+
+    // 计算从点P出发沿法向量方向的点
+    double Qx1 = original_pose.x + param_x * d;
+    double Qy1 = original_pose.y + param_y * d;
+
+    output_pose.x = Qx1;
+    output_pose.y = Qy1;
+    RCLCPP_DEBUG(_logger, "original_pose x: %f, y: %f!", original_pose.x, original_pose.y);
+    RCLCPP_DEBUG(_logger, "edge_pose x: %f, y: %f!", edge_pose.x, edge_pose.y);
+    RCLCPP_DEBUG(_logger, "output_pose x: %f, y: %f!", output_pose.x, output_pose.y);
+
+    return true;
+}
+
+void SmacPlannerHybrid::calculate_line_param(double &x, double &y, double vx, double vy)
+{
+        if (fabs(vx) < 1e-5 && fabs(vy) < 1e-5)
+        {
+                x = 0;
+                y = 0;
+                return;
+        }
+        double magnitude = sqrt(vx * vx + vy * vy);
+        x = vx / magnitude;
+        y = vy / magnitude;
+        return;
 }
 
 rcl_interfaces::msg::SetParametersResult
