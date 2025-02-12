@@ -326,6 +326,7 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
             if (dist > min_dist)
             {
               goal_with_tolerance = search_goal;
+              min_dist = dist;
             }
           }
           goal_search_y += 0.1;
@@ -340,14 +341,16 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
     RCLCPP_ERROR(_logger, "%s", e.what());
   } catch (const nav2_costmap_2d::CollisionCheckerException & e) {
     RCLCPP_ERROR(_logger, "%s", e.what());
+  } catch (const std::runtime_error & e) {
+    RCLCPP_ERROR(_logger, "%s", e.what());
   } catch (...) {
     RCLCPP_ERROR(_logger, "Failed to check pose score!");
   }
 
   geometry_msgs::msg::Pose2D goal_pose2d, start_pose2d;
-  goal_pose2d.x = goal.pose.position.x;
-  goal_pose2d.y = goal.pose.position.y;
-  goal_pose2d.theta = tf2::getYaw(goal.pose.orientation);
+  goal_pose2d.x = goal_with_tolerance.pose.position.x;
+  goal_pose2d.y = goal_with_tolerance.pose.position.y;
+  goal_pose2d.theta = tf2::getYaw(goal_with_tolerance.pose.orientation);
   start_pose2d.x = start.pose.position.x;
   start_pose2d.y = start.pose.position.y;
   start_pose2d.theta = tf2::getYaw(start.pose.orientation);
@@ -397,7 +400,7 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
     }
     if (path_footprint_cost != LETHAL_OBSTACLE)
     {
-      pose.pose = goal.pose;
+      pose.pose = goal_with_tolerance.pose;
       plan.poses.emplace_back(pose);
       return plan;
     }
@@ -405,6 +408,8 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   catch (const nav2_costmap_2d::IllegalPoseException & e) {
     RCLCPP_ERROR(_logger, "%s", e.what());
   } catch (const nav2_costmap_2d::CollisionCheckerException & e) {
+    RCLCPP_ERROR(_logger, "%s", e.what());
+  } catch (const std::runtime_error & e) {
     RCLCPP_ERROR(_logger, "%s", e.what());
   } catch (...) {
     RCLCPP_ERROR(_logger, "Failed to check pose score!");
@@ -427,10 +432,10 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   _a_star->setStart(mx, my, orientation_bin_id);
 
   // Set goal point, in A* bin search coordinates
-  if (!costmap->worldToMap(goal.pose.position.x, goal.pose.position.y, mx, my)) {
+  if (!costmap->worldToMap(goal_with_tolerance.pose.position.x, goal_with_tolerance.pose.position.y, mx, my)) {
     throw std::runtime_error("Goal pose is out of costmap!");
   }
-  orientation_bin = tf2::getYaw(goal.pose.orientation) / _angle_bin_size;
+  orientation_bin = tf2::getYaw(goal_with_tolerance.pose.orientation) / _angle_bin_size;
   while (orientation_bin < 0.0) {
     orientation_bin += static_cast<float>(_angle_quantizations);
   }

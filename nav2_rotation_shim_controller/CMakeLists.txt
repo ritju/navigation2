@@ -12,6 +12,7 @@ find_package(nav_msgs REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(angles REQUIRED)
+find_package(std_msgs REQUIRED)
 
 nav2_package()
 set(CMAKE_CXX_STANDARD 17)
@@ -30,6 +31,7 @@ set(dependencies
   nav2_core
   tf2
   angles
+  std_msgs
 )
 
 set(library_name nav2_rotation_shim_controller)

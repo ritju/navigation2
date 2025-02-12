@@ -57,7 +57,7 @@ BT::NodeStatus SingleTrigger::tick()
     }
   }
 
-  return BT::NodeStatus::FAILURE;
+  return BT::NodeStatus::SUCCESS;
 }
 
 }  // namespace nav2_behavior_tree

@@ -41,6 +41,7 @@
 #include "nav2_msgs/srv/is_path_valid.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "nav2_costmap_2d/array_parser.hpp"
+#include "std_msgs/msg/bool.hpp"
 namespace nav2_planner
 {
 /**
@@ -252,13 +253,13 @@ protected:
 
   // Publishers for the path
   rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr plan_publisher_;
-  rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr backgoals_publisher_;
-  
+  rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Bool>::SharedPtr rotation_sigh_publisher_;  
 
   // Service to deterime if the path is valid
   rclcpp::Service<nav2_msgs::srv::IsPathValid>::SharedPtr is_path_valid_service_;
 
   bool rotation_goal_search_sigh_;
+  double accumulate_distance_threshold_;
 };
 
 }  // namespace nav2_planner

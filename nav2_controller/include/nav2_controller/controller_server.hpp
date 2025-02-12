@@ -25,7 +25,7 @@
 #include "nav2_core/controller.hpp"
 #include "nav2_core/progress_checker.hpp"
 #include "nav2_core/goal_checker.hpp"
-#include "nav2_core/obstacle_avoidance.hpp"
+// #include "nav2_core/obstacle_avoidance.hpp"
 #include "nav2_costmap_2d/costmap_2d_ros.hpp"
 #include "tf2_ros/transform_listener.h"
 #include "nav2_msgs/action/follow_path.hpp"
@@ -40,14 +40,13 @@
 #include "capella_ros_msg/msg/detect_result.hpp"
 #include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/bool.hpp"
-#include "nav2_controller/plugins/simple_obstacle_avoidance.hpp"
 #include "nav2_costmap_2d/array_parser.hpp"
 
 
 namespace nav2_controller
 {
 
-class ObstacleAvoidance;
+// class ObstacleAvoidance;
 
 class ProgressChecker;
 /**
@@ -215,6 +214,8 @@ protected:
     return twist_thresh;
   }
 
+  bool pruneGlobalPlan(const geometry_msgs::msg::PoseStamped& global_pose, std::vector<geometry_msgs::msg::PoseStamped>& global_plan, double dist_behind_robot);
+
   /**
    * @brief Callback executed when a parameter change is detected
    * @param event ParameterEvent message
@@ -232,10 +233,9 @@ protected:
 
   // Publishers and subscribers
   std::unique_ptr<nav_2d_utils::OdomSubscriber> odom_sub_;
-  std::unique_ptr<nav2_controller::PersonSubscriber> person_sub_;
-  std::unique_ptr<nav2_controller::DropSubscriber> drop_sub_;
   rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::Twist>::SharedPtr vel_publisher_;
   rclcpp::Subscription<nav2_msgs::msg::SpeedLimit>::SharedPtr speed_limit_sub_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr prune_path_pub_;
 
   // Progress Checker Plugin
   pluginlib::ClassLoader<nav2_core::ProgressChecker> progress_checker_loader_;
@@ -264,14 +264,6 @@ protected:
   std::vector<std::string> controller_ids_;
   std::vector<std::string> controller_types_;
   std::string controller_ids_concat_, current_controller_;
-
-    // obstacle_avoidance_ Checker Plugin
-  pluginlib::ClassLoader<nav2_core::ObstacleAvoidance> obstacle_avoidance_loader_;
-  nav2_core::ObstacleAvoidance::Ptr obstacle_avoidance_;
-  std::string default_obstacle_avoidance_id_;
-  std::string default_obstacle_avoidance_type_;
-  std::string obstacle_avoidance_id_;
-  std::string obstacle_avoidance_type_;
 
   double controller_frequency_;
   double min_x_velocity_threshold_;
@@ -312,6 +304,7 @@ private:
   double timeout = 0;
   rclcpp::Time starttime;
   bool timeout_update;
+  double prune_dist_behind_robot_;
 };
 
 }  // namespace nav2_controller
