@@ -21,7 +21,7 @@
             <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
         </RateController>
-        <RateController hz="0.2">
+        <RateController hz="5">
           <RecoveryNode number_of_retries="2" name="ComputePathThroughPoses">
             <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
             <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
