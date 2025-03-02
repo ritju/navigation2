@@ -137,7 +137,6 @@ PlannerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
 
   // Initialize pubs & subs
   plan_publisher_ = create_publisher<nav_msgs::msg::Path>("plan", 1);
-  rotation_sigh_publisher_ = create_publisher<std_msgs::msg::Bool>("rotation_sigh", 1);
 
   // Create the action servers for path planning to a pose and through poses
   action_server_pose_ = std::make_unique<ActionServerToPose>(
@@ -165,7 +164,6 @@ PlannerServer::on_activate(const rclcpp_lifecycle::State & /*state*/)
   RCLCPP_INFO(get_logger(), "Activating");
 
   plan_publisher_->on_activate();
-  rotation_sigh_publisher_->on_activate();
   action_server_pose_->activate();
   action_server_poses_->activate();
   costmap_ros_->activate();
@@ -201,7 +199,6 @@ PlannerServer::on_deactivate(const rclcpp_lifecycle::State & /*state*/)
   action_server_pose_->deactivate();
   action_server_poses_->deactivate();
   plan_publisher_->on_deactivate();
-  rotation_sigh_publisher_->on_deactivate();
 
   /*
    * The costmap is also a lifecycle node, so it may have already fired on_deactivate
@@ -233,7 +230,6 @@ PlannerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   action_server_pose_.reset();
   action_server_poses_.reset();
   plan_publisher_.reset();
-  rotation_sigh_publisher_.reset();
   tf_.reset();
 
   costmap_ros_->cleanup();
@@ -334,9 +330,7 @@ bool PlannerServer::transformPosesToGlobalFrame(
   return true;
 }
 
-template<typename T>
 bool PlannerServer::validatePath(
-  std::unique_ptr<nav2_util::SimpleActionServer<T>> & action_server,
   const geometry_msgs::msg::PoseStamped & goal,
   const nav_msgs::msg::Path & path,
   const std::string & planner_id)
@@ -348,7 +342,6 @@ bool PlannerServer::validatePath(
       goal.pose.position.x, goal.pose.position.y);
      // 若全局路径划失败跳过此点继续，不终止action
     // action_server->terminate_current();
-    (void)action_server;
     return false;
   }
 
@@ -376,12 +369,6 @@ PlannerServer::computePlanThroughPoses()
   try {
     if (isServerInactive(action_server_poses_) || isCancelRequested(action_server_poses_)) {
       return;
-    }
-    if (rotation_sigh_publisher_->is_activated() && rotation_sigh_publisher_->get_subscription_count() > 0) 
-    {
-    std_msgs::msg::Bool rotation_sigh_msg;
-    rotation_sigh_msg.data = true;
-    rotation_sigh_publisher_->publish(rotation_sigh_msg);
     }
 
     waitForCostmap();
@@ -433,7 +420,7 @@ PlannerServer::computePlanThroughPoses()
       nav_msgs::msg::Path curr_path = getPlan(curr_start, curr_goal, goal->planner_id);
 
       // check path for validity
-      if (!validatePath(action_server_poses_, curr_goal, curr_path, goal->planner_id)) {
+      if (!validatePath(curr_goal, curr_path, goal->planner_id)) {
         continue;
         // return;
       }
@@ -496,12 +483,6 @@ PlannerServer::computePlan()
     if (isServerInactive(action_server_pose_) || isCancelRequested(action_server_pose_)) {
       return;
     }
-    if (rotation_sigh_publisher_->is_activated() && rotation_sigh_publisher_->get_subscription_count() > 0) 
-    {
-    std_msgs::msg::Bool rotation_sigh_msg;
-    rotation_sigh_msg.data = false;
-    rotation_sigh_publisher_->publish(rotation_sigh_msg);
-    }
 
     waitForCostmap();
 
@@ -521,7 +502,7 @@ PlannerServer::computePlan()
 
     result->path = getPlan(start, goal_pose, goal->planner_id);
 
-    if (!validatePath(action_server_pose_, goal_pose, result->path, goal->planner_id)) {
+    if (!validatePath(goal_pose, result->path, goal->planner_id)) {
       action_server_pose_->terminate_current();
       return;
     }

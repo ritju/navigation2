@@ -180,9 +180,7 @@ protected:
    * @param planner_id The planner ID used to generate the path
    * @return bool If path is valid
    */
-  template<typename T>
   bool validatePath(
-    std::unique_ptr<nav2_util::SimpleActionServer<T>> & action_server,
     const geometry_msgs::msg::PoseStamped & curr_goal,
     const nav_msgs::msg::Path & path,
     const std::string & planner_id);
@@ -253,7 +251,6 @@ protected:
 
   // Publishers for the path
   rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr plan_publisher_;
-  rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Bool>::SharedPtr rotation_sigh_publisher_;  
 
   // Service to deterime if the path is valid
   rclcpp::Service<nav2_msgs::srv::IsPathValid>::SharedPtr is_path_valid_service_;
