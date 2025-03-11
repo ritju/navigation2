@@ -150,7 +150,8 @@ public:
    */
   void laserScanCallback(
     sensor_msgs::msg::LaserScan::ConstSharedPtr message,
-    const std::shared_ptr<nav2_costmap_2d::ObservationBuffer> & buffer);
+    const std::shared_ptr<nav2_costmap_2d::ObservationBuffer> & buffer,
+    const std::shared_ptr<laser_geometry::LaserProjection> & laser_projector);
 
   /**
    * @brief A callback to handle buffering LaserScan messages which need filtering to turn Inf values into range_max.
@@ -159,7 +160,8 @@ public:
    */
   void laserScanValidInfCallback(
     sensor_msgs::msg::LaserScan::ConstSharedPtr message,
-    const std::shared_ptr<nav2_costmap_2d::ObservationBuffer> & buffer);
+    const std::shared_ptr<nav2_costmap_2d::ObservationBuffer> & buffer,
+    const std::shared_ptr<laser_geometry::LaserProjection> & laser_projector);
 
   /**
    * @brief  A callback to handle buffering PointCloud2 messages
@@ -230,7 +232,7 @@ protected:
   double max_obstacle_height_;  ///< @brief Max Obstacle Height
 
   /// @brief Used to project laser scans into point clouds
-  laser_geometry::LaserProjection projector_;
+  // laser_geometry::LaserProjection projector_;
   /// @brief Used for the observation message filters
   std::vector<std::shared_ptr<message_filters::SubscriberBase<rclcpp_lifecycle::LifecycleNode>>>
   observation_subscribers_;
