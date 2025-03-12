@@ -219,7 +219,7 @@ void ObstacleLayer::onInitialize()
       global_frame_.c_str(), expected_update_rate, observation_keep_time);
 
     rmw_qos_profile_t custom_qos_profile = rmw_qos_profile_sensor_data;
-    custom_qos_profile.depth = 1;
+    custom_qos_profile.depth = 50;
 
     // create a callback for the topic
     if (data_type == "LaserScan") {
@@ -232,18 +232,19 @@ void ObstacleLayer::onInitialize()
         node->get_node_logging_interface(),
         node->get_node_clock_interface(),
         tf2::durationFromSec(transform_tolerance));
+      auto laser_projector = std::make_shared<laser_geometry::LaserProjection>();
 
       if (inf_is_valid) {
         filter->registerCallback(
           std::bind(
             &ObstacleLayer::laserScanValidInfCallback, this, std::placeholders::_1,
-            observation_buffers_.back()));
+            observation_buffers_.back(), laser_projector));
 
       } else {
         filter->registerCallback(
           std::bind(
             &ObstacleLayer::laserScanCallback, this, std::placeholders::_1,
-            observation_buffers_.back()));
+            observation_buffers_.back(), laser_projector));
       }
 
       observation_subscribers_.push_back(sub);
@@ -326,7 +327,8 @@ ObstacleLayer::dynamicParametersCallback(
 void
 ObstacleLayer::laserScanCallback(
   sensor_msgs::msg::LaserScan::ConstSharedPtr message,
-  const std::shared_ptr<nav2_costmap_2d::ObservationBuffer> & buffer)
+  const std::shared_ptr<nav2_costmap_2d::ObservationBuffer> & buffer,
+  const std::shared_ptr<laser_geometry::LaserProjection> & laser_projector)
 {
   // project the laser into a point cloud
   sensor_msgs::msg::PointCloud2 cloud;
@@ -334,14 +336,14 @@ ObstacleLayer::laserScanCallback(
 
   // project the scan into a point cloud
   try {
-    projector_.transformLaserScanToPointCloud(message->header.frame_id, *message, cloud, *tf_);
+    laser_projector->transformLaserScanToPointCloud(message->header.frame_id, *message, cloud, *tf_);
   } catch (tf2::TransformException & ex) {
     RCLCPP_WARN(
       logger_,
       "High fidelity enabled, but TF returned a transform exception to frame %s: %s",
       global_frame_.c_str(),
       ex.what());
-    projector_.projectLaser(*message, cloud);
+    laser_projector->projectLaser(*message, cloud);
   } catch (std::runtime_error & ex) {
     RCLCPP_WARN(
       logger_,
@@ -360,7 +362,8 @@ ObstacleLayer::laserScanCallback(
 void
 ObstacleLayer::laserScanValidInfCallback(
   sensor_msgs::msg::LaserScan::ConstSharedPtr raw_message,
-  const std::shared_ptr<nav2_costmap_2d::ObservationBuffer> & buffer)
+  const std::shared_ptr<nav2_costmap_2d::ObservationBuffer> & buffer,
+  const std::shared_ptr<laser_geometry::LaserProjection> & laser_projector)
 {
   // Filter positive infinities ("Inf"s) to max_range.
   float epsilon = 0.0001;  // a tenth of a millimeter
@@ -378,13 +381,13 @@ ObstacleLayer::laserScanValidInfCallback(
 
   // project the scan into a point cloud
   try {
-    projector_.transformLaserScanToPointCloud(message.header.frame_id, message, cloud, *tf_);
+    laser_projector->transformLaserScanToPointCloud(message.header.frame_id, message, cloud, *tf_);
   } catch (tf2::TransformException & ex) {
     RCLCPP_WARN(
       logger_,
       "High fidelity enabled, but TF returned a transform exception to frame %s: %s",
       global_frame_.c_str(), ex.what());
-    projector_.projectLaser(message, cloud);
+    laser_projector->projectLaser(message, cloud);
   } catch (std::runtime_error & ex) {
     RCLCPP_WARN(
       logger_,

@@ -310,10 +310,10 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
     using nav2_costmap_2d::LETHAL_OBSTACLE;
     if (footprint_cost == LETHAL_OBSTACLE) {
       double goal_search_x = - _goal_occupied_tolerance;
-      double goal_search_y = - _goal_occupied_tolerance;
-      double min_dist = 0.05;
+      double min_dist = 1.0;
       while (goal_search_x < _goal_occupied_tolerance + 0.1)
       {
+        double goal_search_y = - _goal_occupied_tolerance;
         while (goal_search_y < _goal_occupied_tolerance + 0.1)
         {
           auto search_goal = goal;
@@ -323,7 +323,7 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
           if (footprint_cost != LETHAL_OBSTACLE)
           {
             double dist = sqrt(pow(goal_search_x, 2) + pow(goal_search_y, 2));
-            if (dist > min_dist)
+            if (dist < min_dist)
             {
               goal_with_tolerance = search_goal;
               min_dist = dist;

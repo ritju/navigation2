@@ -27,7 +27,7 @@
             <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
         </RateController>
-        <RecoveryNode number_of_retries="1" name="FollowPath">
+        <RecoveryNode number_of_retries="6" name="FollowPath">
           <FollowPath path="{path}" controller_id="FollowPath"/>
           <Sequence>
             <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
