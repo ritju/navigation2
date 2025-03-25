@@ -329,9 +329,9 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
               min_dist = dist;
             }
           }
-          goal_search_y += 0.1;
+          goal_search_y += 0.025;
         }
-        goal_search_x += 0.1;
+        goal_search_x += 0.025;
       }
       RCLCPP_INFO(_logger, "goal.x: %f, goal.y: %f !", goal.pose.position.x, goal.pose.position.y);
       RCLCPP_INFO(_logger, "goal_with_tolerance.x: %f, goal_with_tolerance.y: %f !", goal_with_tolerance.pose.position.x, goal_with_tolerance.pose.position.y);
