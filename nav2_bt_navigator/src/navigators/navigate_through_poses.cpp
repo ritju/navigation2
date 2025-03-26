@@ -222,7 +222,6 @@ NavigateThroughPosesNavigator::initializeGoalPoses(ActionT::Goal::ConstSharedPtr
   for(uint32_t i = 0; i < add_pose_index_poses.size(); ++i)
   {
     add_pose_index_poses.at(i).pose.position.z = i;
-    add_pose_index_poses.at(i).pose.orientation.w = 2.0;
   }
   blackboard->set<Goals>(goals_blackboard_id_, add_pose_index_poses);
 }

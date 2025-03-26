@@ -70,15 +70,18 @@ inline BT::NodeStatus RemovePassedGoals::tick()
   getInput("input_goals", goal_poses);
   if (goal_poses.size() > 0)
   {
-    if (goal_poses.front().pose.orientation.w == 2.0)
+    if (last_initialize_time_ == 0)
     {
+      last_initialize_time_ = goal_poses.front().header.stamp.sec + goal_poses.front().header.stamp.nanosec / 1e9;
+      RCLCPP_INFO(rclcpp::get_logger("remove_passed_poses"), "last_initialize_time_: %f", last_initialize_time_);
+    }
+    else if (goal_poses.front().header.stamp.sec + goal_poses.front().header.stamp.nanosec / 1e9 - last_initialize_time_ > 1e-1)
+    {  
+      last_initialize_time_ = goal_poses.front().header.stamp.sec + goal_poses.front().header.stamp.nanosec / 1e9;
+      RCLCPP_INFO(rclcpp::get_logger("remove_passed_poses"), "last_initialize_time_: %f", last_initialize_time_);
       receive_new_goal_ = true;
       count = 0;
       passed_poses_indexes_.clear();
-      for (auto &pose : goal_poses)
-      {
-        pose.pose.orientation.w = 1.0;
-      }
     }
   }
   
@@ -116,34 +119,34 @@ inline BT::NodeStatus RemovePassedGoals::tick()
   }
   
   // 对路径点pose重新赋值，适配lattice planner
-  if (goal_poses.size() > 1)
-  {
-    for (size_t i = 0; i < goal_poses.size(); ++i)
-    {
-      if (i == 0)
-      {
-        double theta = std::atan2(goal_poses[1].pose.position.y - goal_poses[0].pose.position.y,
-                                  goal_poses[1].pose.position.x - goal_poses[0].pose.position.x);
-        tf2::Quaternion orientation;
-        orientation.setRPY(0, 0, theta);
-        goal_poses[0].pose.orientation.w = orientation.w();
-        goal_poses[0].pose.orientation.z = orientation.z();
-        goal_poses[0].pose.orientation.y = orientation.y();
-        goal_poses[0].pose.orientation.x = orientation.x();
-      }
-      else
-      {
-        double theta = std::atan2(goal_poses[i].pose.position.y - goal_poses[i-1].pose.position.y,
-                                  goal_poses[i].pose.position.x - goal_poses[i-1].pose.position.x);
-        tf2::Quaternion orientation;
-        orientation.setRPY(0, 0, theta);
-        goal_poses[i].pose.orientation.w = orientation.w();
-        goal_poses[i].pose.orientation.z = orientation.z();
-        goal_poses[i].pose.orientation.y = orientation.y();
-        goal_poses[i].pose.orientation.x = orientation.x();
-      }
-    }
-  }
+  // if (goal_poses.size() > 1)
+  // {
+  //   for (size_t i = 0; i < goal_poses.size(); ++i)
+  //   {
+  //     if (i == 0)
+  //     {
+  //       double theta = std::atan2(goal_poses[1].pose.position.y - goal_poses[0].pose.position.y,
+  //                                 goal_poses[1].pose.position.x - goal_poses[0].pose.position.x);
+  //       tf2::Quaternion orientation;
+  //       orientation.setRPY(0, 0, theta);
+  //       goal_poses[0].pose.orientation.w = orientation.w();
+  //       goal_poses[0].pose.orientation.z = orientation.z();
+  //       goal_poses[0].pose.orientation.y = orientation.y();
+  //       goal_poses[0].pose.orientation.x = orientation.x();
+  //     }
+  //     else
+  //     {
+  //       double theta = std::atan2(goal_poses[i].pose.position.y - goal_poses[i-1].pose.position.y,
+  //                                 goal_poses[i].pose.position.x - goal_poses[i-1].pose.position.x);
+  //       tf2::Quaternion orientation;
+  //       orientation.setRPY(0, 0, theta);
+  //       goal_poses[i].pose.orientation.w = orientation.w();
+  //       goal_poses[i].pose.orientation.z = orientation.z();
+  //       goal_poses[i].pose.orientation.y = orientation.y();
+  //       goal_poses[i].pose.orientation.x = orientation.x();
+  //     }
+  //   }
+  // }
   
   // 对路径点pose重新赋值，适配lattice planner
   using namespace nav2_util::geometry_utils;  // NOLINT
