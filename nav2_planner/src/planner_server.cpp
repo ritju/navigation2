@@ -417,8 +417,19 @@ PlannerServer::computePlanThroughPoses()
       }
 
       // Get plan from start -> goal
-      nav_msgs::msg::Path curr_path = getPlan(curr_start, curr_goal, goal->planner_id);
-
+      nav_msgs::msg::Path curr_path;
+      try
+      {
+        curr_path = getPlan(curr_start, curr_goal, goal->planner_id);
+      }
+      catch (const std::runtime_error &ex)
+      {
+        RCLCPP_WARN(
+          get_logger(),
+          "%s plugin failed to plan through %zu points with final goal (%.2f, %.2f): \"%s\"",
+          goal->planner_id.c_str(), goal->goals.size(), goal->goals.back().pose.position.x,
+          goal->goals.back().pose.position.y, ex.what());
+      }
       // check path for validity
       if (!validatePath(curr_goal, curr_path, goal->planner_id)) {
         continue;

@@ -575,6 +575,7 @@ bool ControllerServer::pruneGlobalPlan(const geometry_msgs::msg::PoseStamped& gl
     // iterate plan until a pose close the robot is found
     std::vector<geometry_msgs::msg::PoseStamped>::iterator it = global_plan.begin();
     std::vector<geometry_msgs::msg::PoseStamped>::iterator erase_end = it;
+    // int count_it = 0, count_high_precision = 0;
     while (it != global_plan.end())
     {
       double dx = robot.pose.position.x - it->pose.position.x;
@@ -586,12 +587,46 @@ bool ControllerServer::pruneGlobalPlan(const geometry_msgs::msg::PoseStamped& gl
          break;
       }
       ++it;
+      // ++count_it;
     }
+
+    // std::vector<geometry_msgs::msg::PoseStamped>::iterator high_precision_it = global_plan.begin();
+    // std::vector<geometry_msgs::msg::PoseStamped>::iterator high_precision_erase_end = high_precision_it;
+    // double closest_distance = dist_thresh_sq;
+    // while (high_precision_it != (global_plan.begin() + 40))
+    // {
+    //   double dx = robot.pose.position.x - it->pose.position.x;
+    //   double dy = robot.pose.position.y - it->pose.position.y;
+    //   double dist_sq = dx * dx + dy * dy;
+    //   if (dist_sq < 0.25)
+    //   {
+    //     high_precision_erase_end = high_precision_it;
+    //     closest_distance = dist_sq;
+    //     break;
+    //   }
+    //   ++high_precision_it;
+    //   ++count_high_precision;
+    // }
+    // if (closest_distance > 0.25)
+    // {
+    //   high_precision_it = global_plan.end();
+    // }
+
+    // // RCLCPP_INFO(get_logger(), "Closet distance: %f, high_precision_erase_end: %d, it: %d", closest_distance, count_high_precision, count_it);
+    // if (closest_distance < 0.25 && count_high_precision >= count_it)
+    // {
+    //   erase_end = high_precision_erase_end;
+    // }
+
     if (erase_end == global_plan.end())
       return false;
     
     if (erase_end != global_plan.begin())
       global_plan.erase(global_plan.begin(), erase_end);
+    // else if (high_precision_it == global_plan.begin())
+    // {
+    //   global_plan.erase(global_plan.begin());
+    // }
     nav_msgs::msg::Path prune_path;
     prune_path.header = global_pose.header;
     prune_path.poses = global_plan;
@@ -763,7 +798,7 @@ bool ControllerServer::isGoalReached()
   //   }
   // }
 
-  if (!getRobotPose(pose) || current_path_.poses.size() > 40) {
+  if (!getRobotPose(pose) || current_path_.poses.size() > 80) {
   // if (!getRobotPose(pose)) {
     return false;
   }

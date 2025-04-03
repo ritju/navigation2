@@ -334,6 +334,11 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
         }
         goal_search_x += 0.05;
       }
+      if (goal.pose == goal_with_tolerance.pose)
+      {
+        RCLCPP_WARN(_logger, "Goal.x: %f, goal.y: %f is occupied !", goal.pose.position.x, goal.pose.position.y);
+        throw std::runtime_error("Cannot generate a plan, goal is occupied!");
+      }
       RCLCPP_INFO(_logger, "goal.x: %f, goal.y: %f !", goal.pose.position.x, goal.pose.position.y);
       RCLCPP_INFO(_logger, "goal_with_tolerance.x: %f, goal_with_tolerance.y: %f !", goal_with_tolerance.pose.position.x, goal_with_tolerance.pose.position.y);
   }
@@ -342,11 +347,13 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
     RCLCPP_ERROR(_logger, "%s", e.what());
   } catch (const nav2_costmap_2d::CollisionCheckerException & e) {
     RCLCPP_ERROR(_logger, "%s", e.what());
-  } catch (const std::runtime_error & e) {
-    RCLCPP_ERROR(_logger, "%s", e.what());
-  } catch (...) {
-    RCLCPP_ERROR(_logger, "Failed to check pose score!");
-  }
+  } 
+  // catch (const std::runtime_error & e) {
+  //   RCLCPP_ERROR(_logger, "%s", e.what());
+  // } 
+  // catch (...) {
+  //   RCLCPP_ERROR(_logger, "Failed to check pose score!");
+  // }
 
   geometry_msgs::msg::Pose2D goal_pose2d, start_pose2d;
   goal_pose2d.x = goal_with_tolerance.pose.position.x;

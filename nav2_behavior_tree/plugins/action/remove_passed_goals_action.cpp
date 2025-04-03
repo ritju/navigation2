@@ -79,12 +79,11 @@ inline BT::NodeStatus RemovePassedGoals::tick()
     {  
       last_initialize_time_ = goal_poses.front().header.stamp.sec + goal_poses.front().header.stamp.nanosec / 1e9;
       receive_new_goal_ = true;
-      count = 0;
       passed_poses_indexes_.clear();
     }
   }
   
-  if (!receive_new_goal_ && checked_path_received_ && count > 20)
+  if (!receive_new_goal_ && checked_path_received_ && (goal_poses.front().header.stamp == removed_path_.header.stamp))
   {
     if (goal_poses.size() > 0 && removed_path_.poses.size() > 0)
     {
@@ -108,7 +107,6 @@ inline BT::NodeStatus RemovePassedGoals::tick()
   }
   receive_new_goal_ = false;
   removed_path_.poses.clear();
-  ++count;
   checked_path_received_ = false;
   
   callback_group_executor_.spin_some();
@@ -199,11 +197,15 @@ inline BT::NodeStatus RemovePassedGoals::tick()
     passed_poses_index_pub_->publish(msg);
   }
       
-  nav_msgs::msg::Path path_msg;
-  path_msg.header.frame_id = "map";
-  path_msg.header.stamp = node->get_clock()->now();
-  path_msg.poses = std::vector(goal_poses.begin(), goal_poses.end());
-  removed_path_pub_->publish(path_msg);
+  if (goal_poses.size() > 0)
+  {
+    nav_msgs::msg::Path path_msg;
+    path_msg.header.frame_id = "map";
+    // path_msg.header.stamp = node->get_clock()->now();
+    path_msg.header.stamp = goal_poses.front().header.stamp;
+    path_msg.poses = std::vector(goal_poses.begin(), goal_poses.end());
+    removed_path_pub_->publish(path_msg);
+  }
   setOutput("output_goals", goal_poses);
   return BT::NodeStatus::SUCCESS;
 }

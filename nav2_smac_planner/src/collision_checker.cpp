@@ -107,31 +107,36 @@ bool GridCollisionChecker::inCollision(
   if (!footprint_is_radius_) {
     // if footprint, then we check for the footprint's points, but first see
     // if the robot is even potentially in an inscribed collision
-    footprint_cost_ = costmap_->getCost(
-      static_cast<unsigned int>(x), static_cast<unsigned int>(y));
-
-    if (footprint_cost_ < possible_inscribed_cost_) {
-      if (possible_inscribed_cost_ > 0) {
-        return false;
-      } else {
-        RCLCPP_ERROR_THROTTLE(
-          logger_, *clock_, 1000,
-          "Inflation layer either not found or inflation is not set sufficiently for "
-          "optimized non-circular collision checking capabilities. It is HIGHLY recommended to set"
-          " the inflation radius to be at MINIMUM half of the robot's largest cross-section. See "
-          "github.com/ros-planning/navigation2/tree/main/nav2_smac_planner#potential-fields"
-          " for full instructions. This will substantially impact run-time performance.");
+    for (double search = 0.0; search < 0.8; search += 0.05)
+    {
+      unsigned int mx, my;
+      costmap_->worldToMap(wx + search * cos(angles_.at(static_cast<size_t>(angle_bin))), wy + search * sin(static_cast<size_t>(angle_bin)), mx, my);
+      footprint_cost_ = costmap_->getCost(mx, my);
+      // RCLCPP_INFO(logger_, "X: %d, y: %d, footprint_cost_: %f", mx, my, footprint_cost_);
+  
+      // if (footprint_cost_ < possible_inscribed_cost_) {
+      //   if (possible_inscribed_cost_ > 0) {
+      //     return false;
+      //   } else {
+      //     RCLCPP_ERROR_THROTTLE(
+      //       logger_, *clock_, 1000,
+      //       "Inflation layer either not found or inflation is not set sufficiently for "
+      //       "optimized non-circular collision checking capabilities. It is HIGHLY recommended to set"
+      //       " the inflation radius to be at MINIMUM half of the robot's largest cross-section. See "
+      //       "github.com/ros-planning/navigation2/tree/main/nav2_smac_planner#potential-fields"
+      //       " for full instructions. This will substantially impact run-time performance.");
+      //   }
+      // }
+  
+      // If its inscribed, in collision, or unknown in the middle,
+      // no need to even check the footprint, its invalid
+      if (footprint_cost_ == UNKNOWN && !traverse_unknown) {
+        return true;
       }
-    }
-
-    // If its inscribed, in collision, or unknown in the middle,
-    // no need to even check the footprint, its invalid
-    if (footprint_cost_ == UNKNOWN && !traverse_unknown) {
-      return true;
-    }
-
-    if (footprint_cost_ == INSCRIBED || footprint_cost_ == OCCUPIED) {
-      return true;
+  
+      if (footprint_cost_ == INSCRIBED || footprint_cost_ == OCCUPIED) {
+        return true;
+      }
     }
 
     // if possible inscribed, need to check actual footprint pose.
