@@ -199,6 +199,8 @@
     </Action>
 
     <Action ID="CollisionRecover"/>
+    <Action ID="WeltModelNode">
+    </Action>
 
     <!-- ############################### CONDITION NODES ############################## -->
     <Condition ID="IsCollision"/>

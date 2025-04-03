@@ -104,6 +104,9 @@ list(APPEND plugin_libs nav2_assisted_teleop_action_bt_node)
 add_library(nav2_clear_costmap_service_bt_node SHARED plugins/action/clear_costmap_service.cpp)
 list(APPEND plugin_libs nav2_clear_costmap_service_bt_node)
 
+add_library(nav2_welt_model_node SHARED plugins/action/welt_model_node.cpp)
+list(APPEND plugin_libs nav2_welt_model_node)
+
 add_library(nav2_is_stuck_condition_bt_node SHARED plugins/condition/is_stuck_condition.cpp)
 list(APPEND plugin_libs nav2_is_stuck_condition_bt_node)
 
