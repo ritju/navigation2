@@ -109,9 +109,9 @@ bool GridCollisionChecker::inCollision(
     // if the robot is even potentially in an inscribed collision
     for (double search = 0.0; search < 0.8; search += 0.05)
     {
-      unsigned int mx, my;
-      costmap_->worldToMap(wx + search * cos(angles_.at(static_cast<size_t>(angle_bin))), wy + search * sin(static_cast<size_t>(angle_bin)), mx, my);
-      footprint_cost_ = costmap_->getCost(mx, my);
+      // unsigned int mx, my;
+      // costmap_->worldToMap(wx + search * cos(angles_.at(static_cast<size_t>(angle_bin))), wy + search * sin(static_cast<size_t>(angle_bin)), mx, my);
+      // footprint_cost_ = costmap_->getCost(mx, my);
       // RCLCPP_INFO(logger_, "X: %d, y: %d, footprint_cost_: %f", mx, my, footprint_cost_);
   
       // if (footprint_cost_ < possible_inscribed_cost_) {
@@ -130,6 +130,10 @@ bool GridCollisionChecker::inCollision(
   
       // If its inscribed, in collision, or unknown in the middle,
       // no need to even check the footprint, its invalid
+
+      footprint_cost_ = costmap_->getCost(
+        static_cast<unsigned int>(x), static_cast<unsigned int>(y));
+
       if (footprint_cost_ == UNKNOWN && !traverse_unknown) {
         return true;
       }
