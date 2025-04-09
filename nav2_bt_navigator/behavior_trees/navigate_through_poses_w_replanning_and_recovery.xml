@@ -14,28 +14,34 @@
           <IsCollision/>
         </RateController>
         <RateController hz="10.0">
-          <ReactiveSequence>
-            <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="1.0"/>
-          </ReactiveSequence>
+          <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="1.0"/>
         </RateController>
         <SingleTrigger>
           <RecoveryNode number_of_retries="2" name="ComputePathThroughPoses">
             <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
-            <ClearCostmapExceptRegion name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_except_global_costmap" reset_distance="10.0"/>
+            <ClearCostmapExceptRegion name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_except_global_costmap" reset_distance="4.0"/>
           </RecoveryNode>
         </SingleTrigger>
         <RecoveryNode number_of_retries="1" name="FollowPath">
           <FollowPath path="{path}" controller_id="FollowPath"/>
-          <Sequence>
-            <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
-          </Sequence>
+          <RecoveryNode number_of_retries="6" name="FollowPath">
+            <Sequence>
+              <ClearCostmapExceptRegion name="ClearLocalCostmap-Context" service_name="local_costmap/clear_except_local_costmap" reset_distance="4.0"/>
+              <FollowPath path="{path}" controller_id="FollowPath"/>
+            </Sequence>
+            <Sequence>
+              <ClearCostmapExceptRegion name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_except_global_costmap" reset_distance="4.0"/>
+              <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+            </Sequence>
+          </RecoveryNode>
         </RecoveryNode>
       </PipelineSequence>
       <ReactiveFallback name="RecoveryFallback">
         <GoalUpdated/>
         <RoundRobin name="RecoveryActions">
           <Sequence name="ClearingActions">
-            <ClearCostmapExceptRegion name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_except_global_costmap" reset_distance="10.0"/>
+            <ClearCostmapExceptRegion name="ClearGlobalCostmap-Context" service_name="local_costmap/clear_except_local_costmap" reset_distance="4.0"/>
+            <ClearCostmapExceptRegion name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_except_global_costmap" reset_distance="4.0"/>
           </Sequence>
           <Fallback>
             <IsCollision/>

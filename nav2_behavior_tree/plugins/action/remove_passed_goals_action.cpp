@@ -33,7 +33,6 @@ RemovePassedGoals::RemovePassedGoals(
   look_ahead_distance_(3.0),
   checked_path_received_(false),
   receive_new_goal_(false),
-  count(0)
   // occupied_path_received_(false)
 {
   getInput("radius", viapoint_achieved_radius_);
@@ -68,8 +67,13 @@ inline BT::NodeStatus RemovePassedGoals::tick()
   setStatus(BT::NodeStatus::RUNNING);
   Goals goal_poses;
   getInput("input_goals", goal_poses);
+
+  if (goal_poses.empty()) {
+    setOutput("output_goals", goal_poses);
+    return BT::NodeStatus::SUCCESS;
+  }
   
-  if (goal_poses.size() > 0)
+  if (goal_poses.size() > 1)
   {
     if (last_initialize_time_ == 0)
     {
@@ -81,7 +85,6 @@ inline BT::NodeStatus RemovePassedGoals::tick()
       receive_new_goal_ = true;
       passed_poses_indexes_.clear();
     }
-  }
   
   if (!receive_new_goal_ && checked_path_received_ && (goal_poses.front().header.stamp == removed_path_.header.stamp))
   {
@@ -105,15 +108,13 @@ inline BT::NodeStatus RemovePassedGoals::tick()
     }
     goal_poses = removed_path_.poses;
   }
+  }
   receive_new_goal_ = false;
   removed_path_.poses.clear();
   checked_path_received_ = false;
   
   callback_group_executor_.spin_some();
-  if (goal_poses.empty()) {
-    setOutput("output_goals", goal_poses);
-    return BT::NodeStatus::SUCCESS;
-  }
+
   
   // 对路径点pose重新赋值，适配lattice planner
   // if (goal_poses.size() > 1)

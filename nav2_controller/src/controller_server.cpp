@@ -753,7 +753,7 @@ void ControllerServer::updateGlobalPath()
     geometry_msgs::msg::PoseStamped robot_pose_for_prune;
     getRobotPose(robot_pose_for_prune);
     pruneGlobalPlan(robot_pose_for_prune, current_path_.poses, prune_dist_behind_robot_);
-    setPlannerPath(current_path_);
+    // setPlannerPath(current_path_);
   }
 }
 

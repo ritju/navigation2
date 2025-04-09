@@ -75,7 +75,6 @@ private:
   nav_msgs::msg::Path removed_path_;
   bool checked_path_received_, receive_new_goal_;
   std::vector<uint32_t> passed_poses_indexes_;
-  int count;
   double last_initialize_time_;
 };
 
