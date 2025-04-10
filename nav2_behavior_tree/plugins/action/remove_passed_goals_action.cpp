@@ -32,7 +32,7 @@ RemovePassedGoals::RemovePassedGoals(
   viapoint_achieved_radius_(0.5),
   look_ahead_distance_(3.0),
   checked_path_received_(false),
-  receive_new_goal_(false),
+  receive_new_goal_(false)
   // occupied_path_received_(false)
 {
   getInput("radius", viapoint_achieved_radius_);
