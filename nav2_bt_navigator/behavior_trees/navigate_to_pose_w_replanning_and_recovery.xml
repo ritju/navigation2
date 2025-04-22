@@ -22,18 +22,12 @@
         <RateController hz="5.0">
           <IsCollision/>
         </RateController>
-        <RecoveryNode number_of_retries="1" name="FollowPath">
+        <RecoveryNode number_of_retries="6" name="FollowPath">
           <FollowPath path="{path}" controller_id="FollowPath"/>
-          <RecoveryNode number_of_retries="6" name="FollowPath">
-            <Sequence>
-              <ClearCostmapExceptRegion name="ClearLocalCostmap-Context" service_name="local_costmap/clear_except_local_costmap" reset_distance="4.0"/>
-              <FollowPath path="{path}" controller_id="FollowPath"/>
-            </Sequence>
-            <Sequence>
-              <ClearCostmapExceptRegion name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_except_global_costmap" reset_distance="4.0"/>
-              <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
-            </Sequence>
-          </RecoveryNode>
+          <Sequence>
+            <ClearCostmapExceptRegion name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_except_global_costmap" reset_distance="4.0"/>
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+          </Sequence>
         </RecoveryNode>
       </PipelineSequence>
       <ReactiveFallback name="RecoveryFallback">

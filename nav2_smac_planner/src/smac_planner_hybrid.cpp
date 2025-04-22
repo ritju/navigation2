@@ -87,6 +87,12 @@ void SmacPlannerHybrid::configure(
     node, name + ".goal_occupied_tolerance", rclcpp::ParameterValue(0.5));
   _goal_occupied_tolerance = static_cast<float>(node->get_parameter(name + ".goal_occupied_tolerance").as_double());
   nav2_util::declare_parameter_if_not_declared(
+    node, name + ".goal_search_resolution", rclcpp::ParameterValue(0.1));
+  _goal_search_resolution = static_cast<float>(node->get_parameter(name + ".goal_search_resolution").as_double());
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".goal_search_stop_threshold", rclcpp::ParameterValue(0.15));
+  _goal_search_stop_threshold = static_cast<float>(node->get_parameter(name + ".goal_search_stop_threshold").as_double());
+  nav2_util::declare_parameter_if_not_declared(
     node, name + ".footprint_tolerance", rclcpp::ParameterValue(0.1));
   _footprint_tolerance = static_cast<float>(node->get_parameter(name + ".footprint_tolerance").as_double());
 
@@ -328,11 +334,19 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
             {
               goal_with_tolerance = search_goal;
               min_dist = dist;
+              if (min_dist < _goal_search_stop_threshold)
+              {
+                break;
+              }
             }
           }
-          goal_search_y += 0.05;
+          goal_search_y += _goal_search_resolution;
         }
-        goal_search_x += 0.05;
+        if (min_dist < _goal_search_stop_threshold)
+        {
+          break;
+        }
+        goal_search_x += _goal_search_resolution;
       }
       if (goal.pose == goal_with_tolerance.pose)
       {
