@@ -42,6 +42,8 @@
 #include "std_msgs/msg/bool.hpp"
 #include "nav2_costmap_2d/array_parser.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "nav2_costmap_2d/footprint_collision_checker.hpp"
+#include "nav2_costmap_2d/exceptions.hpp"
 namespace nav2_planner
 {
 /**
@@ -222,6 +224,8 @@ protected:
    */
   rcl_interfaces::msg::SetParametersResult
   dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters);
+  bool find_pose(geometry_msgs::msg::Pose2D original_pose, geometry_msgs::msg::Pose2D edge_pose, double d, geometry_msgs::msg::Pose2D &output_pose);
+  void calculate_line_param(double &x, double &y, double vx, double vy);
 
   // Dynamic parameters handler
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;
@@ -248,6 +252,7 @@ protected:
   std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros_;
   std::unique_ptr<nav2_util::NodeThread> costmap_thread_;
   nav2_costmap_2d::Costmap2D * costmap_;
+  std::shared_ptr<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>> footprint_collision_checker_;
 
   // Publishers for the path
   rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr plan_publisher_;
@@ -257,6 +262,9 @@ protected:
 
   bool rotation_goal_search_sigh_;
   double accumulate_distance_threshold_;
+  double _goal_occupied_tolerance;
+  double _goal_search_resolution;
+  double _goal_close_to_obstacle_distance;
 };
 
 }  // namespace nav2_planner

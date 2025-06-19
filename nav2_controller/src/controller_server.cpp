@@ -117,6 +117,8 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
 
   // Launch a thread to run the costmap node
   costmap_thread_ = std::make_unique<nav2_util::NodeThread>(costmap_ros_);
+  rclcpp::Logger local_costmap_logger = rclcpp::get_logger("local_costmap.local_costmap");
+  local_costmap_logger.set_level(rclcpp::Logger::Level::Warn);
 }
 
 ControllerServer::~ControllerServer()

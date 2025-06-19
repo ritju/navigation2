@@ -71,6 +71,9 @@ list(APPEND plugin_libs nav2_spin_cancel_bt_node)
 add_library(nav2_relocalization_spin_bt_node SHARED plugins/action/relocalization_spin_action.cpp)
 list(APPEND plugin_libs nav2_relocalization_spin_bt_node)
 
+add_library(nav2_path_check_bt_node SHARED plugins/action/path_check_action.cpp)
+list(APPEND plugin_libs nav2_path_check_bt_node)
+
 add_library(nav2_back_up_cancel_bt_node SHARED plugins/action/back_up_cancel_node.cpp)
 list(APPEND plugin_libs nav2_back_up_cancel_bt_node)
 

@@ -22,6 +22,8 @@
 #include "behaviortree_cpp_v3/condition_node.h"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav2_msgs/srv/is_path_valid.hpp"
+#include "nav2_util/geometry_utils.hpp"
+#include "nav2_util/robot_utils.hpp"
 
 namespace nav2_behavior_tree
 {
@@ -58,16 +60,26 @@ public:
   {
     return {
       BT::InputPort<nav_msgs::msg::Path>("path", "Path to Check"),
-      BT::InputPort<std::chrono::milliseconds>("server_timeout")
+      BT::InputPort<nav_msgs::msg::Path>("prune_path", "Prune path based of robot pose"),
+      BT::OutputPort<nav_msgs::msg::Path>("output_prune_path", "Output prune path based of robot pose"),
+      BT::InputPort<std::chrono::milliseconds>("server_timeout"),
+      BT::InputPort<std::vector<geometry_msgs::msg::PoseStamped>>("goals", "Goals"),
+      BT::InputPort<double>("check_distance", "Total check distance !"),
     };
   }
 
 private:
   rclcpp::Node::SharedPtr node_;
+  std::shared_ptr<tf2_ros::Buffer> tf_;
   rclcpp::Client<nav2_msgs::srv::IsPathValid>::SharedPtr client_;
+  bool pruneGlobalPlan(const geometry_msgs::msg::PoseStamped& global_pose, std::vector<geometry_msgs::msg::PoseStamped>& global_plan, double dist_behind_robot);
+  rclcpp::CallbackGroup::SharedPtr callback_group_;
+  rclcpp::executors::SingleThreadedExecutor callback_group_executor_;
+  nav_msgs::msg::Path received_path_;
   // The timeout value while waiting for a responce from the
   // is path valid service
   std::chrono::milliseconds server_timeout_;
+  double check_distance_;
 };
 
 }  // namespace nav2_behavior_tree

@@ -185,6 +185,10 @@
       <input_port name="localization_score">localization score threshold that stop spin</input_port>
     </Action>
 
+    <Action ID="PathCheck">
+      <input_port name="check_distance">Total distance for path check</input_port>
+    </Action>
+
     <Action ID="Wait">
       <input_port name="wait_duration">Wait time</input_port>
       <input_port name="server_name">Server name</input_port>
@@ -261,7 +265,11 @@
 
     <Condition ID="IsPathValid">
       <input_port name="path"> Path to validate </input_port>
+      <input_port name="goals"> Goals to validate </input_port>
       <input_port name="server_timeout"> Server timeout </input_port>
+      <input_port name="check_distance"> Total check distance </input_port>
+      <input_port name="prune_path"> Prune path to validate </input_port>
+      <output_port name="output_prune_path"> Output prune path to validate </output_port>
     </Condition>
 
     <Condition ID="WouldAControllerRecoveryHelp">

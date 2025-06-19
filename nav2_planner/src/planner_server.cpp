@@ -45,15 +45,27 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
   gp_loader_("nav2_core", "nav2_core::GlobalPlanner"),
   default_ids_{"GridBased"},
   default_types_{"nav2_navfn_planner/NavfnPlanner"},
-  costmap_(nullptr)
+  costmap_(nullptr),
+  footprint_collision_checker_(nullptr),
+  _goal_occupied_tolerance(0.5),
+   _goal_search_resolution(0.1),
+  _goal_close_to_obstacle_distance(0.3)
+
 {
   RCLCPP_INFO(get_logger(), "Creating");
 
   // Declare this node's parameters
   declare_parameter("planner_plugins", default_ids_);
   declare_parameter("expected_planner_frequency", 1.0);
+  declare_parameter("goal_occupied_tolerance", 0.5);
+  declare_parameter("goal_search_resolution", 0.1);
+  declare_parameter("goal_close_to_obstacle_distance", 0.3);
 
   get_parameter("planner_plugins", planner_ids_);
+  get_parameter("goal_occupied_tolerance", _goal_occupied_tolerance);
+  get_parameter("goal_search_resolution", _goal_search_resolution);
+  get_parameter("goal_close_to_obstacle_distance", _goal_close_to_obstacle_distance);
+
   if (planner_ids_ == default_ids_) {
     for (size_t i = 0; i < default_ids_.size(); ++i) {
       declare_parameter(default_ids_[i] + ".plugin", default_types_[i]);
@@ -63,6 +75,8 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
   // Setup the global costmap
   costmap_ros_ = std::make_shared<nav2_costmap_2d::Costmap2DROS>(
     "global_costmap", std::string{get_namespace()}, "global_costmap");
+  rclcpp::Logger global_costmap_logger = rclcpp::get_logger("global_costmap.global_costmap");
+  global_costmap_logger.set_level(rclcpp::Logger::Level::Warn);
 }
 
 PlannerServer::~PlannerServer()
@@ -82,6 +96,7 @@ PlannerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
 
   costmap_ros_->configure();
   costmap_ = costmap_ros_->getCostmap();
+  footprint_collision_checker_ = std::make_shared<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>(costmap_);
 
   // Launch a thread to run the costmap node
   costmap_thread_ = std::make_unique<nav2_util::NodeThread>(costmap_ros_);
@@ -242,6 +257,7 @@ PlannerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   planners_.clear();
   costmap_thread_.reset();
   costmap_ = nullptr;
+  footprint_collision_checker_ = nullptr;
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
@@ -363,6 +379,11 @@ PlannerServer::computePlanThroughPoses()
 
   // Initialize the ComputePathToPose goal and result
   auto goal = action_server_poses_->get_current_goal();
+  // 将 pose.z 置为0
+  auto goal_poses = goal->goals;
+  for (auto &pose : goal_poses) {
+    pose.pose.position.z = 0.0;  // Ensure z is zero for 2D planning
+  }
   auto result = std::make_shared<ActionThroughPoses::Result>();
   nav_msgs::msg::Path concat_path;
 
@@ -387,10 +408,11 @@ PlannerServer::computePlanThroughPoses()
     if (!getStartPose(action_server_poses_, goal, start)) {
       return;
     }
+    start.pose.position.z = 0.0;  // Ensure z is zero for 2D planning
 
     // Get consecutive paths through these points
     geometry_msgs::msg::PoseStamped curr_start, curr_goal;
-    for (unsigned int i = 0; i != goal->goals.size(); i++) {
+    for (unsigned int i = 0; i != goal_poses.size(); i++) {
       // Get starting point
       if (i == 0) {
         curr_start = start;
@@ -409,7 +431,7 @@ PlannerServer::computePlanThroughPoses()
             curr_start = start;
           }
       }
-      curr_goal = goal->goals[i];
+      curr_goal = goal_poses[i];
 
       // Transform them into the global frame
       if (!transformPosesToGlobalFrame(action_server_poses_, curr_start, curr_goal)) {
@@ -426,9 +448,9 @@ PlannerServer::computePlanThroughPoses()
       {
         RCLCPP_WARN(
           get_logger(),
-          "%s plugin failed to plan through %zu points with final goal (%.2f, %.2f): \"%s\"",
-          goal->planner_id.c_str(), goal->goals.size(), goal->goals.back().pose.position.x,
-          goal->goals.back().pose.position.y, ex.what());
+          "%s plugin failed to plan path to goal (%.2f, %.2f): \"%s\"",
+          goal->planner_id.c_str(), curr_goal.pose.position.x,
+          curr_goal.pose.position.y, ex.what());
       }
       // check path for validity
       if (!validatePath(curr_goal, curr_path, goal->planner_id)) {
@@ -599,23 +621,23 @@ void PlannerServer::isPathValid(
   }
 
   geometry_msgs::msg::PoseStamped current_pose;
-  unsigned int closest_point_index = 0;
+  // unsigned int closest_point_index = 0;
   if (costmap_ros_->getRobotPose(current_pose)) {
-    float current_distance = std::numeric_limits<float>::max();
-    float closest_distance = current_distance;
-    geometry_msgs::msg::Point current_point = current_pose.pose.position;
-    for (unsigned int i = 0; i < request->path.poses.size(); ++i) {
-      geometry_msgs::msg::Point path_point = request->path.poses[i].pose.position;
+    // float current_distance = std::numeric_limits<float>::max();
+    // float closest_distance = current_distance;
+    // geometry_msgs::msg::Point current_point = current_pose.pose.position;
+    // for (unsigned int i = 0; i < request->path.poses.size(); ++i) {
+    //   geometry_msgs::msg::Point path_point = request->path.poses[i].pose.position;
 
-      current_distance = nav2_util::geometry_utils::euclidean_distance(
-        current_point,
-        path_point);
+    //   current_distance = nav2_util::geometry_utils::euclidean_distance(
+    //     current_point,
+    //     path_point);
 
-      if (current_distance < closest_distance) {
-        closest_point_index = i;
-        closest_distance = current_distance;
-      }
-    }
+    //   if (current_distance < closest_distance) {
+    //     closest_point_index = i;
+    //     closest_distance = current_distance;
+    //   }
+    // }
 
     /**
      * The lethal check starts at the closest point to avoid points that have already been passed
@@ -624,7 +646,7 @@ void PlannerServer::isPathValid(
     std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*(costmap_->getMutex()));
     unsigned int mx = 0;
     unsigned int my = 0;
-    for (unsigned int i = closest_point_index; i < request->path.poses.size(); ++i) {
+    for (unsigned int i = 0; i < request->path.poses.size(); ++i) {
       costmap_->worldToMap(
         request->path.poses[i].pose.position.x,
         request->path.poses[i].pose.position.y, mx, my);
@@ -634,9 +656,61 @@ void PlannerServer::isPathValid(
         cost == nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
       {
         response->is_valid = false;
+        RCLCPP_INFO(get_logger(), "Pose is occuppied pose.x: %f, pose.y: %f, cost: %d !", request->path.poses[i].pose.position.x, request->path.poses[i].pose.position.y, cost);
+        return;
+      }
+
+      tf2::Quaternion quat;
+      double roll, pitch, yaw;
+      tf2::fromMsg(request->path.poses[i].pose.orientation, quat);
+      quat.normalize();
+      tf2::Matrix3x3 mat(quat);
+      mat.getRPY(roll, pitch, yaw);
+      double footprint_cost = footprint_collision_checker_->footprintCostAtPose(request->path.poses[i].pose.position.x,
+        request->path.poses[i].pose.position.y, yaw, costmap_ros_->getRobotFootprint());
+      if (footprint_cost == nav2_costmap_2d::LETHAL_OBSTACLE)
+      {
+        response->is_valid = false;
+        RCLCPP_INFO(get_logger(), "Pose footprint is occuppied pose.x: %f, pose.y: %f, cost: %d !", request->path.poses[i].pose.position.x, request->path.poses[i].pose.position.y, cost);
+        return;
       }
     }
   }
+}
+
+bool PlannerServer::find_pose(geometry_msgs::msg::Pose2D original_pose, geometry_msgs::msg::Pose2D edge_pose, double d, geometry_msgs::msg::Pose2D &output_pose) 
+{
+    // 计算法向量的单位向量
+    double vx = edge_pose.x - original_pose.x;
+    double vy = edge_pose.y - original_pose.y;
+    double param_x, param_y;
+    calculate_line_param(param_x, param_y, vx, vy);
+
+    // 计算从点P出发沿法向量方向的点
+    double Qx1 = original_pose.x + param_x * d;
+    double Qy1 = original_pose.y + param_y * d;
+
+    output_pose.x = Qx1;
+    output_pose.y = Qy1;
+    RCLCPP_DEBUG(get_logger(), "original_pose x: %f, y: %f!", original_pose.x, original_pose.y);
+    RCLCPP_DEBUG(get_logger(), "edge_pose x: %f, y: %f!", edge_pose.x, edge_pose.y);
+    RCLCPP_DEBUG(get_logger(), "output_pose x: %f, y: %f!", output_pose.x, output_pose.y);
+
+    return true;
+}
+
+void PlannerServer::calculate_line_param(double &x, double &y, double vx, double vy)
+{
+        if (fabs(vx) < 1e-5 && fabs(vy) < 1e-5)
+        {
+                x = 0;
+                y = 0;
+                return;
+        }
+        double magnitude = sqrt(vx * vx + vy * vy);
+        x = vx / magnitude;
+        y = vy / magnitude;
+        return;
 }
 
 rcl_interfaces::msg::SetParametersResult

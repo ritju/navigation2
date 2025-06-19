@@ -50,14 +50,15 @@ void calculateMinAndMaxDistances(
   if (footprint.size() <= 2) {
     return;
   }
-
+  std::vector<double> inscribe_distance;
   for (unsigned int i = 0; i < footprint.size() - 1; ++i) {
     // check the distance from the robot center point to the first vertex
     double vertex_dist = distance(0.0, 0.0, footprint[i].x, footprint[i].y);
     double edge_dist = distanceToLine(
       0.0, 0.0, footprint[i].x, footprint[i].y,
       footprint[i + 1].x, footprint[i + 1].y);
-    min_dist = std::min(min_dist, std::min(vertex_dist, edge_dist));
+      inscribe_distance.emplace_back(edge_dist);
+    // min_dist = std::min(min_dist, std::min(vertex_dist, edge_dist));
     max_dist = std::max(max_dist, std::max(vertex_dist, edge_dist));
   }
 
@@ -66,8 +67,20 @@ void calculateMinAndMaxDistances(
   double edge_dist = distanceToLine(
     0.0, 0.0, footprint.back().x, footprint.back().y,
     footprint.front().x, footprint.front().y);
-  min_dist = std::min(min_dist, std::min(vertex_dist, edge_dist));
+  inscribe_distance.emplace_back(edge_dist);
+  // min_dist = std::min(min_dist, std::min(vertex_dist, edge_dist));
   max_dist = std::max(max_dist, std::max(vertex_dist, edge_dist));
+  for (size_t i = 0; i < inscribe_distance.size() - 1; ++i)
+  {
+    for (size_t j = i + 1; j < inscribe_distance.size(); ++j)
+    {
+      if (inscribe_distance.at(i) == inscribe_distance.at(j))
+      {
+        min_dist = inscribe_distance.at(i);
+        return;
+      }
+    }
+  }
 }
 
 geometry_msgs::msg::Point32 toPoint32(geometry_msgs::msg::Point pt)

@@ -42,6 +42,12 @@ NavigateThroughPosesNavigator::configure(
 
   path_blackboard_id_ = node->get_parameter("path_blackboard_id").as_string();
 
+  if (!node->has_parameter("prune_path_blackboard_id_")) {
+    node->declare_parameter("prune_path_blackboard_id_", std::string("prune_path"));
+  }
+
+  prune_path_blackboard_id_ = node->get_parameter("prune_path_blackboard_id_").as_string();
+
   // Odometry smoother object for getting current speed
   odom_smoother_ = odom_smoother;
   return true;
@@ -225,6 +231,9 @@ NavigateThroughPosesNavigator::initializeGoalPoses(ActionT::Goal::ConstSharedPtr
     add_pose_index_poses.at(i).header.stamp = add_pose_index_poses.front().header.stamp;
   }
   blackboard->set<Goals>(goals_blackboard_id_, add_pose_index_poses);
+  nav_msgs::msg::Path empty_prune_path;
+  empty_prune_path.poses.clear();
+  blackboard->set<nav_msgs::msg::Path>(prune_path_blackboard_id_, empty_prune_path);
 }
 
 }  // namespace nav2_bt_navigator

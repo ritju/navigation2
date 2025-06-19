@@ -123,7 +123,7 @@ protected:
   double _lookup_table_size;
   double _goal_occupied_tolerance;
   double _goal_search_resolution;
-  double _goal_search_stop_threshold;
+  double _goal_close_to_obstacle_distance;
   double _footprint_tolerance;
   double _minimum_turning_radius_global_coords;
   std::string _motion_model_for_search;

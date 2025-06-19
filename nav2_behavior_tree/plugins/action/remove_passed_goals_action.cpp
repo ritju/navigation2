@@ -205,6 +205,10 @@ inline BT::NodeStatus RemovePassedGoals::tick()
     // path_msg.header.stamp = node->get_clock()->now();
     path_msg.header.stamp = goal_poses.front().header.stamp;
     path_msg.poses = std::vector(goal_poses.begin(), goal_poses.end());
+    for (auto &pose : path_msg.poses)
+    {
+      pose.pose.position.z = 0.0;
+    }
     removed_path_pub_->publish(path_msg);
   }
   setOutput("output_goals", goal_poses);
