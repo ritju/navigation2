@@ -23,17 +23,17 @@ public:
     double scoreTrajectory(const dwb_msgs::msg::Trajectory2D & traj) override;
 
 private:
+    double predict_person_vel_time;
     double max_distance_,min_x_,nav_x_,max_xt_,min_distance_,max_x_;
     double difference;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_{nullptr};
     std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
-    double dx, dxy;
+    double predict_person_vel, predict_person_distance;
     double pose_x, pose_y, pose_z;
     double robot_x, robot_y;
-    double previous_goal_x = 0.0;
-    double previous_goal_y = 0.0;
-    bool updategoal = false;
-    std::queue<double> goal_messages;
+    double previous_goal_x;
+    double previous_goal_y;
+    // std::queue<double> goal_messages;
     rclcpp::Time start_time_;
     bool update_time;
     double next_time;
