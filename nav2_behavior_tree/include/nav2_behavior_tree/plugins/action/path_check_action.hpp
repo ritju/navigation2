@@ -50,6 +50,8 @@ public:
     return providedBasicPorts(
       {
         BT::InputPort<float>("check_distance", 8.0, "Total distance for path check !"),
+        BT::InputPort<Goals>("input_goals", "Original goals to remove viapoints from"),
+        BT::OutputPort<Goals>("output_goals", "Goals with passed viapoints removed"),
       });
   }
   double check_distance_;

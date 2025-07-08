@@ -33,7 +33,15 @@ namespace nav2_behavior_tree
 void PathCheckAction::on_tick()
 {
   getInput("check_distance", check_distance_);
+  getInput("input_goals", input_goals_);
   goal_.distance = check_distance_;
+  goal_.input_goals = input_goals_;
+}
+
+BT::NodeStatus PathCheckAction::on_success()
+{
+  setOutput("output_goals", result_.result->output_goals);
+  return BT::NodeStatus::SUCCESS;
 }
 
 }  // namespace nav2_behavior_tree

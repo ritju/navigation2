@@ -30,18 +30,11 @@ RemovePassedGoals::RemovePassedGoals(
   const BT::NodeConfiguration & conf)
 : BT::ActionNodeBase(name, conf),
   viapoint_achieved_radius_(0.5),
-  look_ahead_distance_(3.0),
-  checked_path_received_(false),
   receive_new_goal_(false)
-  // occupied_path_received_(false)
 {
   getInput("radius", viapoint_achieved_radius_);
-  getInput("look_ahead_distance", look_ahead_distance_);  
   getInput("global_frame", global_frame_);
   getInput("robot_base_frame", robot_base_frame_);
-  getInput("local_costmap_topic", local_costmap_topic_);
-  getInput("look_ahead_distance", look_ahead_distance_);
-  getInput("footprint_topic", footprint_topic_);
   tf_ = config().blackboard->get<std::shared_ptr<tf2_ros::Buffer>>("tf_buffer");
   node = config().blackboard->get<rclcpp::Node::SharedPtr>("node");
   node->get_parameter("transform_tolerance", transform_tolerance_);
@@ -53,12 +46,8 @@ RemovePassedGoals::RemovePassedGoals(
   rclcpp::SubscriptionOptions sub_option;
   sub_option.callback_group = callback_group_;
   rclcpp::QoS qos(rclcpp::KeepLast(5));
-  // qos.best_effort().durability_volatile();
   removed_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("removed_plan", qos);
   passed_poses_index_pub_ = node->create_publisher<capella_ros_msg::msg::PassedPosesIndex>("passed_pose_indexes", qos);
-
-  checked_path_sub_ = node->create_subscription<nav_msgs::msg::Path>("checked_path", qos, 
-                      std::bind(&RemovePassedGoals::removed_path_callback, this, std::placeholders::_1), sub_option);
 }
 
 inline BT::NodeStatus RemovePassedGoals::tick()
@@ -72,7 +61,7 @@ inline BT::NodeStatus RemovePassedGoals::tick()
     setOutput("output_goals", goal_poses);
     return BT::NodeStatus::SUCCESS;
   }
-  
+
   if (goal_poses.size() > 1)
   {
     if (last_initialize_time_ == 0)
@@ -85,70 +74,11 @@ inline BT::NodeStatus RemovePassedGoals::tick()
       receive_new_goal_ = true;
       passed_poses_indexes_.clear();
     }
-  
-  if (!receive_new_goal_ && checked_path_received_ && (goal_poses.front().header.stamp == removed_path_.header.stamp))
-  {
-    if (goal_poses.size() > 0 && removed_path_.poses.size() > 0)
-    {
-      std::vector<geometry_msgs::msg::PoseStamped>::iterator it;
-      for (it = removed_path_.poses.begin(); it != removed_path_.poses.begin() + 10 && it != removed_path_.poses.end();)
-      {
-        if (std::find_if(goal_poses.begin(), goal_poses.end(), 
-          [=](const geometry_msgs::msg::PoseStamped& pose)
-          {return ((pose.pose.position.z == it->pose.position.z));}) == 
-          goal_poses.end())
-        {
-          it = removed_path_.poses.erase(it);
-        }
-        else
-        {
-          ++it;
-        }
-      }
-    }
-    goal_poses = removed_path_.poses;
-  }
-  }
+  } 
   receive_new_goal_ = false;
-  removed_path_.poses.clear();
-  checked_path_received_ = false;
-  
   callback_group_executor_.spin_some();
 
-  
-  // 对路径点pose重新赋值，适配lattice planner
-  // if (goal_poses.size() > 1)
-  // {
-  //   for (size_t i = 0; i < goal_poses.size(); ++i)
-  //   {
-  //     if (i == 0)
-  //     {
-  //       double theta = std::atan2(goal_poses[1].pose.position.y - goal_poses[0].pose.position.y,
-  //                                 goal_poses[1].pose.position.x - goal_poses[0].pose.position.x);
-  //       tf2::Quaternion orientation;
-  //       orientation.setRPY(0, 0, theta);
-  //       goal_poses[0].pose.orientation.w = orientation.w();
-  //       goal_poses[0].pose.orientation.z = orientation.z();
-  //       goal_poses[0].pose.orientation.y = orientation.y();
-  //       goal_poses[0].pose.orientation.x = orientation.x();
-  //     }
-  //     else
-  //     {
-  //       double theta = std::atan2(goal_poses[i].pose.position.y - goal_poses[i-1].pose.position.y,
-  //                                 goal_poses[i].pose.position.x - goal_poses[i-1].pose.position.x);
-  //       tf2::Quaternion orientation;
-  //       orientation.setRPY(0, 0, theta);
-  //       goal_poses[i].pose.orientation.w = orientation.w();
-  //       goal_poses[i].pose.orientation.z = orientation.z();
-  //       goal_poses[i].pose.orientation.y = orientation.y();
-  //       goal_poses[i].pose.orientation.x = orientation.x();
-  //     }
-  //   }
-  // }
-  
-  // 对路径点pose重新赋值，适配lattice planner
   using namespace nav2_util::geometry_utils;  // NOLINT
-
   geometry_msgs::msg::PoseStamped current_pose;
   if (!nav2_util::getCurrentPose(
       current_pose, *tf_, global_frame_, robot_base_frame_,
@@ -202,7 +132,6 @@ inline BT::NodeStatus RemovePassedGoals::tick()
   {
     nav_msgs::msg::Path path_msg;
     path_msg.header.frame_id = "map";
-    // path_msg.header.stamp = node->get_clock()->now();
     path_msg.header.stamp = goal_poses.front().header.stamp;
     path_msg.poses = std::vector(goal_poses.begin(), goal_poses.end());
     for (auto &pose : path_msg.poses)
@@ -213,12 +142,6 @@ inline BT::NodeStatus RemovePassedGoals::tick()
   }
   setOutput("output_goals", goal_poses);
   return BT::NodeStatus::SUCCESS;
-}
-
-void RemovePassedGoals::removed_path_callback(const nav_msgs::msg::Path &msg)
-{
-  checked_path_received_ = true;
-  removed_path_ = msg;
 }
 
 } 

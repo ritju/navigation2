@@ -187,6 +187,8 @@
 
     <Action ID="PathCheck">
       <input_port name="check_distance">Total distance for path check</input_port>
+      <input_port name="input_goals">Goals with passed viapoints removed</input_port>
+      <output_port name="output_goals">Set of goals after collision check </output_port>
     </Action>
 
     <Action ID="Wait">

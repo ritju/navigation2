@@ -50,9 +50,6 @@ public:
       BT::InputPort<double>("radius", 0.5, "radius to goal for it to be considered for removal"),
       BT::InputPort<std::string>("global_frame", std::string("map"), "Global frame"),
       BT::InputPort<std::string>("robot_base_frame", std::string("base_link"), "Robot base frame"),
-      BT::InputPort<std::string>("local_costmap_topic", std::string("local_costmap/costmap_raw"), "Local costmap topic"),
-      BT::InputPort<double>("look_ahead_distance", 3.0, "distance that check if it is occupied"),
-      BT::InputPort<std::string>("footprint_topic", std::string("local_costmap/published_footprint"), "Local costmap topic"),
     };
   }
 
@@ -60,20 +57,16 @@ private:
   
   void halt() override {}
   BT::NodeStatus tick() override;
-
   double viapoint_achieved_radius_;
-  std::string robot_base_frame_, global_frame_, local_costmap_topic_, footprint_topic_;
-  double transform_tolerance_, look_ahead_distance_;
+  std::string robot_base_frame_, global_frame_;
+  double transform_tolerance_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
   rclcpp::Node::SharedPtr node;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   rclcpp::executors::SingleThreadedExecutor callback_group_executor_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr removed_path_pub_;
   rclcpp::Publisher<capella_ros_msg::msg::PassedPosesIndex>::SharedPtr passed_poses_index_pub_;
-  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr checked_path_sub_;
-  void removed_path_callback(const nav_msgs::msg::Path &msg);
-  nav_msgs::msg::Path removed_path_;
-  bool checked_path_received_, receive_new_goal_;
+  bool receive_new_goal_;
   std::vector<uint32_t> passed_poses_indexes_;
   double last_initialize_time_;
 };

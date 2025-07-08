@@ -318,6 +318,7 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   for (auto &point : check_footprint)
   {
     point.y = point.y < 0 ? point.y - _footprint_tolerance :  point.y + _footprint_tolerance;
+    point.x = point.x < 0 ? point.x - _footprint_tolerance :  point.x + _footprint_tolerance;
   }
 
   try
