@@ -57,14 +57,14 @@ def generate_launch_description():
     remappings = [('/tf', 'tf'),
                   ('/tf_static', 'tf_static')]
 
-    if 'ROBOT_MODE' in os.environ:
-        if os.environ.get('ROBOT_MODE') == 'Single':
+    if 'MULTI_ROBOT_MODE' in os.environ:
+        if os.environ.get('MULTI_ROBOT_MODE') == 'False':
             controller_cmd_vel_nav_topic = 'cmd_vel_nav'
-        elif os.environ.get('ROBOT_MODE') == 'Multi':
+        elif os.environ.get('MULTI_ROBOT_MODE') == 'True':
             controller_cmd_vel_nav_topic = 'cmd_vel_nav_'
     else:
         controller_cmd_vel_nav_topic = 'cmd_vel_nav'
-        print("Not set controller_cmd_vel_nav_topic name: Single/Multi ! Use default value Single !")
+        print("Not set MULTI_ROBOT_MODE: True/False ! Use controller_cmd_vel_nav_topic default value cmd_vel_nav !")
     # Create our own temporary YAML files that include substitutions
     param_substitutions = {
         'use_sim_time': use_sim_time,
@@ -208,7 +208,7 @@ def generate_launch_description():
                 plugin='nav2_controller::ControllerServer',
                 name='controller_server',
                 parameters=[configured_params],
-                remappings=remappings + [('cmd_vel', 'cmd_vel_nav')]),
+                remappings=remappings + [('cmd_vel', controller_cmd_vel_nav_topic)]),
             ComposableNode(
                 package='nav2_smoother',
                 plugin='nav2_smoother::SmootherServer',

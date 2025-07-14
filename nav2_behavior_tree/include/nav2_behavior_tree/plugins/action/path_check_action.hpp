@@ -29,6 +29,7 @@ namespace nav2_behavior_tree
 class PathCheckAction : public BtActionNode<capella_ros_msg::action::PathCheck>
 {
 public:
+  using Goals = std::vector<geometry_msgs::msg::PoseStamped>;
   /**
    * @brief A constructor for nav2_behavior_tree::PathCheckAction
    * @param xml_tag_name Name for the XML tag for this node
@@ -45,6 +46,11 @@ public:
    */
   void on_tick() override;
 
+  /**
+   * @brief Function to perform some user-defined operation upon successful completion of the action
+   */
+  BT::NodeStatus on_success() override;
+
   static BT::PortsList providedPorts()
   {
     return providedBasicPorts(
@@ -55,6 +61,7 @@ public:
       });
   }
   double check_distance_;
+  Goals input_goals_;
 
 };
 
