@@ -93,8 +93,11 @@ void SmacPlannerHybrid::configure(
     node, name + ".goal_close_to_obstacle_distance", rclcpp::ParameterValue(0.3));
   _goal_close_to_obstacle_distance = static_cast<float>(node->get_parameter(name + ".goal_close_to_obstacle_distance").as_double());
   nav2_util::declare_parameter_if_not_declared(
-    node, name + ".footprint_tolerance", rclcpp::ParameterValue(0.1));
-  _footprint_tolerance = static_cast<float>(node->get_parameter(name + ".footprint_tolerance").as_double());
+    node, name + ".footprint_tolerance_x", rclcpp::ParameterValue(0.1));
+  _footprint_tolerance_x = static_cast<float>(node->get_parameter(name + ".footprint_tolerance_x").as_double());
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".footprint_tolerance_y", rclcpp::ParameterValue(0.1));
+  _footprint_tolerance_y = static_cast<float>(node->get_parameter(name + ".footprint_tolerance_y").as_double());
 
   nav2_util::declare_parameter_if_not_declared(
     node, name + ".allow_unknown", rclcpp::ParameterValue(true));
@@ -317,8 +320,8 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   nav2_costmap_2d::Footprint check_footprint = _costmap_ros->getRobotFootprint();
   for (auto &point : check_footprint)
   {
-    point.y = point.y < 0 ? point.y - _footprint_tolerance :  point.y + _footprint_tolerance;
-    point.x = point.x < 0 ? point.x - _footprint_tolerance :  point.x + _footprint_tolerance;
+    point.y = point.y < 0 ? point.y - _footprint_tolerance_y :  point.y + _footprint_tolerance_y;
+    point.x = point.x < 0 ? point.x - _footprint_tolerance_x :  point.x + _footprint_tolerance_x;
   }
 
   try
