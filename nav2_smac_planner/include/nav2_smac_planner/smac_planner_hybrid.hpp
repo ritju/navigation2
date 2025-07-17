@@ -89,7 +89,8 @@ public:
     const geometry_msgs::msg::PoseStamped & goal) override;
   
   bool find_pose(geometry_msgs::msg::Pose2D original_pose, geometry_msgs::msg::Pose2D edge_pose, double d, geometry_msgs::msg::Pose2D &output_pose);
-  void calculate_line_param(double &x, double &y, double vx, double vy); 
+  void calculate_line_param(double &x, double &y, double vx, double vy);
+  bool is_free(const geometry_msgs::msg::PoseStamped &pose, nav2_costmap_2d::Costmap2D * costmap, double footprint_extend_back_x, double footprint_extend_front_x, double footprint_extend_y);
 
 protected:
   /**
@@ -124,7 +125,8 @@ protected:
   double _goal_occupied_tolerance;
   double _goal_search_resolution;
   double _goal_close_to_obstacle_distance;
-  double _footprint_tolerance_x, _footprint_tolerance_y;
+  double _footprint_extend_back_x, _footprint_extend_front_x, _footprint_extend_y, _costmap_resulution;
+  double footprint_back_x_, footprint_front_x_;
   double _minimum_turning_radius_global_coords;
   std::string _motion_model_for_search;
   MotionModel _motion_model;

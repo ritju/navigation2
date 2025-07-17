@@ -454,9 +454,22 @@ PlannerServer::computePlanThroughPoses()
       }
       // check path for validity
       if (!validatePath(curr_goal, curr_path, goal->planner_id)) {
+        RCLCPP_DEBUG(
+          get_logger(),
+          "Totally poses: %ld, planned poses: %d, failed to generate path to goal (%.2f, %.2f)!",
+          goal->goals.size(), i,
+          curr_goal.pose.position.x,
+          curr_goal.pose.position.y);
         continue;
         // return;
       }
+      
+      RCLCPP_DEBUG(
+          get_logger(),
+          "Totally poses: %ld, planned poses: %d, successfully generate path to goal (%.2f, %.2f)!",
+          goal->goals.size(), i,
+          curr_goal.pose.position.x,
+          curr_goal.pose.position.y);
 
       // Concatenate paths together
       concat_path.poses.insert(
