@@ -30,7 +30,8 @@ namespace nav2_collision_monitor
 CollisionMonitor::CollisionMonitor(const rclcpp::NodeOptions & options)
 : nav2_util::LifecycleNode("collision_monitor", "", options),
   process_active_(false), robot_action_prev_{DO_NOTHING, {-1.0, -1.0, -1.0}},
-  stop_stamp_{0, 0, get_clock()->get_clock_type()}, stop_pub_timeout_(1.0, 0.0)
+  stop_stamp_{0, 0, get_clock()->get_clock_type()}, stop_pub_timeout_(1.0, 0.0).
+  recover_stop_timeout_(10.0, 0.0)
 {
 }
 
@@ -160,6 +161,7 @@ void CollisionMonitor::publishVelocity(const Action & robot_action)
     } else if (this->now() - stop_stamp_ > stop_pub_timeout_) {
       // More than stop_pub_timeout_ passed after robot has been stopped.
       // Cease publishing output cmd_vel.
+      stop_stamp_ = this->now();
       return;
     }
   }
@@ -210,6 +212,11 @@ bool CollisionMonitor::getParameters(
     node, "stop_pub_timeout", rclcpp::ParameterValue(1.0));
   stop_pub_timeout_ =
     rclcpp::Duration::from_seconds(get_parameter("stop_pub_timeout").as_double());
+
+  nav2_util::declare_parameter_if_not_declared(
+    node, "recover_stop_timeout", rclcpp::ParameterValue(10.0));
+  recover_stop_timeout_ =
+    rclcpp::Duration::from_seconds(get_parameter("recover_stop_timeout").as_double());
 
   if (!configurePolygons(base_frame_id, transform_tolerance)) {
     return false;
@@ -350,10 +357,10 @@ void CollisionMonitor::process(const Velocity & cmd_vel_in)
   std::shared_ptr<Polygon> action_polygon;
 
   for (std::shared_ptr<Polygon> polygon : polygons_) {
-    if (robot_action.action_type == STOP) {
-      // If robot already should stop, do nothing
-      break;
-    }
+    // if (robot_action.action_type == STOP) {
+    //   // If robot already should stop, do nothing
+    //   break;
+    // }
 
     const ActionType at = polygon->getActionType();
     if (at == STOP || at == SLOWDOWN) {
@@ -389,13 +396,17 @@ bool CollisionMonitor::processStopSlowdown(
   const Velocity & velocity,
   Action & robot_action) const
 {
+  using namespace std::chrono_literals;
+  auto now = rclcpp::Clock();
   if (polygon->getPointsInside(collision_points) > polygon->getMaxPoints()) {
-    if (polygon->getActionType() == STOP) {
+    if (polygon->getActionType() == STOP && 
+       ((this->now() - stop_stamp_) < stop_pub_timeout_ || (this->now() - stop_stamp_) > recover_stop_timeout_)) {
       // Setting up zero velocity for STOP model
       robot_action.action_type = STOP;
       robot_action.req_vel.x = 0.0;
       robot_action.req_vel.y = 0.0;
       robot_action.req_vel.tw = 0.0;
+      RCLCPP_INFO_STREAM_THROTTLE(get_logger(), now, 1000, "Execute stop cmd due to collison monitor!");
       return true;
     } else {  // SLOWDOWN
       const Velocity safe_vel = velocity * polygon->getSlowdownRatio();
@@ -404,6 +415,13 @@ bool CollisionMonitor::processStopSlowdown(
       if (safe_vel < robot_action.req_vel) {
         robot_action.action_type = SLOWDOWN;
         robot_action.req_vel = safe_vel;
+        RCLCPP_INFO_STREAM_THROTTLE(get_logger(), now, 5000, "Execute SLOWDOWN cmd at safe vel due to collison monitor!");
+        return true;
+      }
+      else
+      {
+        robot_action.action_type = SLOWDOWN;
+        RCLCPP_INFO_STREAM_THROTTLE(get_logger(), now, 5000, "Execute SLOWDOWN cmd at original vel due to collison monitor!");
         return true;
       }
     }

@@ -3,17 +3,18 @@ collision_monitor:
     use_sim_time: True
     base_frame_id: "base_footprint"
     odom_frame_id: "odom"
-    cmd_vel_in_topic: "cmd_vel_raw"
-    cmd_vel_out_topic: "cmd_vel"
+    cmd_vel_in_topic: "cmd_vel_nav_"
+    cmd_vel_out_topic: "cmd_vel_nav"
     transform_tolerance: 0.5
     source_timeout: 5.0
     stop_pub_timeout: 2.0
+    recover_stop_timeout: 10.0
     # Polygons represent zone around the robot for "stop" and "slowdown" action types,
     # and robot footprint for "approach" action type.
     # Footprint could be "polygon" type with dynamically set footprint from footprint_topic
     # or "circle" type with static footprint set by radius. "footprint_topic" parameter
     # to be ignored in circular case.
-    polygons: ["PolygonStop"]
+    polygons: ["FootprintApproach", "PolygonSlow", "PolygonStop"]
     PolygonStop:
       type: "polygon"
       points: [0.3, 0.3, 0.3, -0.3, 0.0, -0.3, 0.0, 0.3]

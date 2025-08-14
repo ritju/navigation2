@@ -243,7 +243,7 @@ bool Polygon::getCommonParameters(std::string & polygon_pub_topic)
       node, polygon_name_ + ".max_points", rclcpp::ParameterValue(3));
     max_points_ = node->get_parameter(polygon_name_ + ".max_points").as_int();
 
-    if (action_type_ == SLOWDOWN) {
+    if (action_type_ == SLOWDOWN || action_type_ == STOP) {
       nav2_util::declare_parameter_if_not_declared(
         node, polygon_name_ + ".slowdown_ratio", rclcpp::ParameterValue(0.5));
       slowdown_ratio_ = node->get_parameter(polygon_name_ + ".slowdown_ratio").as_double();
