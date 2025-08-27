@@ -50,6 +50,7 @@ public:
       BT::InputPort<double>("radius", 0.5, "radius to goal for it to be considered for removal"),
       BT::InputPort<std::string>("global_frame", std::string("map"), "Global frame"),
       BT::InputPort<std::string>("robot_base_frame", std::string("base_link"), "Robot base frame"),
+      BT::InputPort<double>("accumulate_distance", 8.0, "accumulate distance to search removed poses"),
     };
   }
 
@@ -57,7 +58,7 @@ private:
   
   void halt() override {}
   BT::NodeStatus tick() override;
-  double viapoint_achieved_radius_;
+  double viapoint_achieved_radius_, accumulate_distance_;
   std::string robot_base_frame_, global_frame_;
   double transform_tolerance_;
   std::shared_ptr<tf2_ros::Buffer> tf_;

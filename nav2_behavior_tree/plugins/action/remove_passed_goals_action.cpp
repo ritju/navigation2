@@ -30,11 +30,13 @@ RemovePassedGoals::RemovePassedGoals(
   const BT::NodeConfiguration & conf)
 : BT::ActionNodeBase(name, conf),
   viapoint_achieved_radius_(0.5),
+  accumulate_distance_(8.0),
   receive_new_goal_(false)
 {
   getInput("radius", viapoint_achieved_radius_);
   getInput("global_frame", global_frame_);
   getInput("robot_base_frame", robot_base_frame_);
+  getInput("accumulate_distance", accumulate_distance_);
   tf_ = config().blackboard->get<std::shared_ptr<tf2_ros::Buffer>>("tf_buffer");
   node = config().blackboard->get<rclcpp::Node::SharedPtr>("node");
   node->get_parameter("transform_tolerance", transform_tolerance_);
@@ -89,25 +91,35 @@ inline BT::NodeStatus RemovePassedGoals::tick()
 
   double dist_to_goal;
   uint32_t indexes_size = passed_poses_indexes_.size();
-  while (goal_poses.size() > 1) {
-    dist_to_goal = euclidean_distance(goal_poses[0].pose, current_pose.pose);
-    if (dist_to_goal > viapoint_achieved_radius_) {
+  double accum_dist = 0.0;
+  Goals::iterator it = goal_poses.begin();
+  for (it = goal_poses.begin(); it != goal_poses.end();)
+  {
+    dist_to_goal = euclidean_distance(it->pose, current_pose.pose);
+    accum_dist += dist_to_goal;
+    if (dist_to_goal > viapoint_achieved_radius_ && accum_dist > accumulate_distance_) {
       break;
     }
-    // if (passed_poses_indexes_.size() > 0 && passed_poses_indexes_.back() != static_cast<uint32_t>(goal_poses[0].pose.position.z))
-    if (passed_poses_indexes_.size() > 0 && 
+    else if (dist_to_goal < viapoint_achieved_radius_ && accum_dist < accumulate_distance_)
+    {
+      if (passed_poses_indexes_.size() > 0 && 
         std::find_if(passed_poses_indexes_.begin(), passed_poses_indexes_.end(), 
           [=](const uint32_t& index)
-          {return (index == static_cast<uint32_t>(goal_poses[0].pose.position.z));}) == 
+          {return (index == static_cast<uint32_t>(it->pose.position.z));}) == 
           passed_poses_indexes_.end())
-    {
-      passed_poses_indexes_.emplace_back(static_cast<uint32_t>(goal_poses[0].pose.position.z));
+      {
+        passed_poses_indexes_.emplace_back(static_cast<uint32_t>(it->pose.position.z));
+      }
+      else if (passed_poses_indexes_.size() == 0)
+      {
+        passed_poses_indexes_.emplace_back(static_cast<uint32_t>(it->pose.position.z));
+      }
+      goal_poses.erase(it);
     }
-    else if (passed_poses_indexes_.size() == 0)
+    else
     {
-      passed_poses_indexes_.emplace_back(static_cast<uint32_t>(goal_poses[0].pose.position.z));
+      ++it;
     }
-    goal_poses.erase(goal_poses.begin());
   }
   if (goal_poses.size() == 1)
   {
@@ -126,6 +138,7 @@ inline BT::NodeStatus RemovePassedGoals::tick()
     capella_ros_msg::msg::PassedPosesIndex msg;
     msg.indexes = passed_poses_indexes_;
     passed_poses_index_pub_->publish(msg);
+    RCLCPP_INFO(node->get_logger(), "Passed_pose_indexes size: %lu, Passed_pose_indexes back: %u", passed_poses_indexes_.size(), passed_poses_indexes_.back());
   }
       
   if (goal_poses.size() > 0)

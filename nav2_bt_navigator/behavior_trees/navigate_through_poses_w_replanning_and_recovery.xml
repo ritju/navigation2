@@ -15,7 +15,7 @@
           <IsCollision/>
         </RateController>
         <RateController hz="10.0">
-          <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="1.0"/>
+          <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="1.0" accumulate_distance="8.0"/>
         </RateController>
         <RecoveryNode number_of_retries="2" name="PathCheck">
           <IsPathValid goals="{goals}" check_distance="8.0"/>
