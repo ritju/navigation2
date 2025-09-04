@@ -228,7 +228,7 @@ NavigateThroughPosesNavigator::initializeGoalPoses(ActionT::Goal::ConstSharedPtr
   for(uint32_t i = 0; i < add_pose_index_poses.size(); ++i)
   {
     add_pose_index_poses.at(i).pose.position.z = i;
-    add_pose_index_poses.at(i).header.stamp = add_pose_index_poses.front().header.stamp;
+    add_pose_index_poses.at(i).header.stamp = clock_->now();
   }
   blackboard->set<Goals>(goals_blackboard_id_, add_pose_index_poses);
   nav_msgs::msg::Path empty_prune_path;
