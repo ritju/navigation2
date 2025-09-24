@@ -31,7 +31,8 @@ RemovePassedGoals::RemovePassedGoals(
 : BT::ActionNodeBase(name, conf),
   viapoint_achieved_radius_(0.5),
   accumulate_distance_(8.0),
-  receive_new_goal_(false)
+  receive_new_goal_(false),
+  last_initialize_time_(0)
 {
   getInput("radius", viapoint_achieved_radius_);
   getInput("global_frame", global_frame_);

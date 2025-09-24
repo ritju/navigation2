@@ -448,6 +448,12 @@ void ControllerServer::computeControl()
         r.sleep();
       }
 
+      if (action_server_->get_current_goal()->path.poses.empty()) {
+        RCLCPP_WANR(
+        get_logger(),
+        "%s path is empty.", current_controller_.c_str());
+        break;
+      }
       updateGlobalPath();
 
       computeAndPublishVelocity();
@@ -540,8 +546,12 @@ void ControllerServer::setPlannerPath(const nav_msgs::msg::Path & path)
     get_logger(),
     "Providing path to the controller %s", current_controller_.c_str());
   if (path.poses.empty()) {
+    RCLCPP_WARN(
+    get_logger(),
+    "%s path is empty.", current_controller_.c_str());
+    return;
     // action_server_->succeeded_current();
-    throw nav2_core::PlannerException("Invalid path, Path is empty.");
+    // throw nav2_core::PlannerException("Invalid path, Path is empty.");
   }
   controllers_[current_controller_]->setPlan(path);
 

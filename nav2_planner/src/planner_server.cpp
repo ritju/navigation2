@@ -379,6 +379,23 @@ PlannerServer::computePlanThroughPoses()
 
   // Initialize the ComputePathToPose goal and result
   auto goal = action_server_poses_->get_current_goal();
+
+  if (goal->goals.empty())
+  {
+    nav_msgs::msg::Path result_path;
+    result_path.header.frame_id = costmap_ros_->getGlobalFrameID();
+    result_path.header.stamp = this->now();
+    result_path.poses.clear();
+    auto result = std::make_shared<ActionThroughPoses::Result>();
+    result->path = result_path;
+    result->planning_time = this->now() - start_time;
+    action_server_poses_->succeeded_current(result);
+    RCLCPP_WARN(
+      get_logger(),
+      "Compute path through poses requested a plan with no viapoint poses, returning.");
+    return;
+  }
+  
   // 将 pose.z 置为0
   auto goal_poses = goal->goals;
   for (auto &pose : goal_poses) {
