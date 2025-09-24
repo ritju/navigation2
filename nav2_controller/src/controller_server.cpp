@@ -449,7 +449,7 @@ void ControllerServer::computeControl()
       }
 
       if (action_server_->get_current_goal()->path.poses.empty()) {
-        RCLCPP_WANR(
+        RCLCPP_WARN(
         get_logger(),
         "%s path is empty.", current_controller_.c_str());
         break;
