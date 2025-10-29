@@ -31,7 +31,6 @@ RemovePassedGoals::RemovePassedGoals(
 : BT::ActionNodeBase(name, conf),
   viapoint_achieved_radius_(0.5),
   accumulate_distance_(8.0),
-  receive_new_goal_(false),
   last_initialize_time_(0)
 {
   getInput("radius", viapoint_achieved_radius_);
@@ -74,11 +73,9 @@ inline BT::NodeStatus RemovePassedGoals::tick()
     else if (goal_poses.front().header.stamp.sec + goal_poses.front().header.stamp.nanosec / 1e9 - last_initialize_time_ > 1e-1)
     {  
       last_initialize_time_ = goal_poses.front().header.stamp.sec + goal_poses.front().header.stamp.nanosec / 1e9;
-      receive_new_goal_ = true;
       passed_poses_indexes_.clear();
     }
   } 
-  receive_new_goal_ = false;
   callback_group_executor_.spin_some();
 
   using namespace nav2_util::geometry_utils;  // NOLINT
@@ -90,18 +87,13 @@ inline BT::NodeStatus RemovePassedGoals::tick()
     return BT::NodeStatus::FAILURE;
   }
 
-  double dist_to_goal;
+  double dist_to_goal = 0;
   uint32_t indexes_size = passed_poses_indexes_.size();
-  double accum_dist = 0.0;
   Goals::iterator it = goal_poses.begin();
   for (it = goal_poses.begin(); it != goal_poses.end();)
   {
     dist_to_goal = euclidean_distance(it->pose, current_pose.pose);
-    accum_dist += dist_to_goal;
-    if (dist_to_goal > viapoint_achieved_radius_ && accum_dist > accumulate_distance_) {
-      break;
-    }
-    else if (dist_to_goal < viapoint_achieved_radius_ && accum_dist < accumulate_distance_)
+    if (dist_to_goal < viapoint_achieved_radius_)
     {
       if (passed_poses_indexes_.size() > 0 && 
         std::find_if(passed_poses_indexes_.begin(), passed_poses_indexes_.end(), 
@@ -115,11 +107,11 @@ inline BT::NodeStatus RemovePassedGoals::tick()
       {
         passed_poses_indexes_.emplace_back(static_cast<uint32_t>(it->pose.position.z));
       }
-      goal_poses.erase(it);
+      it = goal_poses.erase(it);
     }
     else
     {
-      ++it;
+      break;
     }
   }
   if (goal_poses.size() == 1)

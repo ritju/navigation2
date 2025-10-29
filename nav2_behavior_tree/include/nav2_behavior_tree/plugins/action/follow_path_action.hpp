@@ -65,6 +65,7 @@ public:
         BT::InputPort<nav_msgs::msg::Path>("path", "Path to follow"),
         BT::InputPort<std::string>("controller_id", ""),
         BT::InputPort<std::string>("goal_checker_id", ""),
+        BT::InputPort<std::vector<geometry_msgs::msg::PoseStamped>>("input_goals", ""),
       });
   }
 };
