@@ -453,7 +453,8 @@ void ControllerServer::computeControl()
         get_logger(),
         "%s path is empty.", current_controller_.c_str());
         publishZeroVelocity();
-        action_server_->terminate_current();
+        // action_server_->terminate_current();
+        throw( std::runtime_error("Path is empty."));
         // break;
       }
       updateGlobalPath();
@@ -473,12 +474,13 @@ void ControllerServer::computeControl()
   } catch (nav2_core::PlannerException & e) {
     RCLCPP_ERROR(this->get_logger(), e.what());
     publishZeroVelocity();
-    action_server_->terminate_current();
+    // action_server_->terminate_current();
     return;
   } catch (std::runtime_error & e) {
     RCLCPP_ERROR(this->get_logger(), e.what());
     publishZeroVelocity();
-    action_server_->terminate_current();
+    std::shared_ptr<Action::Result> result = std::make_shared<Action::Result>();
+    action_server_->terminate_current(result);
     return;
   } catch (std::exception & e) {
     RCLCPP_ERROR(this->get_logger(), "%s", e.what());
