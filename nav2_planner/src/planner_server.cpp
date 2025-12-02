@@ -380,6 +380,30 @@ PlannerServer::computePlanThroughPoses()
   // Initialize the ComputePathToPose goal and result
   auto goal = action_server_poses_->get_current_goal();
 
+  geometry_msgs::msg::PoseStamped robot_pose;
+  if (costmap_ros_->getRobotPose(robot_pose))
+  {
+    double footprint_cost = footprint_collision_checker_->footprintCostAtPose(robot_pose.pose.position.x, robot_pose.pose.position.y, 
+                                                          tf2::getYaw(robot_pose.pose.orientation), costmap_ros_->getRobotFootprint());
+    RCLCPP_INFO(get_logger(), "Robot footprint cost at current pose (%.2f, %.2f) is %f", 
+                robot_pose.pose.position.x, robot_pose.pose.position.y, footprint_cost);
+    if (footprint_cost == nav2_costmap_2d::LETHAL_OBSTACLE)
+    {
+      RCLCPP_WARN(
+        get_logger(),
+        "Robot is currently in collision at (%.2f, %.2f). Cannot compute path through poses.",
+        robot_pose.pose.position.x, robot_pose.pose.position.y);
+      action_server_poses_->terminate_current();
+      return;
+    }
+  }
+  else
+  {
+    RCLCPP_WARN(
+      get_logger(),
+      "Unable to get robot pose to check for collision.");
+  }
+
   if (goal->goals.empty())
   {
     nav_msgs::msg::Path result_path;
@@ -430,6 +454,9 @@ PlannerServer::computePlanThroughPoses()
     // Get consecutive paths through these points
     geometry_msgs::msg::PoseStamped curr_start, curr_goal;
     for (unsigned int i = 0; i != goal_poses.size(); i++) {
+      if (isServerInactive(action_server_poses_) || isCancelRequested(action_server_poses_)) {
+        return;
+      }
       // Get starting point
       if (i == 0) {
         curr_start = start;
@@ -471,7 +498,7 @@ PlannerServer::computePlanThroughPoses()
       }
       // check path for validity
       if (!validatePath(curr_goal, curr_path, goal->planner_id)) {
-        RCLCPP_DEBUG(
+        RCLCPP_INFO(
           get_logger(),
           "Totally poses: %ld, planned poses: %d, failed to generate path to goal (%.2f, %.2f)!",
           goal->goals.size(), i,
@@ -481,7 +508,7 @@ PlannerServer::computePlanThroughPoses()
         // return;
       }
       
-      RCLCPP_DEBUG(
+      RCLCPP_INFO(
           get_logger(),
           "Totally poses: %ld, planned poses: %d, successfully generate path to goal (%.2f, %.2f)!",
           goal->goals.size(), i,
@@ -514,6 +541,10 @@ PlannerServer::computePlanThroughPoses()
         1 / max_planner_duration_, 1 / cycle_duration.seconds());
     }
     action_server_poses_->succeeded_current(result);
+    RCLCPP_INFO(
+      get_logger(),
+      "Total path size through %zu poses is %zu",
+      goal->goals.size(), concat_path.poses.size());
   } catch (std::runtime_error & ex) {
     RCLCPP_WARN(
       get_logger(),

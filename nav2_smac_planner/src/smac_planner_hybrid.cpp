@@ -336,6 +336,19 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
     }
   }
   _costmap_resulution = costmap->getResolution();
+
+  geometry_msgs::msg::Pose2D start_pose2d;
+  start_pose2d.x = start.pose.position.x;
+  start_pose2d.y = start.pose.position.y;
+  start_pose2d.theta = tf2::getYaw(start.pose.orientation);
+  double start_footprint_cost = 0.0; 
+  start_footprint_cost = _collision_checker.footprintCostAtPose(start_pose2d.x, start_pose2d.y, start_pose2d.theta, check_footprint);
+  if (start_footprint_cost == nav2_costmap_2d::LETHAL_OBSTACLE) 
+  {
+    RCLCPP_WARN(_logger, "Start pose: (%f, %f) is occupied !", start.pose.position.x, start.pose.position.y);
+    throw std::runtime_error("Cannot generate a plan, start is occupied!");
+  }
+
   try
   {
     bool is_goal_free = is_free(goal_with_tolerance, costmap, _footprint_extend_back_x, _footprint_extend_front_x, _footprint_extend_y);
@@ -396,15 +409,10 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
     RCLCPP_ERROR(_logger, "Failed to check pose score!");
   }
 
-  geometry_msgs::msg::Pose2D goal_pose2d, start_pose2d;
-
+  geometry_msgs::msg::Pose2D goal_pose2d;
   goal_pose2d.x = goal_with_tolerance.pose.position.x;
   goal_pose2d.y = goal_with_tolerance.pose.position.y;
   goal_pose2d.theta = tf2::getYaw(goal_with_tolerance.pose.orientation);
-
-  start_pose2d.x = start.pose.position.x;
-  start_pose2d.y = start.pose.position.y;
-  start_pose2d.theta = tf2::getYaw(start.pose.orientation);
 
   double yaw = atan2(goal_pose2d.y-start_pose2d.y, goal_pose2d.x-start_pose2d.x);
   tf2::Quaternion quat;
@@ -415,88 +423,58 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   pose.pose.orientation.y = quat.y();
   pose.pose.orientation.z = quat.z();
   pose.pose.orientation.w = quat.w();
-
-  // 检查从起点方向旋转至终点方向是否会碰撞，如果会碰撞，跳过生成直线路径
-  double start_theta = tf2::getYaw(start.pose.orientation);
-  double goal_theta = tf2::getYaw(goal_with_tolerance.pose.orientation);
-
-  double diff_theta = goal_theta - start_theta;
-  diff_theta = std::fmod(diff_theta, 2 * M_PI);            // 取模到 (-2π, 2π)
-  if (diff_theta > M_PI)
+  
+  double goal_footprint_cost = 0.0; 
+  goal_footprint_cost = _collision_checker.footprintCostAtPose(goal_pose2d.x, goal_pose2d.y, yaw, check_footprint);
+  if (goal_footprint_cost != nav2_costmap_2d::LETHAL_OBSTACLE)
   {
-    diff_theta -= 2 * M_PI;
-  } else if(diff_theta < -M_PI)
-  {
-    diff_theta += 2 * M_PI;
-  }
-
-  double step = diff_theta < 0 ? -0.087 : 0.087;  // 设置步长为5度
-
-  for (size_t i = 1 ; i < floor(fabs(diff_theta / step)); ++i) {
-    geometry_msgs::msg::Pose2D pose2d;
-    pose2d.x = start.pose.position.x;
-    pose2d.y = start.pose.position.y;
-    if (start_theta + step * i > M_PI) {
-      pose2d.theta = start_theta + step * i - 2 * M_PI;  // 将角度限制在 (-π, π)
-    } else if (start_theta + step * i < -M_PI) {
-      pose2d.theta = start_theta + step * i + 2 * M_PI;  // 将角度限制在 (-π, π)
-    } else {
-      pose2d.theta = start_theta + step * i;
-    }
-    double footprint_cost = 0.0;
-    footprint_cost = _collision_checker.footprintCostAtPose(pose2d.x, pose2d.y, pose2d.theta, check_footprint);
-    if (footprint_cost == nav2_costmap_2d::LETHAL_OBSTACLE) {
-      RCLCPP_WARN(_logger, "Start pose is occupied, cannot generate plan directly!");
-      goto start_a_star;;
-    }
-  }
-
-  try
-  {
-    bool is_path_free = true;
-    double distance_start_to_goal = nav2_util::geometry_utils::euclidean_distance(start_pose2d, goal_pose2d);
-    for (double d = _costmap_resulution; d < distance_start_to_goal - 0.1; d += _costmap_resulution)
+    try
     {
-          geometry_msgs::msg::Pose2D path_pose;
-          path_pose.theta = yaw;
-          find_pose(start_pose2d, goal_pose2d, d, path_pose);
-          geometry_msgs::msg::PoseStamped path_posestamped;
-          path_posestamped.header.frame_id = _global_frame;
-          path_posestamped.header.stamp = _clock->now();
-          path_posestamped.pose.position.x = path_pose.x;
-          path_posestamped.pose.position.y = path_pose.y;
-          path_posestamped.pose.orientation = getWorldOrientation(path_pose.theta);
-          is_path_free = is_free(path_posestamped, costmap, _footprint_extend_back_x, _footprint_extend_front_x, _footprint_extend_y);
-          if (is_path_free)
-          {
-            pose.pose.position.x = path_pose.x;
-            pose.pose.position.y = path_pose.y;
-            plan.poses.emplace_back(pose);
-          }
-          else
-          {
-            plan.poses.clear();
-            break;
-          }
+      bool is_path_free = true;
+      double distance_start_to_goal = nav2_util::geometry_utils::euclidean_distance(start_pose2d, goal_pose2d);
+      for (double d = _costmap_resulution; d < distance_start_to_goal - _costmap_resulution; d += _costmap_resulution)
+      {
+            geometry_msgs::msg::Pose2D path_pose;
+            path_pose.theta = yaw;
+            find_pose(start_pose2d, goal_pose2d, d, path_pose);
+            geometry_msgs::msg::PoseStamped path_posestamped;
+            path_posestamped.header.frame_id = _global_frame;
+            path_posestamped.header.stamp = _clock->now();
+            path_posestamped.pose.position.x = path_pose.x;
+            path_posestamped.pose.position.y = path_pose.y;
+            path_posestamped.pose.orientation = getWorldOrientation(path_pose.theta);
+            is_path_free = is_free(path_posestamped, costmap, -footprint_back_x_, -footprint_front_x_, _footprint_extend_y);
+            if (is_path_free)
+            {
+              pose.pose.position.x = path_pose.x;
+              pose.pose.position.y = path_pose.y;
+              plan.poses.emplace_back(pose);
+            }
+            else
+            {
+              plan.poses.clear();
+              break;
+            }
+      }
+      if (is_path_free)
+      {
+        pose.pose = goal_with_tolerance.pose;
+        plan.poses.emplace_back(pose);
+        return plan;
+      }
     }
-    if (is_path_free)
-    {
-      pose.pose = goal_with_tolerance.pose;
-      plan.poses.emplace_back(pose);
-      return plan;
+    catch (const nav2_costmap_2d::IllegalPoseException & e) {
+      RCLCPP_ERROR(_logger, "%s", e.what());
+    } catch (const nav2_costmap_2d::CollisionCheckerException & e) {
+      RCLCPP_ERROR(_logger, "%s", e.what());
+    } catch (const std::runtime_error & e) {
+      RCLCPP_ERROR(_logger, "%s", e.what());
+    } catch (...) {
+      RCLCPP_ERROR(_logger, "Failed to check pose score!");
     }
   }
-  catch (const nav2_costmap_2d::IllegalPoseException & e) {
-    RCLCPP_ERROR(_logger, "%s", e.what());
-  } catch (const nav2_costmap_2d::CollisionCheckerException & e) {
-    RCLCPP_ERROR(_logger, "%s", e.what());
-  } catch (const std::runtime_error & e) {
-    RCLCPP_ERROR(_logger, "%s", e.what());
-  } catch (...) {
-    RCLCPP_ERROR(_logger, "Failed to check pose score!");
-  }
+  
 
-  start_a_star:
   // Set starting point, in A* bin search coordinates
   unsigned int mx, my;
   if (!costmap->worldToMap(start.pose.position.x, start.pose.position.y, mx, my)) {
@@ -528,18 +506,6 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   orientation_bin_id = static_cast<unsigned int>(floor(orientation_bin));
   _a_star->setGoal(mx, my, orientation_bin_id);
 
-  // Setup message
-  // nav_msgs::msg::Path plan;
-  // plan.header.stamp = _clock->now();
-  // plan.header.frame_id = _global_frame;
-  // geometry_msgs::msg::PoseStamped pose;
-  // pose.header = plan.header;
-  // pose.pose.position.z = 0.0;
-  // pose.pose.orientation.x = 0.0;
-  // pose.pose.orientation.y = 0.0;
-  // pose.pose.orientation.z = 0.0;
-  // pose.pose.orientation.w = 1.0;
-
   // Compute plan
   NodeHybrid::CoordinateVector path;
   int num_iterations = 0;
@@ -549,9 +515,11 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
         path, num_iterations, _tolerance / static_cast<float>(costmap->getResolution())))
     {
       if (num_iterations < _a_star->getMaxIterations()) {
-        error = std::string("no valid path found");
+        error = std::string("no valid path found from (") + std::to_string(start_pose2d.x) + "," + std::to_string(start_pose2d.y) + ") to (" +
+                std::to_string(goal_pose2d.x) + "," + std::to_string(goal_pose2d.y) + ")";
       } else {
-        error = std::string("exceeded maximum iterations");
+        error = std::string("exceeded maximum iterations from (") + std::to_string(start_pose2d.x) + "," + std::to_string(start_pose2d.y) + ") to (" +
+                std::to_string(goal_pose2d.x) + "," + std::to_string(goal_pose2d.y) + ")";
       }
     }
   } catch (const std::runtime_error & e) {
@@ -602,46 +570,6 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
     " milliseconds to smooth path." << std::endl;
 #endif
 
-  try
-  {
-    steady_clock::time_point start = steady_clock::now();
-    bool is_pose_free = true;
-    for (auto pose : plan.poses)
-    {
-          geometry_msgs::msg::Pose2D path_pose;
-          bool is_pose_free = is_free(pose, costmap, 0, 0, 0);
-          if (!is_pose_free)
-          {
-            break;
-          }
-    }
-    if (!is_pose_free)
-    {
-      steady_clock::time_point end = steady_clock::now();
-      duration<double> time_span = duration_cast<duration<double>>(end - start);
-      RCLCPP_DEBUG(_logger, "Duration time in check plan is : %f, failed to generate plan because of obstacle occupied!", static_cast<double>(time_span.count()));
-      plan.poses.clear();
-      return plan;
-    }
-  }
-  catch (const nav2_costmap_2d::IllegalPoseException & e) {
-    plan.poses.clear();
-    return plan;
-    RCLCPP_ERROR(_logger, "%s", e.what());
-  } catch (const nav2_costmap_2d::CollisionCheckerException & e) {
-    plan.poses.clear();
-    return plan;
-    RCLCPP_ERROR(_logger, "%s", e.what());
-  } catch (const std::runtime_error & e) {
-    plan.poses.clear();
-    return plan;
-    RCLCPP_ERROR(_logger, "%s", e.what());
-  } catch (...) {
-    plan.poses.clear();
-    return plan;
-    RCLCPP_ERROR(_logger, "Failed to check pose score!");
-  }
-
   return plan;
 }
 
@@ -691,7 +619,12 @@ bool SmacPlannerHybrid::is_free(const geometry_msgs::msg::PoseStamped &pose, nav
                 pose2d.theta = tf2::getYaw(pose.pose.orientation);
                 double cos_th = cos(pose2d.theta);
                 double sin_th = sin(pose2d.theta);
-                std::vector<double> footprint_extend{0, -footprint_extend_y, footprint_extend_y};
+                std::vector<double> footprint_extend{0};
+                if (footprint_extend_y != 0.0)
+                {
+                  footprint_extend.emplace_back(-footprint_extend_y);
+                  footprint_extend.emplace_back(footprint_extend_y);
+                }
                 unsigned char footprint_cost = nav2_costmap_2d::FREE_SPACE;
                 for(auto y : footprint_extend)
                 {
