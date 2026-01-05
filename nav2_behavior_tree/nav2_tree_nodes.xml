@@ -240,6 +240,10 @@
       <input_port name="localization_score_topic">Topic for localization score info</input_port>
     </Condition>
 
+    <Condition ID="IsObstaclesAroundRobotInGarage">
+      <input_port name="is_obstacles_around_robot_in_garage_topic">Topic for is_obstacles_around_robot_in_garage_topic info</input_port>
+    </Condition>
+
     <Condition ID="IsPedestrianFront">
       <input_port name="pedestrain_distance">Pedestrain_distance to base_link in meter</input_port>
       <input_port name="person_detected_topic">Topic for person_detected info</input_port>

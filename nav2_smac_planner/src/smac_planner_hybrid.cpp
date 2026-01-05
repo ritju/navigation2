@@ -432,7 +432,7 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
     {
       bool is_path_free = true;
       double distance_start_to_goal = nav2_util::geometry_utils::euclidean_distance(start_pose2d, goal_pose2d);
-      for (double d = _costmap_resulution; d < distance_start_to_goal - _costmap_resulution; d += _costmap_resulution)
+      for (double d = 0.0; d < distance_start_to_goal + _costmap_resulution; d += _costmap_resulution)
       {
             geometry_msgs::msg::Pose2D path_pose;
             path_pose.theta = yaw;
