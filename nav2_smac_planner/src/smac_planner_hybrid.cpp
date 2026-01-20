@@ -432,7 +432,7 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
     {
       bool is_path_free = true;
       double distance_start_to_goal = nav2_util::geometry_utils::euclidean_distance(start_pose2d, goal_pose2d);
-      for (double d = 0.0; d < distance_start_to_goal + _costmap_resulution; d += _costmap_resulution)
+      for (double d = _costmap_resulution; d < distance_start_to_goal + _costmap_resulution; d += _costmap_resulution)
       {
             geometry_msgs::msg::Pose2D path_pose;
             path_pose.theta = yaw;
@@ -443,14 +443,25 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
             path_posestamped.pose.position.x = path_pose.x;
             path_posestamped.pose.position.y = path_pose.y;
             path_posestamped.pose.orientation = getWorldOrientation(path_pose.theta);
-            is_path_free = is_free(path_posestamped, costmap, -footprint_back_x_, -footprint_front_x_, _footprint_extend_y);
-            if (is_path_free)
+            if (d <= _costmap_resulution)
+            {
+              is_path_free = is_free(path_posestamped, costmap, _footprint_extend_back_x, -footprint_front_x_, _footprint_extend_y);
+            }
+            else if (d >= distance_start_to_goal - _costmap_resulution)
+            {
+              is_path_free = is_free(path_posestamped, costmap, -footprint_back_x_, -_footprint_extend_front_x, _footprint_extend_y);
+            }
+            else
+            {
+              is_path_free = is_free(path_posestamped, costmap, -footprint_back_x_, -footprint_front_x_, _footprint_extend_y);
+            }
+            if (is_path_free && d < distance_start_to_goal - _costmap_resulution)
             {
               pose.pose.position.x = path_pose.x;
               pose.pose.position.y = path_pose.y;
               plan.poses.emplace_back(pose);
             }
-            else
+            else if (!is_path_free)
             {
               plan.poses.clear();
               break;
