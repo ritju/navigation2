@@ -17,6 +17,7 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(nav2_util REQUIRED)
+find_package(nav2_costmap_2d REQUIRED)
 find_package(capella_ros_msg REQUIRED)
 
 nav2_package()
@@ -42,6 +43,7 @@ set(dependencies
   std_msgs
   std_srvs
   nav2_util
+  nav2_costmap_2d
   capella_ros_msg
 )
 
@@ -106,9 +108,6 @@ list(APPEND plugin_libs nav2_assisted_teleop_action_bt_node)
 
 add_library(nav2_clear_costmap_service_bt_node SHARED plugins/action/clear_costmap_service.cpp)
 list(APPEND plugin_libs nav2_clear_costmap_service_bt_node)
-
-add_library(nav2_welt_model_node SHARED plugins/action/welt_model_node.cpp)
-list(APPEND plugin_libs nav2_welt_model_node)
 
 add_library(nav2_is_stuck_condition_bt_node SHARED plugins/condition/is_stuck_condition.cpp)
 list(APPEND plugin_libs nav2_is_stuck_condition_bt_node)
