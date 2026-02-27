@@ -425,6 +425,41 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   pose.pose.orientation.w = quat.w();
   
   double goal_footprint_cost = 0.0; 
+
+  // 检查从起点方向旋转至终点方向是否会碰撞，如果会碰撞，跳过生成直线路径
+  double start_theta = tf2::getYaw(start.pose.orientation);
+  double goal_theta = tf2::getYaw(goal_with_tolerance.pose.orientation);
+
+  double diff_theta = goal_theta - start_theta;
+  diff_theta = std::fmod(diff_theta, 2 * M_PI);            // 取模到 (-2π, 2π)
+  if (diff_theta > M_PI)
+  {
+    diff_theta -= 2 * M_PI;
+  } else if(diff_theta < -M_PI)
+  {
+    diff_theta += 2 * M_PI;
+  }
+  double step = diff_theta < 0 ? -0.087 : 0.087;  // 设置步长为5度
+
+  for (size_t i = 1 ; i < floor(fabs(diff_theta / step)); ++i) {
+    geometry_msgs::msg::Pose2D pose2d;
+    pose2d.x = start.pose.position.x;
+    pose2d.y = start.pose.position.y;
+    if (start_theta + step * i > M_PI) {
+      pose2d.theta = start_theta + step * i - 2 * M_PI;  // 将角度限制在 (-π, π)
+    } else if (start_theta + step * i < -M_PI) {
+      pose2d.theta = start_theta + step * i + 2 * M_PI;  // 将角度限制在 (-π, π)
+    } else {
+      pose2d.theta = start_theta + step * i;
+    }
+    double footprint_cost = 0.0;
+    footprint_cost = _collision_checker.footprintCostAtPose(pose2d.x, pose2d.y, pose2d.theta, check_footprint);
+    if (footprint_cost == nav2_costmap_2d::LETHAL_OBSTACLE) {
+      RCLCPP_WARN(_logger, "Rotation to goal is occupied, jump to A* search!");
+      goto start_a_star;
+    }
+  }
+  
   goal_footprint_cost = _collision_checker.footprintCostAtPose(goal_pose2d.x, goal_pose2d.y, yaw, check_footprint);
   if (goal_footprint_cost != nav2_costmap_2d::LETHAL_OBSTACLE)
   {
@@ -485,7 +520,7 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
     }
   }
   
-
+  start_a_star:
   // Set starting point, in A* bin search coordinates
   unsigned int mx, my;
   if (!costmap->worldToMap(start.pose.position.x, start.pose.position.y, mx, my)) {

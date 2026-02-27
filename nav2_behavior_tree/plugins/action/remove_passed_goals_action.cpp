@@ -90,6 +90,25 @@ inline BT::NodeStatus RemovePassedGoals::tick()
   double dist_to_goal = 0;
   uint32_t indexes_size = passed_poses_indexes_.size();
   Goals::iterator it = goal_poses.begin();
+  double poses_length = 0;
+  bool erase_flag = false;
+  for (it = goal_poses.begin(); it != goal_poses.end();)
+  {
+    if (it == goal_poses.begin())
+    {
+      poses_length += euclidean_distance(it->pose, current_pose.pose);
+    }
+    else
+    {
+      poses_length += euclidean_distance(it->pose, (it-1)->pose);
+    }
+    ++it;
+    if (poses_length > accumulate_distance_)
+    {
+      erase_flag = true;
+      break;
+    }
+  }
   for (it = goal_poses.begin(); it != goal_poses.end();)
   {
     dist_to_goal = euclidean_distance(it->pose, current_pose.pose);
@@ -107,7 +126,14 @@ inline BT::NodeStatus RemovePassedGoals::tick()
       {
         passed_poses_indexes_.emplace_back(static_cast<uint32_t>(it->pose.position.z));
       }
-      it = goal_poses.erase(it);
+      if (erase_flag)
+      {
+        it = goal_poses.erase(it);
+      }
+      else
+      {
+        ++it;
+      }
     }
     else
     {

@@ -453,6 +453,8 @@ PlannerServer::computePlanThroughPoses()
 
     // Get consecutive paths through these points
     geometry_msgs::msg::PoseStamped curr_start, curr_goal;
+    size_t planned_success_count = 0;
+    size_t planned_failed_count = 0;
     for (unsigned int i = 0; i != goal_poses.size(); i++) {
       if (isServerInactive(action_server_poses_) || isCancelRequested(action_server_poses_)) {
         return;
@@ -484,20 +486,49 @@ PlannerServer::computePlanThroughPoses()
 
       // Get plan from start -> goal
       nav_msgs::msg::Path curr_path;
-      try
-      {
-        curr_path = getPlan(curr_start, curr_goal, goal->planner_id);
-      }
-      catch (const std::runtime_error &ex)
-      {
-        RCLCPP_WARN(
-          get_logger(),
-          "%s plugin failed to plan path to goal (%.2f, %.2f): \"%s\"",
-          goal->planner_id.c_str(), curr_goal.pose.position.x,
-          curr_goal.pose.position.y, ex.what());
+      static constexpr int kMaxStartOccupiedRetries = 50;
+      int start_occupied_retries = 0;
+      const std::string start_occupied_msg = "Cannot generate a plan, start is occupied!";
+      while (rclcpp::ok()) {
+        if (!transformPosesToGlobalFrame(action_server_poses_, curr_start, curr_goal)) {
+          return;
+        }
+
+        try {
+          curr_path = getPlan(curr_start, curr_goal, goal->planner_id);
+          break;  // planned (or at least returned something for validation)
+        } catch (const std::runtime_error & ex) {
+          RCLCPP_WARN(
+            get_logger(),
+            "%s plugin failed to plan path to goal (%.2f, %.2f): \"%s\"",
+            goal->planner_id.c_str(), curr_goal.pose.position.x,
+            curr_goal.pose.position.y, ex.what());
+
+          // Recovery: if smac throws "start is occupied", drop the last point from concat_path
+          // (the next segment's start), update curr_start, and retry planning for the same goal.
+          if (std::string(ex.what()) == start_occupied_msg &&
+            start_occupied_retries < kMaxStartOccupiedRetries &&
+            !concat_path.poses.empty())
+          {
+            concat_path.poses.pop_back();
+            if (!concat_path.poses.empty()) {
+              curr_start = concat_path.poses.back();
+              curr_start.header = concat_path.header;
+            } else {
+              curr_start = start;
+            }
+            start_occupied_retries++;
+            continue;
+          }
+
+          // Other runtime errors (or we can't recover): leave curr_path empty and move on.
+          curr_path = nav_msgs::msg::Path();
+          break;
+        }
       }
       // check path for validity
       if (!validatePath(curr_goal, curr_path, goal->planner_id)) {
+        planned_failed_count++;
         RCLCPP_INFO(
           get_logger(),
           "Totally poses: %ld, planned poses: %d, failed to generate path to goal (%.2f, %.2f)!",
@@ -507,6 +538,7 @@ PlannerServer::computePlanThroughPoses()
         continue;
         // return;
       }
+      planned_success_count++;
       
       RCLCPP_INFO(
           get_logger(),
@@ -526,6 +558,16 @@ PlannerServer::computePlanThroughPoses()
       action_server_poses_->terminate_current();
       return;
     }
+
+    RCLCPP_INFO(
+      get_logger(),
+      "Total path size through %zu poses is %zu",
+      goal->goals.size(), concat_path.poses.size());
+      
+    RCLCPP_INFO(
+      get_logger(),
+      "PlanThroughPoses summary: success=%zu, failed=%zu, total=%zu",
+      planned_success_count, planned_failed_count, goal_poses.size());
 
     // Publish the plan for visualization purposes
     result->path = concat_path;

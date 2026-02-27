@@ -28,6 +28,7 @@
 #include "nav2_controller/controller_server.hpp"
 #include <pluginlib/class_loader.hpp>
 #include "nav_2d_utils/path_ops.hpp"
+#include "tf2/utils.h"
 
 using namespace std::chrono_literals;
 using rcl_interfaces::msg::ParameterType;
@@ -110,6 +111,7 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
 
   declare_parameter("failure_tolerance", rclcpp::ParameterValue(0.0));
   declare_parameter("prune_dist_behind_robot", rclcpp::ParameterValue(1.5));
+  declare_parameter("remaining_path_length_threshold", rclcpp::ParameterValue(2.0));
 
   // The costmap node is used in the implementation of the controller
   costmap_ros_ = std::make_shared<nav2_costmap_2d::Costmap2DROS>(
@@ -175,6 +177,7 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   get_parameter("speed_limit_topic", speed_limit_topic);
   get_parameter("failure_tolerance", failure_tolerance_);
   get_parameter("prune_dist_behind_robot", prune_dist_behind_robot_);
+  get_parameter("remaining_path_length_threshold", remaining_path_length_threshold_);
 
   costmap_ros_->configure();
   costmap_ = costmap_ros_->getCostmap();
@@ -803,23 +806,33 @@ bool ControllerServer::isGoalReached()
 {
   geometry_msgs::msg::PoseStamped pose;
 
-  // if (ROTATE_POINTS != nullptr)
-  // {
-  //   std::string ratate_points_string(ROTATE_POINTS);
-  //   makeRotationGoalFromString(ratate_points_string, rotate_vec);
-  //   for (auto goal : rotate_vec)
-  //   {
-  //     if (fabs(end_pose_.pose.position.x - goal.x) < 0.1 && 
-  //         fabs(end_pose_.pose.position.y - goal.y) < 0.1) {
-  //       RCLCPP_INFO(
-  //         get_logger(), "Reach rotate goal.x: %f, goal.y: %f !", goal.x, goal.y);
-  //       return false;
-  //     }
-  //   }
-  // }
-
   if (!getRobotPose(pose) || current_path_.poses.size() > 80) {
   // if (!getRobotPose(pose)) {
+    return false;
+  }
+
+  // 计算剩余路径长度
+  auto find_closest_pose_idx =
+    [&pose, this]() {
+      size_t closest_pose_idx = 0;
+      double curr_min_dist = std::numeric_limits<double>::max();
+      for (size_t curr_idx = 0; curr_idx < current_path_.poses.size(); ++curr_idx) {
+        double curr_dist = nav2_util::geometry_utils::euclidean_distance(
+          pose, current_path_.poses[curr_idx]);
+        if (curr_dist < curr_min_dist) {
+          curr_min_dist = curr_dist;
+          closest_pose_idx = curr_idx;
+        }
+      }
+      return closest_pose_idx;
+    };
+
+  size_t closest_idx = find_closest_pose_idx();
+  double remaining_path_length = nav2_util::geometry_utils::calculate_path_length(
+    current_path_, closest_idx);
+
+  // (1) 如果剩余路径长度大于阈值，返回false
+  if (remaining_path_length > remaining_path_length_threshold_) {
     return false;
   }
 
