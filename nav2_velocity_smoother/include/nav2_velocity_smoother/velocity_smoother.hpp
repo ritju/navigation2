@@ -18,9 +18,12 @@
 #include <chrono>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "std_msgs/msg/float64.hpp"
 
 #include "nav2_util/lifecycle_node.hpp"
 #include "nav2_util/node_utils.hpp"
@@ -115,6 +118,12 @@ protected:
   void inputCommandCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
 
   /**
+   * @brief Callback for external speed limit (/nav/speed_limit)
+   * @param msg Float64 max linear speed limit in m/s
+   */
+  void speedLimitCallback(const std_msgs::msg::Float64::SharedPtr msg);
+
+  /**
    * @brief Main worker timer function
    */
   void smootherTimer();
@@ -131,6 +140,7 @@ protected:
   rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::Twist>::SharedPtr
     smoothed_cmd_pub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr speed_limit_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   rclcpp::Clock::SharedPtr clock_;
@@ -146,12 +156,18 @@ protected:
   bool scale_velocities_;
   std::vector<double> max_velocities_;
   std::vector<double> min_velocities_;
+  std::vector<double> base_max_velocities_;
+  std::vector<double> base_min_velocities_;
   std::vector<double> max_accels_;
   std::vector<double> max_decels_;
   std::vector<double> deadband_velocities_;
   rclcpp::Duration velocity_timeout_{0, 0};
   rclcpp::Time last_command_time_;
 
+  std::mutex speed_limit_mutex_;
+  double speed_limit_linear_x_{std::numeric_limits<double>::infinity()};
+  bool has_speed_limit_{false};
+  double safe_linear_speed_limit_ = 2.0;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;
 };
 

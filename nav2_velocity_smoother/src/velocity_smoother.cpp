@@ -69,10 +69,14 @@ VelocitySmoother::on_configure(const rclcpp_lifecycle::State &)
     node, "max_accel", rclcpp::ParameterValue(std::vector<double>{2.5, 0.0, 3.2}));
   declare_parameter_if_not_declared(
     node, "max_decel", rclcpp::ParameterValue(std::vector<double>{-2.5, 0.0, -3.2}));
+  declare_parameter_if_not_declared(node, "safe_linear_speed_limit", rclcpp::ParameterValue(2.0));
   node->get_parameter("max_velocity", max_velocities_);
   node->get_parameter("min_velocity", min_velocities_);
+  base_max_velocities_ = max_velocities_;
+  base_min_velocities_ = min_velocities_;
   node->get_parameter("max_accel", max_accels_);
   node->get_parameter("max_decel", max_decels_);
+  node->get_parameter("safe_linear_speed_limit", safe_linear_speed_limit_);
 
   for (unsigned int i = 0; i != max_decels_.size(); i++) {
     if (max_decels_[i] > 0.0) {
@@ -118,6 +122,13 @@ VelocitySmoother::on_configure(const rclcpp_lifecycle::State &)
     "cmd_vel", rclcpp::QoS(1),
     std::bind(&VelocitySmoother::inputCommandCallback, this, std::placeholders::_1));
 
+  rclcpp::QoS speed_limit_qos(rclcpp::KeepLast(1));
+  speed_limit_qos.transient_local();
+  speed_limit_qos.reliable();
+  speed_limit_sub_ = create_subscription<std_msgs::msg::Float64>(
+    "/nav/speed_limit", speed_limit_qos,
+    std::bind(&VelocitySmoother::speedLimitCallback, this, std::placeholders::_1));
+
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
@@ -162,6 +173,7 @@ VelocitySmoother::on_cleanup(const rclcpp_lifecycle::State &)
   smoothed_cmd_pub_.reset();
   odom_smoother_.reset();
   cmd_sub_.reset();
+  speed_limit_sub_.reset();
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
@@ -176,6 +188,17 @@ void VelocitySmoother::inputCommandCallback(const geometry_msgs::msg::Twist::Sha
 {
   command_ = msg;
   last_command_time_ = now();
+}
+
+void VelocitySmoother::speedLimitCallback(const std_msgs::msg::Float64::SharedPtr msg)
+{
+  if (!msg) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> lock(speed_limit_mutex_);
+  speed_limit_linear_x_ = std::max(0.0, msg->data);
+  has_speed_limit_ = std::isfinite(speed_limit_linear_x_);
 }
 
 double VelocitySmoother::findEtaConstraint(
@@ -234,6 +257,19 @@ void VelocitySmoother::smootherTimer()
     current_ = last_cmd_;
   } else {
     current_ = odom_smoother_->getTwist();
+  }
+
+  // Apply external /nav/speed_limit on x velocity bounds before command clamping
+  {
+    std::lock_guard<std::mutex> lock(speed_limit_mutex_);
+    if (has_speed_limit_ && speed_limit_linear_x_ > 0) {
+      const double limit = speed_limit_linear_x_;
+      max_velocities_[0] = std::min(safe_linear_speed_limit_, limit);
+      min_velocities_[0] = std::max(-safe_linear_speed_limit_, -limit);
+    } else {
+      max_velocities_[0] = base_max_velocities_[0];
+      min_velocities_[0] = base_min_velocities_[0];
+    }
   }
 
   // Apply absolute velocity restrictions to the command
@@ -328,14 +364,18 @@ VelocitySmoother::dynamicParametersCallback(std::vector<rclcpp::Parameter> param
 
       if (name == "max_velocity") {
         max_velocities_ = parameter.as_double_array();
+        base_max_velocities_ = max_velocities_;
       } else if (name == "min_velocity") {
         min_velocities_ = parameter.as_double_array();
+        base_min_velocities_ = min_velocities_;
       } else if (name == "max_accel") {
         max_accels_ = parameter.as_double_array();
       } else if (name == "max_decel") {
         max_decels_ = parameter.as_double_array();
       } else if (name == "deadband_velocity") {
         deadband_velocities_ = parameter.as_double_array();
+      } else if (name == "safe_linear_speed_limit") {
+        safe_linear_speed_limit_ = parameter.as_double();
       }
     } else if (type == ParameterType::PARAMETER_STRING) {
       if (name == "feedback") {
