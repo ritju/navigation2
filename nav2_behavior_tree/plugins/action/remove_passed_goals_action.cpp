@@ -96,13 +96,11 @@ inline BT::NodeStatus RemovePassedGoals::tick()
   {
     if (it == goal_poses.begin())
     {
-      poses_length += euclidean_distance(it->pose, current_pose.pose);
-    }
-    else
-    {
+      ++it;
+    } else {
       poses_length += euclidean_distance(it->pose, (it-1)->pose);
+      ++it;
     }
-    ++it;
     if (poses_length > accumulate_distance_)
     {
       erase_flag = true;
@@ -134,10 +132,10 @@ inline BT::NodeStatus RemovePassedGoals::tick()
       {
         ++it;
       }
-    }
-    else
-    {
+    } else if (erase_flag) {
       break;
+    } else {
+      ++it;
     }
   }
   if (goal_poses.size() == 1)

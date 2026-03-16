@@ -90,7 +90,14 @@ public:
   
   bool find_pose(geometry_msgs::msg::Pose2D original_pose, geometry_msgs::msg::Pose2D edge_pose, double d, geometry_msgs::msg::Pose2D &output_pose);
   void calculate_line_param(double &x, double &y, double vx, double vy);
-  bool is_free(const geometry_msgs::msg::PoseStamped &pose, nav2_costmap_2d::Costmap2D * costmap, double footprint_extend_back_x, double footprint_extend_front_x, double footprint_extend_y);
+  // When ignore_inscribed is true, treat only LETHAL_OBSTACLE as collision and allow INSCRIBED_INFLATED_OBSTACLE.
+  // In all other cases, both LETHAL_OBSTACLE and INSCRIBED_INFLATED_OBSTACLE are treated as collision.
+  bool is_free(const geometry_msgs::msg::PoseStamped &pose,
+               nav2_costmap_2d::Costmap2D * costmap,
+               double footprint_extend_back_x,
+               double footprint_extend_front_x,
+               double footprint_extend_y,
+               bool ignore_inscribed = false);
 
 protected:
   /**

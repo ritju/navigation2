@@ -262,13 +262,22 @@ void VelocitySmoother::smootherTimer()
   // Apply external /nav/speed_limit on x velocity bounds before command clamping
   {
     std::lock_guard<std::mutex> lock(speed_limit_mutex_);
-    if (has_speed_limit_ && speed_limit_linear_x_ > 0) {
-      const double limit = speed_limit_linear_x_;
-      max_velocities_[0] = std::min(safe_linear_speed_limit_, limit);
-      min_velocities_[0] = std::max(-safe_linear_speed_limit_, -limit);
-    } else {
-      max_velocities_[0] = base_max_velocities_[0];
-      min_velocities_[0] = base_min_velocities_[0];
+    if (has_speed_limit_) {
+      // Ensure non-negative limit and cap by robot's nominal base maximum
+      const double limit = std::max(0.0, speed_limit_linear_x_);
+      if (std::isfinite(limit) && speed_limit_linear_x_ > 0) {
+        if (limit < safe_linear_speed_limit_ && max_velocities_[0] != limit) {
+          max_velocities_[0] = std::min(safe_linear_speed_limit_, limit);
+          min_velocities_[0] = std::max(-safe_linear_speed_limit_, -limit);
+          RCLCPP_INFO(get_logger(), "Performing change speed limit !, max linear speed is: %f", max_velocities_[0]);
+        } else if (limit >= safe_linear_speed_limit_ && max_velocities_[0] != safe_linear_speed_limit_) {
+          max_velocities_[0] = std::min(safe_linear_speed_limit_, limit);
+          min_velocities_[0] = std::max(-safe_linear_speed_limit_, -limit);
+          RCLCPP_INFO(get_logger(), "Receive speed limit is greater than safe linear speed limit, set limit speed to safe linear speed limit: %f !", safe_linear_speed_limit_);
+        }
+      } else if (!std::isfinite(limit) || limit <= 0) {
+        RCLCPP_INFO_THROTTLE(get_logger(), *(get_clock()), 5000, "Speed limit is not finite or less than 0, current speed limit is: %f !", max_velocities_[0]);
+      }
     }
   }
 

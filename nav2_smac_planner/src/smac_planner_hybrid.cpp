@@ -589,6 +589,49 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
     plan.poses.push_back(pose);
   }
 
+  // Tail safety check for A* result:
+  // Walk backwards from the end of the path and drop colliding poses,
+  // keeping the last pose that is free. Here, when checking for collision
+  // we only treat LETHAL_OBSTACLE as collision and allow INSCRIBED_INFLATED_OBSTACLE.
+  if (!plan.poses.empty()) {
+    int last_valid_idx = static_cast<int>(plan.poses.size()) - 1;
+    bool found_valid = false;
+
+    for (int i = last_valid_idx; i >= 0; --i) {
+      if (is_free(plan.poses[i], costmap,
+                  _footprint_extend_back_x,
+                  _footprint_extend_front_x,
+                  _footprint_extend_y,
+                  /*ignore_inscribed=*/true))
+      {
+        last_valid_idx = i;
+        found_valid = true;
+        break;
+      }
+    }
+
+    if (!found_valid) {
+      // Path end is completely invalid – return empty plan so that higher-level logic can react.
+      RCLCPP_WARN(
+        _logger,
+        "%s: A* produced a path whose end poses are all in collision (LETHAL); returning empty plan.",
+        _name.c_str());
+      plan.poses.clear();
+      return plan;
+    }
+
+    if (last_valid_idx < static_cast<int>(plan.poses.size()) - 1) {
+      // Trim off the colliding tail so that the final pose is guaranteed to be LETHAL-free.
+      const std::size_t trimmed_count =
+        static_cast<std::size_t>(plan.poses.size()) - static_cast<std::size_t>(last_valid_idx + 1);
+      plan.poses.erase(plan.poses.begin() + last_valid_idx + 1, plan.poses.end());
+      RCLCPP_WARN(
+        _logger,
+        "%s: Trimmed %zu tail pose(s) from A* path due to LETHAL collisions at the endpoint.",
+        _name.c_str(), trimmed_count);
+    }
+  }
+
   // Publish raw path for debug
   if (_raw_plan_publisher->get_subscription_count() > 0) {
     _raw_plan_publisher->publish(plan);
@@ -654,8 +697,12 @@ void SmacPlannerHybrid::calculate_line_param(double &x, double &y, double vx, do
         return;
 }
 
-bool SmacPlannerHybrid::is_free(const geometry_msgs::msg::PoseStamped &pose, nav2_costmap_2d::Costmap2D * costmap, 
-                                double footprint_extend_back_x, double footprint_extend_front_x, double footprint_extend_y)
+bool SmacPlannerHybrid::is_free(const geometry_msgs::msg::PoseStamped &pose,
+                                nav2_costmap_2d::Costmap2D * costmap,
+                                double footprint_extend_back_x,
+                                double footprint_extend_front_x,
+                                double footprint_extend_y,
+                                bool ignore_inscribed)
 {
         try
         {
@@ -681,7 +728,10 @@ bool SmacPlannerHybrid::is_free(const geometry_msgs::msg::PoseStamped &pose, nav
                           double g_y = pose2d.y + x * sin_th + y * cos_th;
                           costmap->worldToMap(g_x, g_y, map_x, map_y);
                           footprint_cost = costmap->getCost(map_x, map_y);
-                          if (footprint_cost == nav2_costmap_2d::LETHAL_OBSTACLE || footprint_cost == nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
+                          // Default behavior: treat both LETHAL and INSCRIBED as collision.
+                          // When ignore_inscribed == true (used for A* tail trimming), only treat LETHAL as collision.
+                          if (footprint_cost == nav2_costmap_2d::LETHAL_OBSTACLE ||
+                              (!ignore_inscribed && footprint_cost == nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE))
                           {
                                   RCLCPP_DEBUG(_logger, "Footprint at (%f, %f) is occupied!", g_x, g_y);
                                   return false;
