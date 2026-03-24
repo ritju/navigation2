@@ -40,6 +40,10 @@ void PathCheckAction::on_tick()
 
 BT::NodeStatus PathCheckAction::on_success()
 {
+  if (result_.result->output_goals.empty()) {
+    RCLCPP_WARN(node_->get_logger(), "PathCheckAction: output_goals is empty! Do not update output_goals!");
+    return BT::NodeStatus::SUCCESS;
+  }
   setOutput("output_goals", result_.result->output_goals);
   return BT::NodeStatus::SUCCESS;
 }
