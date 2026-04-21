@@ -225,10 +225,11 @@ NavigateThroughPosesNavigator::initializeGoalPoses(ActionT::Goal::ConstSharedPtr
 
   // Update the goal pose on the blackboard
   Goals add_pose_index_poses = goal->poses;
+  auto current_time = clock_->now();
   for(uint32_t i = 0; i < add_pose_index_poses.size(); ++i)
   {
     add_pose_index_poses.at(i).pose.position.z = i;
-    add_pose_index_poses.at(i).header.stamp = clock_->now();
+    add_pose_index_poses.at(i).header.stamp = current_time;
   }
   blackboard->set<Goals>(goals_blackboard_id_, add_pose_index_poses);
   nav_msgs::msg::Path empty_prune_path;

@@ -18,9 +18,12 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <mutex>
+#include <optional>
 
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "nav_msgs/msg/path.hpp"
 
 #include "tf2/time.h"
 #include "tf2_ros/buffer.h"
@@ -170,6 +173,28 @@ protected:
     Action & robot_action) const;
 
   /**
+   * @brief Latest local plan callback (stores path for next process() tick)
+   */
+  void localPlanCallback(nav_msgs::msg::Path::ConstSharedPtr msg);
+
+  /**
+   * @brief If local plan predicts footprint collision along path from start, set STOP.
+   * @param path Path in path.header.frame_id (consumed for this cycle; empty path skips).
+   * @param collision_points Obstacle points in base_frame_id_.
+   * @param curr_time Time used for TF lookups.
+   * @param approach_polygon Footprint model (APPROACH polygon/circle) for point-in-footprint test.
+   * @param robot_action In/out action; may be forced to STOP with zero velocity.
+   * @return true if collision detected; false if path was fully checked and clear;
+   *         std::nullopt if evaluation was skipped (invalid input, TF failure).
+   */
+  std::optional<bool> processLocalPlanCollision(
+    const nav_msgs::msg::Path & path,
+    const std::vector<Point> & collision_points,
+    const rclcpp::Time & curr_time,
+    const std::shared_ptr<Polygon> & approach_polygon,
+    Action & robot_action);
+
+  /**
    * @brief Prints robot action and polygon caused it (if it was)
    * @param robot_action Robot action to print
    * @param action_polygon Pointer to a polygon causing a selected action
@@ -200,6 +225,32 @@ protected:
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_in_sub_;
   /// @brief Output cmd_vel publisher
   rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_out_pub_;
+
+  /// @brief Optional subscriber for local plan footprint collision checks
+  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr local_plan_sub_;
+
+  /// @brief Latest local plan (protected by local_plan_mutex_)
+  nav_msgs::msg::Path latest_local_plan_;
+  /// @brief Mutex for latest_local_plan_
+  std::mutex local_plan_mutex_;
+
+  /// @brief Robot base frame (cached for TF in local plan checks)
+  std::string base_frame_id_;
+  /// @brief TF transform tolerance
+  tf2::Duration transform_tolerance_{tf2::durationFromSec(0.0)};
+
+  /// @brief Enable velocity-based APPROACH (TTC) processing
+  bool use_velocity_approach_prediction_{true};
+  /// @brief Enable local plan footprint collision branch (STOP on hit)
+  bool use_local_plan_collision_check_{false};
+  /// @brief Topic for nav_msgs/Path local plan
+  std::string local_plan_topic_{"local_plan"};
+  /// @brief Forward distance along path from first pose to check (m)
+  double local_plan_lookahead_distance_{5.0};
+  /// @brief Sample spacing along path = ratio * footprint bbox max side (m), after updatePolygon
+  double local_plan_sample_spacing_ratio_{0.5};
+  /// @brief After local-plan footprint STOP, hold STOP until a new path is checked collision-free
+  bool local_plan_collision_stop_latched_{false};
 
   /// @brief Whether main routine is active
   bool process_active_;

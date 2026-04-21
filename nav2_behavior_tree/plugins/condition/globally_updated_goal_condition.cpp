@@ -44,7 +44,9 @@ BT::NodeStatus GloballyUpdatedGoalCondition::tick()
   config().blackboard->get<geometry_msgs::msg::PoseStamped>("goal", current_goal);
 
   if (goal_ != current_goal || 
-     ((goals_.size() > 0 && current_goals.size() > 0) ? (goals_.begin()->header.stamp != current_goals.begin()->header.stamp) : false)) {
+    ((goals_.size() > 0 && current_goals.size() > 0) ? 
+    (goals_.begin()->header.stamp != current_goals.begin()->header.stamp) : false) || 
+    (current_goals.empty() != goals_.empty())) {
     goal_ = current_goal;
     goals_ = current_goals;
     return BT::NodeStatus::SUCCESS;

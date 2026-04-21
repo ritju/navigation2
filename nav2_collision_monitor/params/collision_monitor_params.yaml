@@ -8,7 +8,15 @@ collision_monitor:
     transform_tolerance: 0.5
     source_timeout: 5.0
     stop_pub_timeout: 2.0
-    recover_stop_timeout: 10.0
+    recover_stop_timeout: 20.0
+    # Velocity-based APPROACH (time-to-collision) branch
+    use_velocity_approach_prediction: True
+    # Local plan footprint check: STOP if obstacle points exceed APPROACH max_points along path
+    use_local_plan_collision_check: False
+    local_plan_topic: "local_plan"
+    local_plan_lookahead_distance: 1.5
+    # Arc-length sample step = ratio * max(footprint AABB width, height); invalid footprint uses 0.5 m
+    local_plan_sample_spacing_ratio: 0.5
     # Polygons represent zone around the robot for "stop" and "slowdown" action types,
     # and robot footprint for "approach" action type.
     # Footprint could be "polygon" type with dynamically set footprint from footprint_topic
