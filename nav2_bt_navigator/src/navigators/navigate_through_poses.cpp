@@ -232,6 +232,7 @@ NavigateThroughPosesNavigator::initializeGoalPoses(ActionT::Goal::ConstSharedPtr
     add_pose_index_poses.at(i).header.stamp = current_time;
   }
   blackboard->set<Goals>(goals_blackboard_id_, add_pose_index_poses);
+  blackboard->set<Goals>(std::string("gpp_goals"), Goals{});
   nav_msgs::msg::Path empty_prune_path;
   empty_prune_path.poses.clear();
   blackboard->set<nav_msgs::msg::Path>(prune_path_blackboard_id_, empty_prune_path);

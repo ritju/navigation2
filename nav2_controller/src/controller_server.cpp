@@ -778,13 +778,10 @@ void ControllerServer::updateGlobalPath()
 void ControllerServer::publishVelocity(const geometry_msgs::msg::TwistStamped & velocity)
 {
   auto cmd_vel = std::make_unique<geometry_msgs::msg::Twist>(velocity.twist);
-  // 限制角速度最小值
-  // if (fabs(cmd_vel->angular.z) > 0.01 && fabs(cmd_vel->angular.z) < 0.06)
-  // {
-  //   cmd_vel->angular.z = (cmd_vel->angular.z > 0) ? 0.06 : -0.06;
-  // }
   if (vel_publisher_->is_activated() && vel_publisher_->get_subscription_count() > 0) {
     vel_publisher_->publish(std::move(cmd_vel));
+    auto now = rclcpp::Clock();
+    RCLCPP_INFO_THROTTLE(get_logger(), now, 2000, "[ControllerServer] publishing velocity: (linear.x:%f, angular.z:%f)", velocity.twist.linear.x, velocity.twist.angular.z);
   }
 }
 

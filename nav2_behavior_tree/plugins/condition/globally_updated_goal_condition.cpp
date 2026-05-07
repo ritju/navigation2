@@ -14,11 +14,23 @@
 
 #include <vector>
 #include <string>
-
+#include "rclcpp/rclcpp.hpp"
 #include "nav2_behavior_tree/plugins/condition/globally_updated_goal_condition.hpp"
 
 namespace nav2_behavior_tree
 {
+
+void GloballyUpdatedGoalCondition::getGoalsPortsOrDefaults(
+  std::vector<geometry_msgs::msg::PoseStamped> & goals_out,
+  geometry_msgs::msg::PoseStamped & goal_out)
+{
+  if (!getInput("goals", goals_out)) {
+    config().blackboard->get<std::vector<geometry_msgs::msg::PoseStamped>>("goals", goals_out);
+  }
+  if (!getInput("goal", goal_out)) {
+    config().blackboard->get<geometry_msgs::msg::PoseStamped>("goal", goal_out);
+  }
+}
 
 GloballyUpdatedGoalCondition::GloballyUpdatedGoalCondition(
   const std::string & condition_name,
@@ -33,20 +45,17 @@ BT::NodeStatus GloballyUpdatedGoalCondition::tick()
 {
   if (first_time) {
     first_time = false;
-    config().blackboard->get<std::vector<geometry_msgs::msg::PoseStamped>>("goals", goals_);
-    config().blackboard->get<geometry_msgs::msg::PoseStamped>("goal", goal_);
+    getGoalsPortsOrDefaults(goals_, goal_);
     return BT::NodeStatus::SUCCESS;
   }
 
   std::vector<geometry_msgs::msg::PoseStamped> current_goals;
-  config().blackboard->get<std::vector<geometry_msgs::msg::PoseStamped>>("goals", current_goals);
   geometry_msgs::msg::PoseStamped current_goal;
-  config().blackboard->get<geometry_msgs::msg::PoseStamped>("goal", current_goal);
-
-  if (goal_ != current_goal || 
-    ((goals_.size() > 0 && current_goals.size() > 0) ? 
-    (goals_.begin()->header.stamp != current_goals.begin()->header.stamp) : false) || 
-    (current_goals.empty() != goals_.empty())) {
+  getGoalsPortsOrDefaults(current_goals, current_goal);
+  if (goal_ != current_goal || goals_ != current_goals)
+  {
+    RCLCPP_INFO(
+      node_->get_logger(), "GloballyUpdatedGoalCondition goal or goals changed");
     goal_ = current_goal;
     goals_ = current_goals;
     return BT::NodeStatus::SUCCESS;

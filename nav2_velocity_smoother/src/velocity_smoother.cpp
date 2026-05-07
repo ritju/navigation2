@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <chrono>
+#include <cmath>
 #include <limits>
 #include <memory>
 #include <string>
@@ -198,7 +199,7 @@ void VelocitySmoother::speedLimitCallback(const std_msgs::msg::Float64::SharedPt
 
   std::lock_guard<std::mutex> lock(speed_limit_mutex_);
   speed_limit_linear_x_ = std::max(0.0, msg->data);
-  has_speed_limit_ = std::isfinite(speed_limit_linear_x_);
+  has_speed_limit_ = true;
 }
 
 double VelocitySmoother::findEtaConstraint(
@@ -243,6 +244,7 @@ void VelocitySmoother::smootherTimer()
   if (now() - last_command_time_ > velocity_timeout_) {
     last_cmd_ = geometry_msgs::msg::Twist();
     if (!stopped_) {
+      RCLCPP_INFO_THROTTLE(get_logger(), *(get_clock()), 2000, "[VelocitySmoother] publishing zero velocity for velocity timeout, (linear.x:%f, angular.z:%f)!", command_->linear.x, command_->angular.z);
       smoothed_cmd_pub_->publish(std::move(cmd_vel));
     }
     stopped_ = true;
@@ -250,6 +252,21 @@ void VelocitySmoother::smootherTimer()
   }
 
   stopped_ = false;
+
+  // Zero command: skip acceleration smoothing and publish zeros immediately
+  constexpr double k_zero_eps = 1e-9;
+  if (std::fabs(command_->linear.x) < k_zero_eps &&
+    std::fabs(command_->linear.y) < k_zero_eps &&
+    std::fabs(command_->angular.z) < k_zero_eps)
+  {
+    // Reuse cmd_vel from above (default zero); no smoothing
+    if (open_loop_) {
+      last_cmd_ = geometry_msgs::msg::Twist();
+    }
+    smoothed_cmd_pub_->publish(std::move(cmd_vel));
+    RCLCPP_INFO_THROTTLE(get_logger(), *(get_clock()), 2000, "[VelocitySmoother] publishing zero velocity for input command is zero, (linear.x:%f, angular.z:%f)!", command_->linear.x, command_->angular.z);
+    return;
+  }
 
   // Get current velocity based on feedback type
   geometry_msgs::msg::Twist current_;
@@ -280,7 +297,6 @@ void VelocitySmoother::smootherTimer()
       }
     }
   }
-
   // Apply absolute velocity restrictions to the command
   command_->linear.x = std::clamp(command_->linear.x, min_velocities_[0], max_velocities_[0]);
   command_->linear.y = std::clamp(command_->linear.y, min_velocities_[1], max_velocities_[1]);
@@ -332,6 +348,7 @@ void VelocitySmoother::smootherTimer()
   cmd_vel->angular.z = fabs(cmd_vel->angular.z) <
     deadband_velocities_[2] ? 0.0 : cmd_vel->angular.z;
   smoothed_cmd_pub_->publish(std::move(cmd_vel));
+  RCLCPP_INFO_THROTTLE(get_logger(), *(get_clock()), 2000, "[VelocitySmoother] publishing velocity: (linear.x:%f, angular.z:%f)!", cmd_vel->linear.x, cmd_vel->angular.z);
 }
 
 rcl_interfaces::msg::SetParametersResult
