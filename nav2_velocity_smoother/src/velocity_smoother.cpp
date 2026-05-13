@@ -244,7 +244,7 @@ void VelocitySmoother::smootherTimer()
   if (now() - last_command_time_ > velocity_timeout_) {
     last_cmd_ = geometry_msgs::msg::Twist();
     if (!stopped_) {
-      RCLCPP_INFO_THROTTLE(get_logger(), *(get_clock()), 2000, "[VelocitySmoother] publishing zero velocity for velocity timeout, (linear.x:%f, angular.z:%f)!", command_->linear.x, command_->angular.z);
+      RCLCPP_INFO_THROTTLE(get_logger(), *(get_clock()), 2000, "[VelocitySmoother] publishing zero velocity for velocity timeout, (linear.x:%f, angular.z:%f)!", cmd_vel->linear.x, cmd_vel->angular.z);
       smoothed_cmd_pub_->publish(std::move(cmd_vel));
     }
     stopped_ = true;
@@ -263,8 +263,8 @@ void VelocitySmoother::smootherTimer()
     if (open_loop_) {
       last_cmd_ = geometry_msgs::msg::Twist();
     }
+    RCLCPP_INFO_THROTTLE(get_logger(), *(get_clock()), 2000, "[VelocitySmoother] publishing zero velocity for input command is zero, (linear.x:%f, angular.z:%f)!", cmd_vel->linear.x, cmd_vel->angular.z);
     smoothed_cmd_pub_->publish(std::move(cmd_vel));
-    RCLCPP_INFO_THROTTLE(get_logger(), *(get_clock()), 2000, "[VelocitySmoother] publishing zero velocity for input command is zero, (linear.x:%f, angular.z:%f)!", command_->linear.x, command_->angular.z);
     return;
   }
 
@@ -347,8 +347,9 @@ void VelocitySmoother::smootherTimer()
   cmd_vel->linear.y = fabs(cmd_vel->linear.y) < deadband_velocities_[1] ? 0.0 : cmd_vel->linear.y;
   cmd_vel->angular.z = fabs(cmd_vel->angular.z) <
     deadband_velocities_[2] ? 0.0 : cmd_vel->angular.z;
-  smoothed_cmd_pub_->publish(std::move(cmd_vel));
   RCLCPP_INFO_THROTTLE(get_logger(), *(get_clock()), 2000, "[VelocitySmoother] publishing velocity: (linear.x:%f, angular.z:%f)!", cmd_vel->linear.x, cmd_vel->angular.z);
+  smoothed_cmd_pub_->publish(std::move(cmd_vel));
+  
 }
 
 rcl_interfaces::msg::SetParametersResult

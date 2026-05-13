@@ -726,6 +726,21 @@ BT::NodeStatus RemovePassedGoals::tick()
     gpp_goal_pose_match_xy_m,
     gpp_goal_pose_match_yaw_rad);
 
+  const uint32_t discrete_z_mission_terminal_goal =
+    mission_goal_queue_mutable_ref.empty()
+    ? 0U
+    : missionPoseGoalIndexFromPoseZ(mission_goal_queue_mutable_ref.back());
+  const bool emitted_gpp_already_includes_mission_terminal =
+    !mission_goal_queue_mutable_ref.empty() &&
+    has_emitted_output_gpp_goals_once_ &&
+    !output_gpp_goals_snapshot_.empty() &&
+    std::find_if(
+      output_gpp_goals_snapshot_.cbegin(),
+      output_gpp_goals_snapshot_.cend(),
+      [discrete_z_mission_terminal_goal](const geometry_msgs::msg::PoseStamped & pose_emitted_goal) {
+        return missionPoseGoalIndexFromPoseZ(pose_emitted_goal) == discrete_z_mission_terminal_goal;
+      }) != output_gpp_goals_snapshot_.cend();
+
   const std::uint64_t gpp_window_fp_now =
     fingerprintLastEmittedGppWindow(filtered_gpp_goal_window_after_prune, queue_tail_stamp_fp);
 
@@ -781,7 +796,14 @@ BT::NodeStatus RemovePassedGoals::tick()
   RCLCPP_DEBUG(node->get_logger(), "[RemovePassedGoals] gpp_fp_changed: %s", gpp_fp_changed ? "yes" : "no");
 
   bool should_emit_gpp = false;
-  if (!filtered_gpp_goal_window_output.empty()) {
+  if (emitted_gpp_already_includes_mission_terminal) {
+    RCLCPP_DEBUG(
+      node->get_logger(),
+      "[RemovePassedGoals] skip output_gpp_goals emit: mission terminal discrete z=%u already in snapshot "
+      "count=%zu",
+      static_cast<unsigned int>(discrete_z_mission_terminal_goal),
+      output_gpp_goals_snapshot_.size());
+  } else if (!filtered_gpp_goal_window_output.empty()) {
     if (emit_gpp_identity) {
       should_emit_gpp = true;
     } else if (!block_secondary_gpp_until_teb) {
@@ -801,8 +823,10 @@ BT::NodeStatus RemovePassedGoals::tick()
 
   RCLCPP_DEBUG(
     node->get_logger(),
-    "[RemovePassedGoals] gpp emit decision: emit_identity=%s block_secondary_until_teb=%s "
+    "[RemovePassedGoals] gpp emit decision: suppress_terminal_already_emitted=%s emit_identity=%s "
+    "block_secondary_until_teb=%s "
     "gpp_fp_changed=%s emit_short_teb=%s emit_on_teb_timeout=%s batch_goals=%zu should_emit=%s",
+    emitted_gpp_already_includes_mission_terminal ? "yes" : "no",
     emit_gpp_identity ? "yes" : "no",
     block_secondary_gpp_until_teb ? "yes" : "no",
     gpp_fp_changed ? "yes" : "no",

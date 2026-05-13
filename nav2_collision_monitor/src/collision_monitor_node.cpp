@@ -227,7 +227,7 @@ void CollisionMonitor::publishVelocity(const Action & robot_action)
   cmd_vel_out_msg->linear.y = robot_action.req_vel.y;
   cmd_vel_out_msg->angular.z = robot_action.req_vel.tw;
   // linear.z, angular.x and angular.y will remain 0.0
-
+  RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000, "[CollisionMonitor] publishVelocity: publishing cmd_vel: %f, %f", cmd_vel_out_msg->linear.x, cmd_vel_out_msg->angular.z);
   cmd_vel_out_pub_->publish(std::move(cmd_vel_out_msg));
 }
 

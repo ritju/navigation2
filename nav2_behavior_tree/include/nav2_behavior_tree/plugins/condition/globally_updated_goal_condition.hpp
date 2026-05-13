@@ -28,7 +28,9 @@ namespace nav2_behavior_tree
 {
 /**
  * @brief A BT::ConditionNode that returns SUCCESS when goal is
- * updated on the blackboard and FAILURE otherwise
+ * updated on the blackboard (or on the bound input ports) and FAILURE otherwise.
+ * Ports bind to PoseStamped list / PoseStamped; if a port is not wired in XML,
+ * reads from legacy blackboard entries "goals" / "goal".
  */
 class GloballyUpdatedGoalCondition : public BT::ConditionNode
 {
@@ -57,10 +59,20 @@ public:
    */
   static BT::PortsList providedPorts()
   {
-    return {};
+    return {
+      BT::InputPort<std::vector<geometry_msgs::msg::PoseStamped>>(
+        "goals", "Goals list bound to blackboard entry, e.g. {goals} or {gpp_goals}"),
+      BT::InputPort<geometry_msgs::msg::PoseStamped>(
+        "goal", "Single pose goal bound to blackboard entry, e.g. {goal}"),
+    };
   }
 
 private:
+  /** Read goals/goal via inputs if set; otherwise from blackboard keys "goals"/"goal". */
+  void getGoalsPortsOrDefaults(
+    std::vector<geometry_msgs::msg::PoseStamped> & goals_out,
+    geometry_msgs::msg::PoseStamped & goal_out);
+
   bool first_time;
   rclcpp::Node::SharedPtr node_;
   geometry_msgs::msg::PoseStamped goal_;
