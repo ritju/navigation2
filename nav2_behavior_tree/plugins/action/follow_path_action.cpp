@@ -31,7 +31,6 @@ FollowPathAction::FollowPathAction(
 void FollowPathAction::on_tick()
 {
   std::vector<geometry_msgs::msg::PoseStamped> input_goals;
-  getInput("input_goals", input_goals);
   if(getInput("input_goals", input_goals))
   {
     if (input_goals.empty())
@@ -41,9 +40,14 @@ void FollowPathAction::on_tick()
   }
   else
   {
-    RCLCPP_INFO(node_->get_logger(), "FollowPathAction: input_goals not provided, using path poses as goals !");
+    RCLCPP_INFO(
+      node_->get_logger(), "FollowPathAction: input_goals not provided, using path poses as goals");
   }
+  
   getInput("path", goal_.path);
+  if (goal_.path.poses.empty()) {
+    throw BT::RuntimeError("FollowPathAction: path is empty");
+  }
   getInput("controller_id", goal_.controller_id);
   getInput("goal_checker_id", goal_.goal_checker_id);
 }
