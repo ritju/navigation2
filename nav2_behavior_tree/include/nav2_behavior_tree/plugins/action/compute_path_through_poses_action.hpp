@@ -76,6 +76,9 @@ public:
         BT::InputPort<std::vector<geometry_msgs::msg::PoseStamped>>(
           "goals",
           "Destinations to plan through"),
+        BT::InputPort<std::vector<geometry_msgs::msg::PoseStamped>>(
+          "gpp_goals",
+          "Goals from RemovePassedGoals for path planning"),
         BT::InputPort<geometry_msgs::msg::PoseStamped>(
           "start", "Start pose of the path if overriding current robot pose"),
         BT::InputPort<std::string>(

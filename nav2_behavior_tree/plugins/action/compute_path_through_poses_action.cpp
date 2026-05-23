@@ -31,7 +31,20 @@ ComputePathThroughPosesAction::ComputePathThroughPosesAction(
 
 void ComputePathThroughPosesAction::on_tick()
 {
-  getInput("goals", goal_.goals);
+  std::vector<geometry_msgs::msg::PoseStamped> goals;
+  std::vector<geometry_msgs::msg::PoseStamped> gpp_goals;
+
+  const bool has_goals = static_cast<bool>(getInput("goals", goals));
+  const bool has_gpp_goals = static_cast<bool>(getInput("gpp_goals", gpp_goals));
+
+  if (has_goals && has_gpp_goals) {
+    goal_.goals = (goals.size() <= gpp_goals.size()) ? goals : gpp_goals;
+  } else if (has_goals) {
+    goal_.goals = goals;
+  } else if (has_gpp_goals) {
+    goal_.goals = gpp_goals;
+  }
+
   getInput("planner_id", goal_.planner_id);
   if (getInput("start", goal_.start)) {
     goal_.use_start = true;

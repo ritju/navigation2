@@ -52,6 +52,8 @@ public:
   {
     return {
       BT::InputPort<Goals>("input_goals", "Mission goals from navigate action (read each tick)"),
+      BT::OutputPort<Goals>("output_goals",
+        "Goals after passed-point stripping; mirrors current mission queue for downstream nodes"),
       BT::OutputPort<Goals>("output_gpp_goals",
         "Windowed goals for GPP. Emission as before; between emits, goals still in the mission queue are "
         "kept (pose match vs current internal goals); points removed from mission are dropped from this output."),

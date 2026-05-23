@@ -103,6 +103,8 @@ CollisionMonitor::on_configure(const rclcpp_lifecycle::State & /*state*/)
     local_plan_sub_ = this->create_subscription<nav_msgs::msg::Path>(
       local_plan_topic_, rclcpp::QoS(1).best_effort(),
       std::bind(&CollisionMonitor::localPlanCallback, this, std::placeholders::_1));
+    latest_local_plan_receive_time_ =
+      rclcpp::Time(0, 0, get_clock()->get_clock_type());
   }
 
   return nav2_util::CallbackReturn::SUCCESS;
@@ -171,6 +173,8 @@ CollisionMonitor::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   {
     std::lock_guard<std::mutex> lk(local_plan_mutex_);
     latest_local_plan_.poses.clear();
+    latest_local_plan_receive_time_ =
+      rclcpp::Time(0, 0, get_clock()->get_clock_type());
   }
 
   local_plan_collision_stop_latched_ = false;
@@ -204,20 +208,26 @@ void CollisionMonitor::localPlanCallback(nav_msgs::msg::Path::ConstSharedPtr msg
   }
   std::lock_guard<std::mutex> lk(local_plan_mutex_);
   latest_local_plan_ = *msg;
+  latest_local_plan_receive_time_ = get_clock()->now();
 }
 
 void CollisionMonitor::publishVelocity(const Action & robot_action)
 {
   if (robot_action.req_vel.isZero()) {
-    if (!robot_action_prev_.req_vel.isZero()) {
-      // Robot just stopped: saving stop timestamp and continue
+    if (local_plan_collision_stop_latched_) {
+      // Keep publishing zero while local-plan collision stop is latched.
       stop_stamp_ = this->now();
-    }
-    else if (this->now() - stop_stamp_ > stop_pub_timeout_) {
-      // More than stop_pub_timeout_ passed after robot has been stopped.
-      // Cease publishing output cmd_vel.
-      stop_stamp_ = this->now();
-      return;
+    } else {
+      if (!robot_action_prev_.req_vel.isZero()) {
+        // Robot just stopped: saving stop timestamp and continue
+        stop_stamp_ = this->now();
+      }
+      else if (this->now() - stop_stamp_ > stop_pub_timeout_) {
+        // More than stop_pub_timeout_ passed after robot has been stopped.
+        // Cease publishing output cmd_vel.
+        stop_stamp_ = this->now();
+        return;
+      }
     }
   }
 
@@ -299,6 +309,11 @@ bool CollisionMonitor::getParameters(
     node, "local_plan_sample_spacing_ratio", rclcpp::ParameterValue(0.5));
   local_plan_sample_spacing_ratio_ =
     get_parameter("local_plan_sample_spacing_ratio").as_double();
+
+  nav2_util::declare_parameter_if_not_declared(
+    node, "local_plan_validity_timeout", rclcpp::ParameterValue(0.0));
+  local_plan_validity_timeout_ =
+    rclcpp::Duration::from_seconds(get_parameter("local_plan_validity_timeout").as_double());
 
   if (!configurePolygons(base_frame_id, transform_tolerance)) {
     return false;
@@ -418,7 +433,7 @@ bool CollisionMonitor::configureSources(
 void CollisionMonitor::process(const Velocity & cmd_vel_in)
 {
   // Current timestamp for all inner routines prolongation
-  rclcpp::Time curr_time = this->now();
+  rclcpp::Time curr_time = this->get_clock()->now();
 
   // Do nothing if main worker in non-active state
   if (!process_active_) {
@@ -426,9 +441,11 @@ void CollisionMonitor::process(const Velocity & cmd_vel_in)
   }
 
   nav_msgs::msg::Path path_this_cycle;
+  rclcpp::Time local_plan_receive_time(0, 0, get_clock()->get_clock_type());
   if (use_local_plan_collision_check_) {
     std::lock_guard<std::mutex> lk(local_plan_mutex_);
-    std::swap(path_this_cycle, latest_local_plan_);
+    path_this_cycle = latest_local_plan_;
+    local_plan_receive_time = latest_local_plan_receive_time_;
   }
 
   // Points array collected from different data sources in a robot base frame
@@ -443,14 +460,18 @@ void CollisionMonitor::process(const Velocity & cmd_vel_in)
   Action robot_action{DO_NOTHING, cmd_vel_in};
   // Polygon causing robot action (if any)
   std::shared_ptr<Polygon> action_polygon;
+  bool has_stop_or_slowdown_polygon = false;
 
   for (std::shared_ptr<Polygon> polygon : polygons_) {
-    // if (robot_action.action_type == STOP) {
-    //   // If robot already should stop, do nothing
-    //   break;
-    // }
+    if (robot_action.action_type == STOP) {
+      // If robot already should stop, do nothing
+      break;
+    }
     
     const ActionType at = polygon->getActionType();
+    if (at == STOP || at == SLOWDOWN) {
+      has_stop_or_slowdown_polygon = true;
+    }
 
     if (at == STOP || at == SLOWDOWN) {
       // Process STOP/SLOWDOWN for the selected polygon
@@ -482,7 +503,8 @@ void CollisionMonitor::process(const Velocity & cmd_vel_in)
           "Local plan collision check is enabled, but no APPROACH polygon is configured; skipping.");
       } else if (!collision_points.empty()) {
         const std::optional<bool> lp_res = processLocalPlanCollision(
-          path_this_cycle, collision_points, curr_time, approach_polygon, robot_action);
+          path_this_cycle, collision_points, curr_time, local_plan_receive_time,
+          approach_polygon, robot_action);
         if (lp_res.has_value()) {
           if (lp_res.value()) {
             action_polygon = approach_polygon;
@@ -491,7 +513,21 @@ void CollisionMonitor::process(const Velocity & cmd_vel_in)
             local_plan_collision_stop_latched_ = false;
           }
         }
+      } else {
+        if (local_plan_collision_stop_latched_) {
+          RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 5000,
+            "Local plan collision latch released: no collision points available.");
+        }
+        local_plan_collision_stop_latched_ = false;
       }
+    } else {
+      if (local_plan_collision_stop_latched_) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 5000,
+          "Local plan collision latch released: local plan is empty.");
+      }
+      local_plan_collision_stop_latched_ = false;
     }
 
     if (local_plan_collision_stop_latched_) {
@@ -502,7 +538,26 @@ void CollisionMonitor::process(const Velocity & cmd_vel_in)
       if (approach_polygon) {
         action_polygon = approach_polygon;
       }
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 500, "Execute stop cmd due to local plan collision!");
     }
+  }
+
+  // Defensive guard for local-plan-only mode:
+  // when velocity-based APPROACH and STOP/SLOWDOWN polygons are disabled,
+  // only local_plan_collision_stop_latched_ is allowed to enforce a full stop.
+  if (
+    use_local_plan_collision_check_ &&
+    !use_velocity_approach_prediction_ &&
+    !has_stop_or_slowdown_polygon &&
+    !local_plan_collision_stop_latched_)
+  {
+    if (robot_action.req_vel.isZero() && !cmd_vel_in.isZero()) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Unexpected zero cmd in local-plan-only mode (latch=false), passing through input cmd_vel.");
+    }
+    robot_action.action_type = DO_NOTHING;
+    robot_action.req_vel = cmd_vel_in;
   }
 
   if (robot_action.action_type != robot_action_prev_.action_type) {
@@ -523,13 +578,36 @@ std::optional<bool> CollisionMonitor::processLocalPlanCollision(
   const nav_msgs::msg::Path & path,
   const std::vector<Point> & collision_points,
   const rclcpp::Time & curr_time,
+  const rclcpp::Time & plan_receive_time,
   const std::shared_ptr<Polygon> & approach_polygon,
   Action & robot_action)
 {
   if (path.poses.empty() || path.header.frame_id.empty()) {
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000, "Local plan collision check skipped: path is empty or frame id is empty.");
     return std::nullopt;
   }
+
+  if (local_plan_validity_timeout_.nanoseconds() > 0) {
+    const bool stamp_ok =
+      path.header.stamp.sec != 0 || path.header.stamp.nanosec != 0;
+    const rclcpp::Time ref_time =
+      stamp_ok
+      ? rclcpp::Time(path.header.stamp, get_clock()->get_clock_type())
+      : plan_receive_time;
+    const rclcpp::Duration age = curr_time - ref_time;
+    if (age > local_plan_validity_timeout_) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Local plan expired (age %.3f s > timeout %.3f s); skipping local plan collision check.",
+        age.seconds(), local_plan_validity_timeout_.seconds());
+      return std::nullopt;
+    }
+  }
+
   if (collision_points.empty()) {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 2000,
+      "Local plan collision check skipped: no collision points available.");
     return std::nullopt;
   }
 
@@ -613,8 +691,8 @@ std::optional<bool> CollisionMonitor::processLocalPlanCollision(
       robot_action.req_vel.x = 0.0;
       robot_action.req_vel.y = 0.0;
       robot_action.req_vel.tw = 0.0;
-      RCLCPP_WARN(
-        get_logger(),
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 500,
         "STOP due to local plan footprint collision ahead (model: %s): "
         "inside=%d max_allowed=%d path_pose_index=%zu arc_length=%.3f m",
         approach_polygon->getName().c_str(),
@@ -625,7 +703,7 @@ std::optional<bool> CollisionMonitor::processLocalPlanCollision(
       return true;
     }
   }
-
+  RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000, "Local plan collision check passed!");
   return false;
 }
 
