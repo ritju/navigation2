@@ -182,15 +182,18 @@ protected:
    * @param path Path in path.header.frame_id (consumed for this cycle; empty path skips).
    * @param collision_points Obstacle points in base_frame_id_.
    * @param curr_time Time used for TF lookups.
+   * @param plan_receive_time Time when path was received (fallback if header.stamp unset).
    * @param approach_polygon Footprint model (APPROACH polygon/circle) for point-in-footprint test.
    * @param robot_action In/out action; may be forced to STOP with zero velocity.
    * @return true if collision detected; false if path was fully checked and clear;
-   *         std::nullopt if evaluation was skipped (invalid input, TF failure).
+   *         std::nullopt if skipped (invalid input, TF failure, or plan expired per
+   *         local_plan_validity_timeout_ — expiry does not STOP, only skips the check).
    */
   std::optional<bool> processLocalPlanCollision(
     const nav_msgs::msg::Path & path,
     const std::vector<Point> & collision_points,
     const rclcpp::Time & curr_time,
+    const rclcpp::Time & plan_receive_time,
     const std::shared_ptr<Polygon> & approach_polygon,
     Action & robot_action);
 
@@ -231,6 +234,8 @@ protected:
 
   /// @brief Latest local plan (protected by local_plan_mutex_)
   nav_msgs::msg::Path latest_local_plan_;
+  /// @brief Receive time of latest_local_plan_ (same mutex)
+  rclcpp::Time latest_local_plan_receive_time_;
   /// @brief Mutex for latest_local_plan_
   std::mutex local_plan_mutex_;
 
@@ -249,6 +254,8 @@ protected:
   double local_plan_lookahead_distance_{5.0};
   /// @brief Sample spacing along path = ratio * footprint bbox max side (m), after updatePolygon
   double local_plan_sample_spacing_ratio_{0.5};
+  /// @brief If >0, path older than this vs header/receive time skips local plan collision check
+  rclcpp::Duration local_plan_validity_timeout_{0, 0};
   /// @brief After local-plan footprint STOP, hold STOP until a new path is checked collision-free
   bool local_plan_collision_stop_latched_{false};
 
