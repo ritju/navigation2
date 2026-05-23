@@ -81,6 +81,7 @@
 
     <Action ID="ComputePathThroughPoses">
       <input_port name="goals">Destinations to plan through</input_port>
+      <input_port name="gpp_goals">Goals from RemovePassedGoals for path planning</input_port>
       <input_port name="start">Start pose of the path if overriding current robot pose</input_port>
       <input_port name="server_name">Server name</input_port>
       <input_port name="server_timeout">Server timeout</input_port>
