@@ -20,6 +20,7 @@
 #include <memory>
 #include <string>
 #include <mutex>
+#include <unordered_map>
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav2_util/geometry_utils.hpp"
@@ -88,6 +89,9 @@ public:
         "Match output_gpp_goals points to mission goals by pose: max XY distance (m)"),
       BT::InputPort<double>("gpp_goal_pose_match_yaw_rad", -1.0,
         "Match by pose: max |delta yaw| (rad); if < 0 skip yaw check (XY only)"),
+      BT::InputPort<double>("passed_goal_distance_threshold", -1.0,
+        "When >0: only append indexes to passed_pose_indexes if robot distance to that goal (m) is strictly "
+        "less than this; when <=0, no extra distance gate on recording"),
     };
   }
 
@@ -122,6 +126,10 @@ private:
     const Goals & mission_goals,
     double match_xy_m,
     double match_yaw_rad) const;
+  void applyMonotonicGppGoalStampsToWindow(
+    Goals & gpp_goals,
+    const rclcpp::Time & clock_now,
+    bool assign_fresh_stamp_on_advance);
 
   rclcpp::Node::SharedPtr node;
   std::shared_ptr<tf2_ros::Buffer> tf_;
@@ -156,12 +164,16 @@ private:
 
   bool has_emitted_output_gpp_goals_once_{false};
   std::uint64_t fingerprint_last_emitted_gpp_goal_window_{0};
+  bool terminal_goal_dispatched_to_gpp_window_{false};
 
   bool received_teb_plan_message_since_last_output_gpp_emit_{false};
   rclcpp::Time clock_timestamp_last_emitted_output_gpp_goals_{0, 0, RCL_ROS_TIME};
 
   /** Last values written to output_gpp_goals (used to drop points no longer present in mission goals). */
   Goals output_gpp_goals_snapshot_;
+  /** Per mission z-index: last emitted stamp so prune/mission poses cannot regress timestamps. */
+  std::unordered_map<uint32_t, rclcpp::Time> emitted_gpp_goal_stamp_by_mission_index_z_;
+  rclcpp::Time last_emitted_gpp_front_stamp_{0, 0, RCL_ROS_TIME};
 
   double previous_goal_queue_front_stamp_seconds_{0.0};
 };

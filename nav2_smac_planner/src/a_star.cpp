@@ -77,6 +77,13 @@ void AStarAlgorithm<NodeT>::initialize(
     _motion_model, _search_info, _traverse_unknown, _dim3_size);
 }
 
+template<typename NodeT>
+void AStarAlgorithm<NodeT>::setPlanningLimits(const int max_iterations, const double max_planning_time)
+{
+  _max_iterations = max_iterations;
+  _max_planning_time = max_planning_time;
+}
+
 template<>
 void AStarAlgorithm<Node2D>::initialize(
   const bool & allow_unknown,

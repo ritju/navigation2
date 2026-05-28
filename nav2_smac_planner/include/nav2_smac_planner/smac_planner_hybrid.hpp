@@ -134,10 +134,17 @@ protected:
   double _goal_close_to_obstacle_distance;
   double _footprint_extend_back_x, _footprint_extend_front_x, _footprint_extend_y, _costmap_resulution;
   double footprint_back_x_, footprint_front_x_;
+  /** When enabled, shorten Hybrid-A* limits if ROI 8-connected weighted distance is below threshold. */
+  bool _enable_close_range_roi_budget{false};
+  double _close_range_roi_margin{5.0};
+  double _close_range_threshold_m{25.0};
+  double _close_range_max_planning_time{5.0};
+  int _close_range_max_iterations{250000};
   double _minimum_turning_radius_global_coords;
   std::string _motion_model_for_search;
   MotionModel _motion_model;
   rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr _raw_plan_publisher;
+  rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr _roi_connectivity_path_publisher;
   std::mutex _mutex;
   rclcpp_lifecycle::LifecycleNode::WeakPtr _node;
 

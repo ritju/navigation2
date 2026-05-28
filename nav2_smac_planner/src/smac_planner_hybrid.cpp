@@ -16,7 +16,11 @@
 #include <memory>
 #include <vector>
 #include <algorithm>
+#include <cmath>
 #include <limits>
+#include <queue>
+#include <functional>
+#include <utility>
 
 #include "Eigen/Core"
 #include "nav2_smac_planner/smac_planner_hybrid.hpp"
@@ -29,6 +33,276 @@ namespace nav2_smac_planner
 using namespace std::chrono;  // NOLINT
 using rcl_interfaces::msg::ParameterType;
 using std::placeholders::_1;
+
+namespace
+{
+
+constexpr double kSqrt2 = 1.4142135623730950488;
+
+inline bool roiCellTraversable(unsigned char cost, bool allow_unknown)
+{
+  if (cost == nav2_costmap_2d::NO_INFORMATION) {
+    return allow_unknown;
+  }
+  if (cost == nav2_costmap_2d::LETHAL_OBSTACLE) {
+    return false;
+  }
+  if (cost == nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {
+    return false;
+  }
+  return true;
+}
+
+class ScopedHybridAStarLimits
+{
+public:
+  explicit ScopedHybridAStarLimits(
+    AStarAlgorithm<NodeHybrid> * astar,
+    int baseline_iters,
+    double baseline_time)
+  : astar_(astar), baseline_iters_(baseline_iters), baseline_time_(baseline_time) {}
+
+  ~ScopedHybridAStarLimits()
+  {
+    if (astar_) {
+      astar_->setPlanningLimits(baseline_iters_, baseline_time_);
+    }
+  }
+
+  void overrideLimits(int iters, double time_s)
+  {
+    if (astar_) {
+      astar_->setPlanningLimits(iters, time_s);
+    }
+  }
+
+  ScopedHybridAStarLimits(const ScopedHybridAStarLimits &) = delete;
+  ScopedHybridAStarLimits & operator=(const ScopedHybridAStarLimits &) = delete;
+
+private:
+  AStarAlgorithm<NodeHybrid> * astar_;
+  int baseline_iters_;
+  double baseline_time_;
+};
+
+/**
+ * Dijkstra on an 8-connected ROI: orthogonal edge cost = resolution (m),
+ * diagonal = sqrt(2)*resolution. Diagonal steps require both axial bridge cells free.
+ * @param out_cell_path_if_connected if non-null, on success cleared and filled map cells start->goal
+ * @return true iff goal reached within ROI; then *out_shortest_meters is path length.
+ */
+bool roi8GridShortestPathMeters(
+  nav2_costmap_2d::Costmap2D * costmap,
+  const unsigned int mx_s, const unsigned int my_s,
+  const unsigned int mx_g, const unsigned int my_g,
+  const double roi_margin_m,
+  const bool allow_unknown,
+  double * out_shortest_meters,
+  std::vector<std::pair<unsigned int, unsigned int>> * out_cell_path_if_connected = nullptr)
+{
+  if (!out_shortest_meters) {
+    return false;
+  }
+
+  const double res = static_cast<double>(costmap->getResolution());
+  const int size_x = static_cast<int>(costmap->getSizeInCellsX());
+  const int size_y = static_cast<int>(costmap->getSizeInCellsY());
+  if (size_x < 1 || size_y < 1) {
+    return false;
+  }
+
+  const auto cell_ok = [&](const unsigned int mx, const unsigned int my) -> bool {
+    return roiCellTraversable(costmap->getCost(mx, my), allow_unknown);
+  };
+
+  if (!cell_ok(mx_s, my_s) || !cell_ok(mx_g, my_g)) {
+    return false;
+  }
+
+  const int imx_s = static_cast<int>(mx_s);
+  const int imy_s = static_cast<int>(my_s);
+  const int imx_g = static_cast<int>(mx_g);
+  const int imy_g = static_cast<int>(my_g);
+
+  const int margin_cells = std::max(1, static_cast<int>(std::ceil(roi_margin_m / res)));
+  int rx0 = std::min(imx_s, imx_g) - margin_cells;
+  int ry0 = std::min(imy_s, imy_g) - margin_cells;
+  int rx1 = std::max(imx_s, imx_g) + margin_cells;
+  int ry1 = std::max(imy_s, imy_g) + margin_cells;
+
+  rx0 = std::max(rx0, 0);
+  ry0 = std::max(ry0, 0);
+  rx1 = std::min(rx1, size_x - 1);
+  ry1 = std::min(ry1, size_y - 1);
+
+  if (rx0 > rx1 || ry0 > ry1) {
+    return false;
+  }
+
+  const int roi_w = rx1 - rx0 + 1;
+  const int roi_h = ry1 - ry0 + 1;
+
+  const int lsx = imx_s - rx0;
+  const int lsy = imy_s - ry0;
+  const int lgx = imx_g - rx0;
+  const int lgy = imy_g - ry0;
+  if (
+    lsx < 0 || lsy < 0 || lsx >= roi_w || lsy >= roi_h ||
+    lgx < 0 || lgy < 0 || lgx >= roi_w || lgy >= roi_h)
+  {
+    return false;
+  }
+
+  const std::size_t roi_cells = static_cast<std::size_t>(roi_w) * static_cast<std::size_t>(roi_h);
+  const std::size_t start_lin = static_cast<std::size_t>(lsx + lsy * roi_w);
+  const std::size_t goal_lin = static_cast<std::size_t>(lgx + lgy * roi_w);
+
+  if (start_lin == goal_lin) {
+    *out_shortest_meters = 0.0;
+    if (out_cell_path_if_connected) {
+      out_cell_path_if_connected->clear();
+      out_cell_path_if_connected->emplace_back(mx_s, my_s);
+    }
+    return true;
+  }
+
+  static const int kDx[8] = {1, -1, 0, 0, 1, 1, -1, -1};
+  static const int kDy[8] = {0, 0, 1, -1, 1, -1, 1, -1};
+
+  using QElem = std::pair<double, std::size_t>;
+  std::priority_queue<QElem, std::vector<QElem>, std::greater<QElem>> pq;
+
+  constexpr std::size_t kNoParent = std::numeric_limits<std::size_t>::max();
+  std::vector<double> dist(roi_cells, std::numeric_limits<double>::infinity());
+  std::vector<std::size_t> parents(roi_cells, kNoParent);
+  dist[start_lin] = 0.0;
+  parents[start_lin] = start_lin;
+  pq.emplace(0.0, start_lin);
+
+  while (!pq.empty()) {
+    const QElem top = pq.top();
+    pq.pop();
+    const double d_here = top.first;
+    const std::size_t cur = top.second;
+    if (d_here > dist[cur]) {
+      continue;
+    }
+    if (cur == goal_lin) {
+      *out_shortest_meters = d_here;
+      if (out_cell_path_if_connected) {
+        out_cell_path_if_connected->clear();
+        std::vector<std::size_t> backwards;
+        for (std::size_t at = cur; /**/; /**/) {
+          backwards.push_back(at);
+          if (at == start_lin) {
+            break;
+          }
+          const std::size_t p = parents[at];
+          if (p == kNoParent) {
+            break;  // should not happen
+          }
+          at = p;
+        }
+        const std::size_t n_pts = backwards.size();
+        out_cell_path_if_connected->reserve(n_pts);
+        for (std::size_t ii = n_pts; ii-- > 0; ) {
+          const std::size_t lin_idx = backwards[ii];
+          const int ply = static_cast<int>(lin_idx) / roi_w;
+          const int plx = static_cast<int>(lin_idx) - ply * roi_w;
+          const unsigned int gmx = static_cast<unsigned int>(rx0 + plx);
+          const unsigned int gmy = static_cast<unsigned int>(ry0 + ply);
+          out_cell_path_if_connected->emplace_back(gmx, gmy);
+        }
+      }
+      return true;
+    }
+
+    const int ly = static_cast<int>(cur) / roi_w;
+    const int lx = static_cast<int>(cur) - ly * roi_w;
+    const int gx_cell = rx0 + lx;
+    const int gy_cell = ry0 + ly;
+
+    for (int k = 0; k < 8; ++k) {
+      const int ngx_i = gx_cell + kDx[k];
+      const int ngy_i = gy_cell + kDy[k];
+      if (ngx_i < rx0 || ngx_i > rx1 || ngy_i < ry0 || ngy_i > ry1) {
+        continue;
+      }
+      const unsigned int ngx = static_cast<unsigned int>(ngx_i);
+      const unsigned int ngy = static_cast<unsigned int>(ngy_i);
+      if (!cell_ok(ngx, ngy)) {
+        continue;
+      }
+
+      const int adx = kDx[k];
+      const int ady = kDy[k];
+      if (adx != 0 && ady != 0) {
+        if (
+          !cell_ok(static_cast<unsigned int>(gx_cell + adx), static_cast<unsigned int>(gy_cell)) ||
+          !cell_ok(static_cast<unsigned int>(gx_cell), static_cast<unsigned int>(gy_cell + ady)))
+        {
+          continue;
+        }
+      }
+
+      const double step = (adx != 0 && ady != 0) ? (res * kSqrt2) : res;
+      const int nlx = ngx_i - rx0;
+      const int nly = ngy_i - ry0;
+      const std::size_t nidx = static_cast<std::size_t>(nlx + nly * roi_w);
+      const double nd = d_here + step;
+      if (nd < dist[nidx]) {
+        dist[nidx] = nd;
+        parents[nidx] = cur;
+        pq.emplace(nd, nidx);
+      }
+    }
+  }
+
+  return false;
+}
+
+nav_msgs::msg::Path roiCellPathToNavPath(
+  nav2_costmap_2d::Costmap2D * costmap,
+  const std::vector<std::pair<unsigned int, unsigned int>> & cells,
+  const std::string & frame_id,
+  const rclcpp::Time & stamp)
+{
+  nav_msgs::msg::Path path;
+  path.header.frame_id = frame_id;
+  path.header.stamp = stamp;
+
+  geometry_msgs::msg::PoseStamped ps;
+  ps.header = path.header;
+
+  const std::size_t n = cells.size();
+  if (n == 0) {
+    return path;
+  }
+
+  path.poses.reserve(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    double wx = 0.0, wy = 0.0;
+    costmap->mapToWorld(cells[i].first, cells[i].second, wx, wy);
+    double yaw = 0.0;
+    if (i + 1 < n) {
+      double nx = 0.0, ny = 0.0;
+      costmap->mapToWorld(cells[i + 1].first, cells[i + 1].second, nx, ny);
+      yaw = std::atan2(ny - wy, nx - wx);
+    } else if (i > 0) {
+      double px = 0.0, py = 0.0;
+      costmap->mapToWorld(cells[i - 1].first, cells[i - 1].second, px, py);
+      yaw = std::atan2(wy - py, wx - px);
+    }
+    ps.pose.position.x = wx;
+    ps.pose.position.y = wy;
+    ps.pose.position.z = 0.0;
+    ps.pose.orientation = getWorldOrientation(static_cast<float>(yaw));
+    path.poses.push_back(ps);
+  }
+  return path;
+}
+
+}  // namespace
 
 SmacPlannerHybrid::SmacPlannerHybrid()
 : _a_star(nullptr),
@@ -154,6 +428,23 @@ void SmacPlannerHybrid::configure(
   nav2_util::declare_parameter_if_not_declared(
     node, name + ".max_planning_time", rclcpp::ParameterValue(5.0));
   node->get_parameter(name + ".max_planning_time", _max_planning_time);
+
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".enable_close_range_roi_budget", rclcpp::ParameterValue(false));
+  node->get_parameter(name + ".enable_close_range_roi_budget", _enable_close_range_roi_budget);
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".close_range_roi_margin", rclcpp::ParameterValue(5.0));
+  node->get_parameter(name + ".close_range_roi_margin", _close_range_roi_margin);
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".close_range_threshold", rclcpp::ParameterValue(25.0));
+  node->get_parameter(name + ".close_range_threshold", _close_range_threshold_m);
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".close_range_max_planning_time", rclcpp::ParameterValue(5.0));
+  node->get_parameter(name + ".close_range_max_planning_time", _close_range_max_planning_time);
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".close_range_max_iterations", rclcpp::ParameterValue(250000));
+  node->get_parameter(name + ".close_range_max_iterations", _close_range_max_iterations);
+
   nav2_util::declare_parameter_if_not_declared(
     node, name + ".lookup_table_size", rclcpp::ParameterValue(20.0));
   node->get_parameter(name + ".lookup_table_size", _lookup_table_size);
@@ -240,6 +531,8 @@ void SmacPlannerHybrid::configure(
   }
 
   _raw_plan_publisher = node->create_publisher<nav_msgs::msg::Path>("unsmoothed_plan", 1);
+  _roi_connectivity_path_publisher =
+    node->create_publisher<nav_msgs::msg::Path>("roi_connectivity_path", 1);
 
   RCLCPP_INFO(
     _logger, "Configured plugin %s of type SmacPlannerHybrid with "
@@ -256,6 +549,7 @@ void SmacPlannerHybrid::activate()
     _logger, "Activating plugin %s of type SmacPlannerHybrid",
     _name.c_str());
   _raw_plan_publisher->on_activate();
+  _roi_connectivity_path_publisher->on_activate();
   if (_costmap_downsampler) {
     _costmap_downsampler->on_activate();
   }
@@ -271,6 +565,7 @@ void SmacPlannerHybrid::deactivate()
     _logger, "Deactivating plugin %s of type SmacPlannerHybrid",
     _name.c_str());
   _raw_plan_publisher->on_deactivate();
+  _roi_connectivity_path_publisher->on_deactivate();
   if (_costmap_downsampler) {
     _costmap_downsampler->on_deactivate();
   }
@@ -289,6 +584,7 @@ void SmacPlannerHybrid::cleanup()
     _costmap_downsampler.reset();
   }
   _raw_plan_publisher.reset();
+  _roi_connectivity_path_publisher.reset();
 }
 
 nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
@@ -342,7 +638,7 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   start_pose2d.y = start.pose.position.y;
   start_pose2d.theta = tf2::getYaw(start.pose.orientation);
   double start_footprint_cost = 0.0; 
-  start_footprint_cost = _collision_checker.footprintCostAtPose(start_pose2d.x, start_pose2d.y, start_pose2d.theta, check_footprint);
+  start_footprint_cost = _collision_checker.footprintCostAtPose(start_pose2d.x, start_pose2d.y, start_pose2d.theta, _costmap_ros->getRobotFootprint());
   if (start_footprint_cost == nav2_costmap_2d::LETHAL_OBSTACLE) 
   {
     RCLCPP_WARN(_logger, "Start pose: (%f, %f) is occupied !", start.pose.position.x, start.pose.position.y);
@@ -521,9 +817,11 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   }
   
   start_a_star:
-  // Set starting point, in A* bin search coordinates
-  unsigned int mx, my;
-  if (!costmap->worldToMap(start.pose.position.x, start.pose.position.y, mx, my)) {
+  ScopedHybridAStarLimits limits_scope(_a_star.get(), _max_iterations, _max_planning_time);
+  double smooth_budget_ceiling = _max_planning_time;
+
+  unsigned int mx_s, my_s;
+  if (!costmap->worldToMap(start.pose.position.x, start.pose.position.y, mx_s, my_s)) {
     throw std::runtime_error("Start pose is out of costmap!");
   }
   double orientation_bin = tf2::getYaw(start.pose.orientation) / _angle_bin_size;
@@ -535,22 +833,64 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
     orientation_bin -= static_cast<float>(_angle_quantizations);
   }
   unsigned int orientation_bin_id = static_cast<unsigned int>(floor(orientation_bin));
-  _a_star->setStart(mx, my, orientation_bin_id);
 
-  // Set goal point, in A* bin search coordinates
-  if (!costmap->worldToMap(goal_with_tolerance.pose.position.x, goal_with_tolerance.pose.position.y, mx, my)) {
+  unsigned int mx_g, my_g;
+  if (!costmap->worldToMap(
+      goal_with_tolerance.pose.position.x, goal_with_tolerance.pose.position.y, mx_g, my_g))
+  {
     throw std::runtime_error("Goal pose is out of costmap!");
   }
-  orientation_bin = tf2::getYaw(goal_with_tolerance.pose.orientation) / _angle_bin_size;
-  while (orientation_bin < 0.0) {
-    orientation_bin += static_cast<float>(_angle_quantizations);
+  double goal_orientation_bin = tf2::getYaw(goal_with_tolerance.pose.orientation) / _angle_bin_size;
+  while (goal_orientation_bin < 0.0) {
+    goal_orientation_bin += static_cast<float>(_angle_quantizations);
   }
-  // This is needed to handle precision issues
-  if (orientation_bin >= static_cast<float>(_angle_quantizations)) {
-    orientation_bin -= static_cast<float>(_angle_quantizations);
+  if (goal_orientation_bin >= static_cast<float>(_angle_quantizations)) {
+    goal_orientation_bin -= static_cast<float>(_angle_quantizations);
   }
-  orientation_bin_id = static_cast<unsigned int>(floor(orientation_bin));
-  _a_star->setGoal(mx, my, orientation_bin_id);
+  unsigned int goal_orientation_bin_id = static_cast<unsigned int>(floor(goal_orientation_bin));
+
+  const bool viz_subs = static_cast<bool>(
+    _roi_connectivity_path_publisher &&
+    _roi_connectivity_path_publisher->get_subscription_count() > 0);
+  const bool run_roi_grid = _enable_close_range_roi_budget || viz_subs;
+  std::vector<std::pair<unsigned int, unsigned int>> roi_cell_path;
+
+  if (run_roi_grid) {
+    const double start_goal_dist_m =
+      nav2_util::geometry_utils::euclidean_distance(start_pose2d, goal_pose2d);
+    if (start_goal_dist_m < _close_range_threshold_m) {
+      double roi_path_m = std::numeric_limits<double>::infinity();
+      const bool roi_connected = roi8GridShortestPathMeters(
+        costmap,
+        mx_s, my_s, mx_g, my_g,
+        _close_range_roi_margin,
+        _allow_unknown,
+        &roi_path_m,
+        viz_subs ? &roi_cell_path : nullptr);
+
+      if (_enable_close_range_roi_budget) {
+        const bool apply_close_budget =
+          roi_connected && std::isfinite(roi_path_m) && roi_path_m < _close_range_threshold_m;
+
+        if (apply_close_budget) {
+          int close_iters =
+            (_close_range_max_iterations <= 0) ? std::numeric_limits<int>::max() :
+            _close_range_max_iterations;
+          limits_scope.overrideLimits(close_iters, _close_range_max_planning_time);
+          smooth_budget_ceiling = _close_range_max_planning_time;
+        }
+      }
+
+      if (viz_subs && roi_connected && !roi_cell_path.empty()) {
+        auto roi_path_msg =
+          roiCellPathToNavPath(costmap, roi_cell_path, _global_frame, _clock->now());
+        _roi_connectivity_path_publisher->publish(roi_path_msg);
+      }
+    }
+  }
+
+  _a_star->setStart(mx_s, my_s, orientation_bin_id);
+  _a_star->setGoal(mx_g, my_g, goal_orientation_bin_id);
 
   // Compute plan
   NodeHybrid::CoordinateVector path;
@@ -640,7 +980,10 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   // Find how much time we have left to do smoothing
   steady_clock::time_point b = steady_clock::now();
   duration<double> time_span = duration_cast<duration<double>>(b - a);
-  double time_remaining = _max_planning_time - static_cast<double>(time_span.count());
+  double time_remaining = smooth_budget_ceiling - static_cast<double>(time_span.count());
+  if (time_remaining < 0.0) {
+    time_remaining = 0.0;
+  }
 
 #ifdef BENCHMARK_TESTING
   std::cout << "It took " << time_span.count() * 1000 <<
@@ -778,6 +1121,12 @@ SmacPlannerHybrid::dynamicParametersCallback(std::vector<rclcpp::Parameter> para
       if (name == _name + ".max_planning_time") {
         reinit_a_star = true;
         _max_planning_time = parameter.as_double();
+      } else if (name == _name + ".close_range_roi_margin") {
+        _close_range_roi_margin = parameter.as_double();
+      } else if (name == _name + ".close_range_threshold") {
+        _close_range_threshold_m = parameter.as_double();
+      } else if (name == _name + ".close_range_max_planning_time") {
+        _close_range_max_planning_time = parameter.as_double();
       } else if (name == _name + ".tolerance") {
         _tolerance = static_cast<float>(parameter.as_double());
       } else if (name == _name + ".lookup_table_size") {
@@ -816,6 +1165,8 @@ SmacPlannerHybrid::dynamicParametersCallback(std::vector<rclcpp::Parameter> para
       } else if (name == _name + ".allow_unknown") {
         reinit_a_star = true;
         _allow_unknown = parameter.as_bool();
+      } else if (name == _name + ".enable_close_range_roi_budget") {
+        _enable_close_range_roi_budget = parameter.as_bool();
       } else if (name == _name + ".cache_obstacle_heuristic") {
         reinit_a_star = true;
         _search_info.cache_obstacle_heuristic = parameter.as_bool();
@@ -840,6 +1191,8 @@ SmacPlannerHybrid::dynamicParametersCallback(std::vector<rclcpp::Parameter> para
             "disabling maximum iterations.");
           _max_iterations = std::numeric_limits<int>::max();
         }
+      } else if (name == _name + ".close_range_max_iterations") {
+        _close_range_max_iterations = parameter.as_int();
       } else if (name == _name + ".max_on_approach_iterations") {
         reinit_a_star = true;
         _max_on_approach_iterations = parameter.as_int();

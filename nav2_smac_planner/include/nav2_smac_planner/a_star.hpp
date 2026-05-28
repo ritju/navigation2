@@ -98,6 +98,13 @@ public:
     const unsigned int & dim_3_size);
 
   /**
+   * @brief Override planning limits until the next initialize or setPlanningLimits call.
+   * @param max_iterations Maximum search iterations inside createPath
+   * @param max_planning_time Maximum wall time (seconds) for createPath iteration loop timeout
+   */
+  void setPlanningLimits(const int max_iterations, const double max_planning_time);
+
+  /**
    * @brief Creating path from given costmap, start, and goal
    * @param path Reference to a vector of indicies of generated path
    * @param num_iterations Reference to number of iterations to create plan

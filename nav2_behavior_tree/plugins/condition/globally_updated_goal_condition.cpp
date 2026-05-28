@@ -52,7 +52,11 @@ BT::NodeStatus GloballyUpdatedGoalCondition::tick()
   std::vector<geometry_msgs::msg::PoseStamped> current_goals;
   geometry_msgs::msg::PoseStamped current_goal;
   getGoalsPortsOrDefaults(current_goals, current_goal);
-  if (goal_ != current_goal || goals_ != current_goals)
+  bool goals_timestamp_updated = !current_goals.empty() && !goals_.empty() &&
+    (current_goals.front().header.stamp != goals_.front().header.stamp);
+  bool goals_first_appeared = !current_goals.empty() && goals_.empty();
+
+  if (goal_ != current_goal || goals_timestamp_updated || goals_first_appeared)
   {
     RCLCPP_INFO(
       node_->get_logger(), "GloballyUpdatedGoalCondition goal or goals changed");

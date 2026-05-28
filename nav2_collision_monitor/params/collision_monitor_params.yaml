@@ -17,6 +17,7 @@ collision_monitor:
     local_plan_lookahead_distance: 1.5
     # Arc-length sample step = ratio * max(footprint AABB width, height); invalid footprint uses 0.5 m
     local_plan_sample_spacing_ratio: 0.5
+    local_plan_validity_timeout: 5.0
     # Polygons represent zone around the robot for "stop" and "slowdown" action types,
     # and robot footprint for "approach" action type.
     # Footprint could be "polygon" type with dynamically set footprint from footprint_topic

@@ -103,7 +103,7 @@ void RemovePassedGoals::handleReceivedTebGlobalPlan(const nav_msgs::msg::Path::S
       "[RemovePassedGoals] teb_global_plan rx: poses=%zu polyline_len_m=%.3f",
       plan_message->poses.size(), polyline_len_m);
   } else {
-    RCLCPP_INFO(node->get_logger(), "[RemovePassedGoals] teb_global_plan rx: null message");
+    RCLCPP_INFO_THROTTLE(node->get_logger(), *(node->get_clock()), 5000, "[RemovePassedGoals] teb_global_plan rx: null message");
   }
   received_teb_plan_message_since_last_output_gpp_emit_ = true;
   if (node) {
@@ -297,6 +297,42 @@ RemovePassedGoals::Goals RemovePassedGoals::pruneOutputGppGoalsByMissionPoseMatc
   return pruned;
 }
 
+void RemovePassedGoals::applyMonotonicGppGoalStampsToWindow(
+  Goals & gpp_goals,
+  const rclcpp::Time & clock_now,
+  const bool assign_fresh_stamp_on_advance)
+{
+  if (gpp_goals.empty()) {
+    return;
+  }
+
+  for (auto & pose_stamped_gpp : gpp_goals) {
+    const uint32_t goal_index_z = missionPoseGoalIndexFromPoseZ(pose_stamped_gpp);
+    rclcpp::Time stamp_candidate = assign_fresh_stamp_on_advance ?
+      clock_now : rclcpp::Time(pose_stamped_gpp.header.stamp);
+
+    const auto cached_stamp_it = emitted_gpp_goal_stamp_by_mission_index_z_.find(goal_index_z);
+    if (cached_stamp_it != emitted_gpp_goal_stamp_by_mission_index_z_.end() &&
+      stamp_candidate < cached_stamp_it->second)
+    {
+      stamp_candidate = cached_stamp_it->second;
+    }
+
+    pose_stamped_gpp.header.stamp = stamp_candidate;
+    emitted_gpp_goal_stamp_by_mission_index_z_[goal_index_z] = stamp_candidate;
+  }
+
+  if (last_emitted_gpp_front_stamp_.nanoseconds() > 0 &&
+    rclcpp::Time(gpp_goals.front().header.stamp) < last_emitted_gpp_front_stamp_)
+  {
+    gpp_goals.front().header.stamp = last_emitted_gpp_front_stamp_;
+    const uint32_t front_goal_index_z = missionPoseGoalIndexFromPoseZ(gpp_goals.front());
+    emitted_gpp_goal_stamp_by_mission_index_z_[front_goal_index_z] = last_emitted_gpp_front_stamp_;
+  }
+
+  last_emitted_gpp_front_stamp_ = rclcpp::Time(gpp_goals.front().header.stamp);
+}
+
 BT::NodeStatus RemovePassedGoals::tick()
 {
   setStatus(BT::NodeStatus::RUNNING);
@@ -314,8 +350,11 @@ BT::NodeStatus RemovePassedGoals::tick()
     fingerprint_last_emitted_gpp_goal_window_ = 0;
     received_teb_plan_message_since_last_output_gpp_emit_ = false;
     clock_timestamp_last_emitted_output_gpp_goals_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+    terminal_goal_dispatched_to_gpp_window_ = false;
     resetStoredTebPlanBuffersKeepingRxTracking();
     output_gpp_goals_snapshot_.clear();
+    emitted_gpp_goal_stamp_by_mission_index_z_.clear();
+    last_emitted_gpp_front_stamp_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
     setOutput("output_gpp_goals", Goals{});
     setOutput("output_goals", Goals{});
     return BT::NodeStatus::SUCCESS;
@@ -342,8 +381,11 @@ BT::NodeStatus RemovePassedGoals::tick()
     fingerprint_last_emitted_gpp_goal_window_ = 0;
     received_teb_plan_message_since_last_output_gpp_emit_ = false;
     clock_timestamp_last_emitted_output_gpp_goals_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+    terminal_goal_dispatched_to_gpp_window_ = false;
     resetStoredTebPlanBuffersKeepingRxTracking();
     output_gpp_goals_snapshot_.clear();
+    emitted_gpp_goal_stamp_by_mission_index_z_.clear();
+    last_emitted_gpp_front_stamp_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
   }
 
   Goals & mission_goal_queue_mutable_ref = mission_goal_queue_internal_;
@@ -425,6 +467,14 @@ BT::NodeStatus RemovePassedGoals::tick()
       pass_tail_relax_radius_m = viapoint_achieved_radius_;
     }
 
+    double passed_goal_distance_threshold_m = -1.0;
+    getInput("passed_goal_distance_threshold", passed_goal_distance_threshold_m);
+
+    auto should_record_passed_goal_index_distance = [&](double distance_robot_to_goal_pose_meters) -> bool {
+      return passed_goal_distance_threshold_m <= 0.0 ||
+             distance_robot_to_goal_pose_meters < passed_goal_distance_threshold_m;
+    };
+
     const size_t mission_goal_count = mission_goal_queue_mutable_ref.size();
     std::vector<double> cumulative_arc_distance_from_queue_head_meters(mission_goal_count, 0.0);
     for (size_t index_goal = 1; index_goal < mission_goal_count; ++index_goal) {
@@ -475,14 +525,15 @@ BT::NodeStatus RemovePassedGoals::tick()
         if (index_goal_candidate > 0) {
           mission_goal_queue_mutable_ref.erase(
             mission_goal_queue_mutable_ref.begin(),
-            mission_goal_queue_mutable_ref.begin() + index_goal_candidate);
+            mission_goal_queue_mutable_ref.begin() + index_goal_candidate + 1);
         } else {
           mission_goal_queue_mutable_ref.erase(mission_goal_queue_mutable_ref.begin());
         }
         if (std::find(
             vector_passed_goal_indexes_recorded_.begin(),
             vector_passed_goal_indexes_recorded_.end(),
-            discrete_goal_index_passed_z) == vector_passed_goal_indexes_recorded_.end())
+            discrete_goal_index_passed_z) == vector_passed_goal_indexes_recorded_.end() &&
+          should_record_passed_goal_index_distance(distance_robot_to_goal_meters))
         {
           RCLCPP_INFO(
             node->get_logger(),
@@ -531,19 +582,15 @@ BT::NodeStatus RemovePassedGoals::tick()
             yaw_diff_goal_minus_robot_rad += 2.0 * M_PI;
           }
           if (std::fabs(yaw_diff_goal_minus_robot_rad) > pass_yaw_threshold_rad) {
-            const uint32_t discrete_goal_index_yaw_over_threshold_z =
-              missionPoseGoalIndexFromPoseZ(pose_goal_front);
-            if (std::find(
-                vector_passed_goal_indexes_recorded_.begin(),
-                vector_passed_goal_indexes_recorded_.end(),
-                discrete_goal_index_yaw_over_threshold_z) == vector_passed_goal_indexes_recorded_.end())
-            {
-              RCLCPP_INFO(
-                node->get_logger(),
-                "[RemovePassedGoals] yaw over threshold; record passed_pose_indexes %u without stripping goal",
-                static_cast<unsigned int>(discrete_goal_index_yaw_over_threshold_z));
-              vector_passed_goal_indexes_recorded_.push_back(discrete_goal_index_yaw_over_threshold_z);
-            }
+            // Yaw check enabled but alignment failed: do not strip front goal, do not record passed index,
+            // and do not fall through to erase/push_back below (same iteration guarantees break here).
+            RCLCPP_DEBUG(
+              node->get_logger(),
+              "[RemovePassedGoals] yaw over threshold |dyaw|=%.4f > %.4f rad: skip strip & passed_pose_indexes "
+              "for front goal z=%u",
+              std::fabs(yaw_diff_goal_minus_robot_rad),
+              pass_yaw_threshold_rad,
+              static_cast<unsigned int>(missionPoseGoalIndexFromPoseZ(pose_goal_front)));
             break;
           }
         }
@@ -554,7 +601,8 @@ BT::NodeStatus RemovePassedGoals::tick()
         if (std::find(
             vector_passed_goal_indexes_recorded_.begin(),
             vector_passed_goal_indexes_recorded_.end(),
-            discrete_goal_index_passed_z) == vector_passed_goal_indexes_recorded_.end())
+            discrete_goal_index_passed_z) == vector_passed_goal_indexes_recorded_.end() &&
+          should_record_passed_goal_index_distance(distance_robot_to_front_goal_meters))
         {
           RCLCPP_INFO(
             node->get_logger(),
@@ -676,6 +724,7 @@ BT::NodeStatus RemovePassedGoals::tick()
     total_polyline_length_effective_teb_meters,
     pointer_usable_non_degenerate_teb_plan ? "yes" : "no");
 
+  bool advanced_gpp_window_after_short_teb_this_tick = false;
   if (!batch_window_initialized_) {
     buildFirstWindowFromMission(mission_goal_queue_mutable_ref);
     batch_window_initialized_ = true;
@@ -693,8 +742,10 @@ BT::NodeStatus RemovePassedGoals::tick()
       tebGlobalPlanPolylineLengthMetersFromFirstPose(*pointer_usable_non_degenerate_teb_plan);
     if (teb_polyline_length_from_first_pose_meters <= replan_trigger_arc_length_meters) {
       advanceGppWindowAfterShortTebPolyline(mission_goal_queue_mutable_ref);
-      RCLCPP_INFO(
-        node->get_logger(),
+      advanced_gpp_window_after_short_teb_this_tick = true;
+      RCLCPP_INFO_THROTTLE(
+        node->get_logger(), *(node->get_clock()),
+        5000,
         "[RemovePassedGoals] advance gpp window: teb_polyline_m=%.3f <= %.3f -> z=[%u,%u]",
         teb_polyline_length_from_first_pose_meters,
         replan_trigger_arc_length_meters,
@@ -719,146 +770,72 @@ BT::NodeStatus RemovePassedGoals::tick()
   double gpp_goal_pose_match_yaw_rad = -1.0;
   getInput("gpp_goal_pose_match_yaw_rad", gpp_goal_pose_match_yaw_rad);
 
-  const Goals filtered_gpp_goal_window_after_prune =
+  Goals filtered_gpp_goal_window_after_prune =
     pruneOutputGppGoalsByMissionPoseMatch(
     filtered_gpp_goal_window_output,
     mission_goal_queue_mutable_ref,
     gpp_goal_pose_match_xy_m,
     gpp_goal_pose_match_yaw_rad);
 
-  const uint32_t discrete_z_mission_terminal_goal =
-    mission_goal_queue_mutable_ref.empty()
-    ? 0U
-    : missionPoseGoalIndexFromPoseZ(mission_goal_queue_mutable_ref.back());
-  const bool emitted_gpp_already_includes_mission_terminal =
-    !mission_goal_queue_mutable_ref.empty() &&
-    has_emitted_output_gpp_goals_once_ &&
-    !output_gpp_goals_snapshot_.empty() &&
-    std::find_if(
-      output_gpp_goals_snapshot_.cbegin(),
-      output_gpp_goals_snapshot_.cend(),
-      [discrete_z_mission_terminal_goal](const geometry_msgs::msg::PoseStamped & pose_emitted_goal) {
-        return missionPoseGoalIndexFromPoseZ(pose_emitted_goal) == discrete_z_mission_terminal_goal;
-      }) != output_gpp_goals_snapshot_.cend();
-
   const std::uint64_t gpp_window_fp_now =
     fingerprintLastEmittedGppWindow(filtered_gpp_goal_window_after_prune, queue_tail_stamp_fp);
 
-  // const bool emit_gpp_identity =
-  //   board_mission_changed || queue_tail_fp_changed;
-  
-  const bool emit_gpp_identity = board_mission_changed;
-
-  const bool block_secondary_gpp_until_teb =
-    has_emitted_output_gpp_goals_once_ &&
-    !emit_gpp_identity &&
-    !received_teb_plan_message_since_last_output_gpp_emit_ &&
-    clock_timestamp_last_emitted_output_gpp_goals_.nanoseconds() > 0 &&
-    (clock_now_robot_time - clock_timestamp_last_emitted_output_gpp_goals_).seconds() <
-    teb_message_timeout_seconds;
-  RCLCPP_DEBUG(node->get_logger(), "[RemovePassedGoals] block_secondary_gpp_until_teb: %s", block_secondary_gpp_until_teb ? "yes" : "no");
-  RCLCPP_DEBUG(node->get_logger(), "[RemovePassedGoals] has_emitted_output_gpp_goals_once_: %s", has_emitted_output_gpp_goals_once_ ? "yes" : "no");
-  RCLCPP_DEBUG(node->get_logger(), "[RemovePassedGoals] emit_gpp_identity: %s", emit_gpp_identity ? "yes" : "no");
-  RCLCPP_DEBUG(node->get_logger(), "[RemovePassedGoals] received_teb_plan_message_since_last_output_gpp_emit_: %s", received_teb_plan_message_since_last_output_gpp_emit_ ? "yes" : "no");
-  RCLCPP_DEBUG(node->get_logger(), "[RemovePassedGoals] clock_timestamp_last_emitted_output_gpp_goals_: %s", clock_timestamp_last_emitted_output_gpp_goals_.nanoseconds() > 0 ? "yes" : "no");
-  RCLCPP_DEBUG(node->get_logger(), "[RemovePassedGoals] clock_now_robot_time: %s", clock_now_robot_time.nanoseconds() > 0 ? "yes" : "no");
-  RCLCPP_DEBUG(node->get_logger(), "[RemovePassedGoals] (clock_now_robot_time - clock_timestamp_last_emitted_output_gpp_goals_).seconds(): %f", (clock_now_robot_time - clock_timestamp_last_emitted_output_gpp_goals_).seconds());
-  RCLCPP_DEBUG(node->get_logger(), "[RemovePassedGoals] teb_message_timeout_seconds: %f", teb_message_timeout_seconds);
-
-  const bool gpp_fp_changed =
-    gpp_window_fp_now != fingerprint_last_emitted_gpp_goal_window_;
-
-  bool emit_gpp_short_teb = false;
-  if (
-    teb_plan_message_within_timeout_window &&
-    shared_ptr_latest_teb_snapshot &&
-    shared_ptr_latest_teb_snapshot->poses.size() >= 2 &&
-    nav2_util::geometry_utils::calculate_path_length(*shared_ptr_latest_teb_snapshot) >
-    epsilon_minimum_nonzero_polyline_length_meters)
-  {
-    const double teb_polyline_length_latest_only_meters =
-      tebGlobalPlanPolylineLengthMetersFromFirstPose(*shared_ptr_latest_teb_snapshot);
-    emit_gpp_short_teb =
-      (teb_polyline_length_latest_only_meters <= replan_trigger_arc_length_meters);
+  // Keep per-goal stamps monotonic: prune copies mission poses whose header.stamp can be older than
+  // the last emitted value. On advance (before terminal freeze), assign a fresh stamp for replan.
+  const bool assign_fresh_gpp_stamp_on_advance =
+    advanced_gpp_window_after_short_teb_this_tick && !terminal_goal_dispatched_to_gpp_window_;
+  applyMonotonicGppGoalStampsToWindow(
+    filtered_gpp_goal_window_after_prune,
+    clock_now_robot_time,
+    assign_fresh_gpp_stamp_on_advance);
+  if (assign_fresh_gpp_stamp_on_advance) {
+    RCLCPP_INFO(
+      node->get_logger(),
+      "[RemovePassedGoals] refresh gpp goal stamp count=%zu",
+      filtered_gpp_goal_window_after_prune.size());
   }
 
-  const bool emit_gpp_on_teb_timeout =
-    has_emitted_output_gpp_goals_once_ &&
-    received_teb_plan_message_since_last_output_gpp_emit_ &&
-    has_valid_timestamp_last_teb_plan_message &&
-    seconds_since_last_teb_plan_message >= teb_message_timeout_seconds;
-  RCLCPP_DEBUG(node->get_logger(), "[RemovePassedGoals] emit_gpp_on_teb_timeout: %s", emit_gpp_on_teb_timeout ? "yes" : "no");
-  RCLCPP_DEBUG(node->get_logger(), "[RemovePassedGoals] has_valid_timestamp_last_teb_plan_message: %s", has_valid_timestamp_last_teb_plan_message ? "yes" : "no");
-  RCLCPP_DEBUG(node->get_logger(), "[RemovePassedGoals] seconds_since_last_teb_plan_message: %f", seconds_since_last_teb_plan_message);
-  RCLCPP_DEBUG(node->get_logger(), "[RemovePassedGoals] teb_message_timeout_seconds: %f", teb_message_timeout_seconds);
-  RCLCPP_DEBUG(node->get_logger(), "[RemovePassedGoals] received_teb_plan_message_since_last_output_gpp_emit_: %s", received_teb_plan_message_since_last_output_gpp_emit_ ? "yes" : "no");
-  RCLCPP_DEBUG(node->get_logger(), "[RemovePassedGoals] has_emitted_output_gpp_goals_once_: %s", has_emitted_output_gpp_goals_once_ ? "yes" : "no");
-  RCLCPP_DEBUG(node->get_logger(), "[RemovePassedGoals] gpp_fp_changed: %s", gpp_fp_changed ? "yes" : "no");
+  if (!filtered_gpp_goal_window_after_prune.empty()) {
+    // Detect whether the terminal mission goal has entered the GPP window.
+    if (!terminal_goal_dispatched_to_gpp_window_ && !mission_goal_queue_mutable_ref.empty()) {
+      const uint32_t z_terminal = missionPoseGoalIndexFromPoseZ(mission_goal_queue_mutable_ref.back());
+      for (const auto & pose_stamped_gpp : filtered_gpp_goal_window_after_prune) {
+        if (missionPoseGoalIndexFromPoseZ(pose_stamped_gpp) == z_terminal) {
+          terminal_goal_dispatched_to_gpp_window_ = true;
+          RCLCPP_INFO(
+            node->get_logger(),
+            "[RemovePassedGoals] terminal goal z=%u entered gpp window: stamp freeze active",
+            static_cast<unsigned int>(z_terminal));
+          break;
+        }
+      }
+    }
 
-  bool should_emit_gpp = false;
-  if (emitted_gpp_already_includes_mission_terminal) {
+
+
+    setOutput("output_gpp_goals", filtered_gpp_goal_window_after_prune);
+    output_gpp_goals_snapshot_ = filtered_gpp_goal_window_after_prune;
+    fingerprint_last_emitted_gpp_goal_window_ = gpp_window_fp_now;
+    has_emitted_output_gpp_goals_once_ = true;
+    clock_timestamp_last_emitted_output_gpp_goals_ = clock_now_robot_time;
+
+    if (advanced_gpp_window_after_short_teb_this_tick) {
+      resetStoredTebPlanBuffersKeepingRxTracking();
+      received_teb_plan_message_since_last_output_gpp_emit_ = false;
+    }
+
     RCLCPP_DEBUG(
       node->get_logger(),
-      "[RemovePassedGoals] skip output_gpp_goals emit: mission terminal discrete z=%u already in snapshot "
-      "count=%zu",
-      static_cast<unsigned int>(discrete_z_mission_terminal_goal),
+      "[RemovePassedGoals] emitted output_gpp_goals count=%zu window_fp=%lx advance=%s",
+      filtered_gpp_goal_window_after_prune.size(),
+      static_cast<unsigned long>(gpp_window_fp_now),
+      advanced_gpp_window_after_short_teb_this_tick ? "yes" : "no");
+  } else {
+    RCLCPP_WARN(
+      node->get_logger(),
+      "[RemovePassedGoals] prune removed all goals (was %zu), keep previous gpp_goals snapshot count=%zu",
+      filtered_gpp_goal_window_output.size(),
       output_gpp_goals_snapshot_.size());
-  } else if (!filtered_gpp_goal_window_output.empty()) {
-    if (emit_gpp_identity) {
-      should_emit_gpp = true;
-    } else if (!block_secondary_gpp_until_teb) {
-      if (
-        gpp_fp_changed &&
-        emit_gpp_short_teb)
-      {
-        should_emit_gpp = true;
-      } else if (
-        emit_gpp_on_teb_timeout &&
-        gpp_fp_changed)
-      {
-        should_emit_gpp = true;
-      }
-    }
-  }
-
-  RCLCPP_DEBUG(
-    node->get_logger(),
-    "[RemovePassedGoals] gpp emit decision: suppress_terminal_already_emitted=%s emit_identity=%s "
-    "block_secondary_until_teb=%s "
-    "gpp_fp_changed=%s emit_short_teb=%s emit_on_teb_timeout=%s batch_goals=%zu should_emit=%s",
-    emitted_gpp_already_includes_mission_terminal ? "yes" : "no",
-    emit_gpp_identity ? "yes" : "no",
-    block_secondary_gpp_until_teb ? "yes" : "no",
-    gpp_fp_changed ? "yes" : "no",
-    emit_gpp_short_teb ? "yes" : "no",
-    emit_gpp_on_teb_timeout ? "yes" : "no",
-    filtered_gpp_goal_window_output.size(),
-    should_emit_gpp ? "yes" : "no");
-
-  if (should_emit_gpp) {
-    if (filtered_gpp_goal_window_output.empty()) {
-      // unreachable due to outer guard
-    } else {
-      if (filtered_gpp_goal_window_after_prune.empty()) {
-        RCLCPP_WARN(
-          node->get_logger(),
-          "[RemovePassedGoals] emit skipped: prune removed all goals (was %zu)",
-          filtered_gpp_goal_window_output.size());
-      } else {
-        setOutput("output_gpp_goals", filtered_gpp_goal_window_after_prune);
-        output_gpp_goals_snapshot_ = filtered_gpp_goal_window_after_prune;
-        fingerprint_last_emitted_gpp_goal_window_ = gpp_window_fp_now;
-        has_emitted_output_gpp_goals_once_ = true;
-        received_teb_plan_message_since_last_output_gpp_emit_ = false;
-        clock_timestamp_last_emitted_output_gpp_goals_ = clock_now_robot_time;
-        resetStoredTebPlanBuffersKeepingRxTracking();
-        RCLCPP_INFO(
-          node->get_logger(),
-          "[RemovePassedGoals] emitted output_gpp_goals count=%zu window_fp=%lx",
-          filtered_gpp_goal_window_after_prune.size(),
-          static_cast<unsigned long>(gpp_window_fp_now));
-      }
-    }
   }
 
   if (!mission_goal_queue_mutable_ref.empty()) {
