@@ -227,7 +227,11 @@
     </Action>
 
     <!-- ############################### CONDITION NODES ############################## -->
-    <Condition ID="IsCollision"/>
+    <Condition ID="IsCollision">
+      <input_port name="expand_contour">Expand robot contour for collision check</input_port>
+      <input_port name="service_name">Collision detection service name</input_port>
+      <input_port name="server_timeout">Server timeout</input_port>
+    </Condition>
     
     <Condition ID="GoalReached">
         <input_port name="goal">Destination</input_port>

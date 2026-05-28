@@ -16,27 +16,26 @@
 #ifndef NAV2_BEHAVIOR_TREE__PLUGINS__CONDITION__IS_COLLISION_
 #define NAV2_BEHAVIOR_TREE__PLUGINS__CONDITION__IS_COLLISION_
 
-#include <string>
+#include <chrono>
 #include <memory>
-#include <mutex>
+#include <string>
 
 #include "rclcpp/rclcpp.hpp"
-#include "std_msgs/msg/float32.hpp"
-#include "std_msgs/msg/bool.hpp"
+#include "std_srvs/srv/set_bool.hpp"
 #include "behaviortree_cpp_v3/condition_node.h"
 
 namespace nav2_behavior_tree
 {
 
 /**
- * @brief A BT::ConditionNode that listens to localizaiton_score topic and
- * returns SUCCESS when localizaiton_score is high and FAILURE otherwise
+ * @brief A BT::ConditionNode that calls collision_detection_service and
+ * returns SUCCESS when no collision is detected and FAILURE otherwise
  */
 class IsCollisionCondition : public BT::ConditionNode
 {
 public:
   /**
-   * @brief A constructor for nav2_behavior_tree::IsBatteryLowCondition
+   * @brief A constructor for nav2_behavior_tree::IsCollisionCondition
    * @param condition_name Name for the XML tag for this node
    * @param conf BT node configuration
    */
@@ -54,23 +53,21 @@ public:
 
   static BT::PortsList providedPorts()
   {
-    return {};
+    return {
+      BT::InputPort<bool>("expand_contour", false, "Expand robot contour for collision check"),
+      BT::InputPort<std::string>("service_name", "/collision_detection_service", "Collision detection service name"),
+      BT::InputPort<std::chrono::milliseconds>("server_timeout"),
+    };
   }
 
 private:
-  /**
-   * @brief Callback function for localization_score topic
-   * @param msg Shared pointer to std_msgs::msg::Float32 message
-   */
-  void iscollisionCallback(std_msgs::msg::Bool::SharedPtr msg);
   rclcpp::Node::SharedPtr node_;
+  rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr client_;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   rclcpp::executors::SingleThreadedExecutor callback_group_executor_;
-  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr is_collision_sub_;
-  std::string is_collision_topic_;
-  bool is_collsion_;
+  std::chrono::milliseconds server_timeout_;
 };
 
 }  // namespace nav2_behavior_tree
 
-#endif  // NAV2_BEHAVIOR_TREE__PLUGINS__CONDITION__IS_LOCALIZATION_STATUS_GOOD_
+#endif  // NAV2_BEHAVIOR_TREE__PLUGINS__CONDITION__IS_COLLISION_

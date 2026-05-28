@@ -23,38 +23,58 @@ namespace nav2_behavior_tree
 IsCollisionCondition::IsCollisionCondition(
   const std::string & condition_name,
   const BT::NodeConfiguration & conf)
-: BT::ConditionNode(condition_name, conf),
-  is_collision_topic_("/is_collision"),
-  is_collsion_(false)
+: BT::ConditionNode(condition_name, conf)
 {
   node_ = config().blackboard->get<rclcpp::Node::SharedPtr>("node");
+  server_timeout_ = config().blackboard->template get<std::chrono::milliseconds>("server_timeout");
+  getInput<std::chrono::milliseconds>("server_timeout", server_timeout_);
+
+  std::string service_name = "/collision_detection_service";
+  getInput("service_name", service_name);
+
   callback_group_ = node_->create_callback_group(
     rclcpp::CallbackGroupType::MutuallyExclusive,
     false);
   callback_group_executor_.add_callback_group(callback_group_, node_->get_node_base_interface());
 
-  rclcpp::SubscriptionOptions sub_option;
-  sub_option.callback_group = callback_group_;
-  is_collision_sub_ = node_->create_subscription<std_msgs::msg::Bool>(
-    is_collision_topic_,
-    rclcpp::QoS(rclcpp::KeepLast(1)).reliable(),
-    std::bind(&IsCollisionCondition::iscollisionCallback, this, std::placeholders::_1),
-    sub_option);
+  client_ = node_->create_client<std_srvs::srv::SetBool>(
+    service_name,
+    rclcpp::ServicesQoS().get_rmw_qos_profile(),
+    callback_group_);
 }
 
 BT::NodeStatus IsCollisionCondition::tick()
 {
-  callback_group_executor_.spin_some();
-  if (is_collsion_) {
-    RCLCPP_INFO(rclcpp::get_logger("rclcpp"), "The robot collides!");
+  if (!client_->service_is_ready()) {
+    RCLCPP_WARN(
+      node_->get_logger(),
+      "Collision detection service is not ready");
+    return BT::NodeStatus::SUCCESS;
+  }
+
+  bool expand_contour = false;
+  getInput("expand_contour", expand_contour);
+
+  auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
+  request->data = expand_contour;
+
+  auto future = client_->async_send_request(request);
+  if (callback_group_executor_.spin_until_future_complete(future, server_timeout_) !=
+    rclcpp::FutureReturnCode::SUCCESS)
+  {
+    RCLCPP_WARN(
+      node_->get_logger(),
+      "Timed out waiting for collision detection service response");
+    return BT::NodeStatus::SUCCESS;
+  }
+
+  const auto response = future.get();
+  if (!response->success) {
+    RCLCPP_INFO(node_->get_logger(), "The robot collides!");
     return BT::NodeStatus::FAILURE;
   }
-  return BT::NodeStatus::SUCCESS;
-}
 
-void IsCollisionCondition::iscollisionCallback(std_msgs::msg::Bool::SharedPtr msg)
-{
-    is_collsion_ = msg->data;
+  return BT::NodeStatus::SUCCESS;
 }
 
 }  // namespace nav2_behavior_tree
