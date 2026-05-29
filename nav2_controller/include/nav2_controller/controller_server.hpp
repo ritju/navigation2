@@ -235,6 +235,7 @@ protected:
   std::unique_ptr<nav_2d_utils::OdomSubscriber> odom_sub_;
   rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::Twist>::SharedPtr vel_publisher_;
   rclcpp::Subscription<nav2_msgs::msg::SpeedLimit>::SharedPtr speed_limit_sub_;
+  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr teb_global_plan_sub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr prune_path_pub_;
 
   // Progress Checker Plugin
@@ -272,6 +273,11 @@ protected:
 
   double failure_tolerance_;
   double remaining_path_length_threshold_;
+  double teb_remaining_path_length_threshold_;
+  std::string teb_global_plan_topic_;
+  std::mutex teb_global_plan_mutex_;
+  nav_msgs::msg::Path teb_global_plan_;
+  bool teb_global_plan_received_{false};
 
   // Whether we've published the single controller warning yet
   geometry_msgs::msg::PoseStamped end_pose_;
@@ -289,6 +295,12 @@ private:
     * @param msg Shared pointer to nav2_msgs::msg::SpeedLimit
     */
   void speedLimitCallback(const nav2_msgs::msg::SpeedLimit::SharedPtr msg);
+
+  /**
+   * @brief Callback for TEB global plan messages
+   * @param msg Shared pointer to nav_msgs::msg::Path
+   */
+  void tebGlobalPlanCallback(const nav_msgs::msg::Path::SharedPtr msg);
   bool stop = false;
   double goal_x,goal_y;
   bool follow_person_ = false;

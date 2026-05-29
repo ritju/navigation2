@@ -111,7 +111,9 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
 
   declare_parameter("failure_tolerance", rclcpp::ParameterValue(0.0));
   declare_parameter("prune_dist_behind_robot", rclcpp::ParameterValue(1.5));
-  declare_parameter("remaining_path_length_threshold", rclcpp::ParameterValue(2.0));
+  declare_parameter("remaining_path_length_threshold", rclcpp::ParameterValue(4.0));
+  declare_parameter("teb_global_plan_topic", rclcpp::ParameterValue("teb_global_plan"));
+  declare_parameter("teb_remaining_path_length_threshold", rclcpp::ParameterValue(4.0));
 
   // The costmap node is used in the implementation of the controller
   costmap_ros_ = std::make_shared<nav2_costmap_2d::Costmap2DROS>(
@@ -178,6 +180,8 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   get_parameter("failure_tolerance", failure_tolerance_);
   get_parameter("prune_dist_behind_robot", prune_dist_behind_robot_);
   get_parameter("remaining_path_length_threshold", remaining_path_length_threshold_);
+  get_parameter("teb_global_plan_topic", teb_global_plan_topic_);
+  get_parameter("teb_remaining_path_length_threshold", teb_remaining_path_length_threshold_);
 
   costmap_ros_->configure();
   costmap_ = costmap_ros_->getCostmap();
@@ -269,6 +273,10 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
     std::bind(&ControllerServer::speedLimitCallback, this, std::placeholders::_1));
   
   following_person_subscribe_ = create_subscription<std_msgs::msg::Bool>("following_person", rclcpp::SensorDataQoS(rclcpp::KeepLast(1)).transient_local().reliable(), std::bind(&ControllerServer::followingpersonsubscribecallback, this, std::placeholders::_1)); 
+
+  teb_global_plan_sub_ = create_subscription<nav_msgs::msg::Path>(
+    teb_global_plan_topic_, rclcpp::QoS(rclcpp::KeepLast(1)),
+    std::bind(&ControllerServer::tebGlobalPlanCallback, this, std::placeholders::_1));
   
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -339,7 +347,13 @@ ControllerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   odom_sub_.reset();
   vel_publisher_.reset();
   speed_limit_sub_.reset();
+  teb_global_plan_sub_.reset();
   following_person_subscribe_.reset();
+  {
+    std::lock_guard<std::mutex> lock(teb_global_plan_mutex_);
+    teb_global_plan_.poses.clear();
+    teb_global_plan_received_ = false;
+  }
 
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -803,19 +817,19 @@ bool ControllerServer::isGoalReached()
 {
   geometry_msgs::msg::PoseStamped pose;
 
-  if (!getRobotPose(pose) || current_path_.poses.size() > 80) {
+  if (!getRobotPose(pose)) {
   // if (!getRobotPose(pose)) {
     return false;
   }
 
   // 计算剩余路径长度
   auto find_closest_pose_idx =
-    [&pose, this]() {
+    [&pose](const nav_msgs::msg::Path & path) {
       size_t closest_pose_idx = 0;
       double curr_min_dist = std::numeric_limits<double>::max();
-      for (size_t curr_idx = 0; curr_idx < current_path_.poses.size(); ++curr_idx) {
+      for (size_t curr_idx = 0; curr_idx < path.poses.size(); ++curr_idx) {
         double curr_dist = nav2_util::geometry_utils::euclidean_distance(
-          pose, current_path_.poses[curr_idx]);
+          pose, path.poses[curr_idx]);
         if (curr_dist < curr_min_dist) {
           curr_min_dist = curr_dist;
           closest_pose_idx = curr_idx;
@@ -824,12 +838,34 @@ bool ControllerServer::isGoalReached()
       return closest_pose_idx;
     };
 
-  size_t closest_idx = find_closest_pose_idx();
+  size_t closest_idx = find_closest_pose_idx(current_path_);
   double remaining_path_length = nav2_util::geometry_utils::calculate_path_length(
     current_path_, closest_idx);
 
-  // (1) 如果剩余路径长度大于阈值，返回false
-  if (remaining_path_length > remaining_path_length_threshold_) {
+  bool path_short_enough = remaining_path_length <= remaining_path_length_threshold_;
+
+  if (!path_short_enough) {
+    nav_msgs::msg::Path teb_plan;
+    {
+      std::lock_guard<std::mutex> lock(teb_global_plan_mutex_);
+      if (teb_global_plan_received_ && !teb_global_plan_.poses.empty()) {
+        teb_plan = teb_global_plan_;
+      }
+    }
+    if (!teb_plan.poses.empty() &&
+      (teb_plan.header.frame_id.empty() || teb_plan.header.frame_id == pose.header.frame_id))
+    {
+      size_t teb_closest_idx = find_closest_pose_idx(teb_plan);
+      double teb_remaining_path_length = nav2_util::geometry_utils::calculate_path_length(
+        teb_plan, teb_closest_idx);
+      if (teb_remaining_path_length <= teb_remaining_path_length_threshold_) {
+        path_short_enough = true;
+      }
+    }
+  }
+
+  // (1) 若 controller 路径与 teb_global_plan 剩余长度均大于阈值，返回 false
+  if (!path_short_enough) {
     return false;
   }
 
@@ -869,6 +905,16 @@ void ControllerServer::speedLimitCallback(const nav2_msgs::msg::SpeedLimit::Shar
   }
 }
 
+void ControllerServer::tebGlobalPlanCallback(const nav_msgs::msg::Path::SharedPtr msg)
+{
+  if (!msg) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(teb_global_plan_mutex_);
+  teb_global_plan_ = *msg;
+  teb_global_plan_received_ = true;
+}
+
 rcl_interfaces::msg::SetParametersResult
 ControllerServer::dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters)
 {
@@ -905,6 +951,10 @@ ControllerServer::dynamicParametersCallback(std::vector<rclcpp::Parameter> param
         min_theta_velocity_threshold_ = parameter.as_double();
       } else if (name == "failure_tolerance") {
         failure_tolerance_ = parameter.as_double();
+      } else if (name == "remaining_path_length_threshold") {
+        remaining_path_length_threshold_ = parameter.as_double();
+      } else if (name == "teb_remaining_path_length_threshold") {
+        teb_remaining_path_length_threshold_ = parameter.as_double();
       }
     }
 
