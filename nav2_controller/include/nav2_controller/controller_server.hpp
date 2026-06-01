@@ -300,6 +300,7 @@ private:
    * @brief Callback for TEB global plan messages
    * @param msg Shared pointer to nav_msgs::msg::Path
    */
+  void clearTebGlobalPlanCache();
   void tebGlobalPlanCallback(const nav_msgs::msg::Path::SharedPtr msg);
   bool stop = false;
   double goal_x,goal_y;

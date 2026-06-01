@@ -349,11 +349,7 @@ ControllerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   speed_limit_sub_.reset();
   teb_global_plan_sub_.reset();
   following_person_subscribe_.reset();
-  {
-    std::lock_guard<std::mutex> lock(teb_global_plan_mutex_);
-    teb_global_plan_.poses.clear();
-    teb_global_plan_received_ = false;
-  }
+  clearTebGlobalPlanCache();
 
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -430,6 +426,7 @@ void ControllerServer::computeControl()
       current_controller_ = current_controller;
     } else {
       action_server_->terminate_current();
+      clearTebGlobalPlanCache();
       return;
     }
 
@@ -439,6 +436,7 @@ void ControllerServer::computeControl()
       current_goal_checker_ = current_goal_checker;
     } else {
       action_server_->terminate_current();
+      clearTebGlobalPlanCache();
       return;
     }
 
@@ -450,6 +448,7 @@ void ControllerServer::computeControl()
     while (rclcpp::ok()) {
       if (action_server_ == nullptr || !action_server_->is_server_active()) {
         RCLCPP_DEBUG(get_logger(), "Action server unavailable or inactive. Stopping.");
+        clearTebGlobalPlanCache();
         return;
       }
 
@@ -457,6 +456,7 @@ void ControllerServer::computeControl()
         RCLCPP_INFO(get_logger(), "Goal was canceled. Stopping the robot.");
         action_server_->terminate_all();
         publishZeroVelocity();
+        clearTebGlobalPlanCache();
         return;
       }
       
@@ -491,6 +491,7 @@ void ControllerServer::computeControl()
   } catch (nav2_core::PlannerException & e) {
     RCLCPP_ERROR(this->get_logger(), e.what());
     publishZeroVelocity();
+    clearTebGlobalPlanCache();
     // action_server_->terminate_current();
     return;
   } catch (std::runtime_error & e) {
@@ -498,18 +499,21 @@ void ControllerServer::computeControl()
     publishZeroVelocity();
     std::shared_ptr<Action::Result> result = std::make_shared<Action::Result>();
     action_server_->terminate_current(result);
+    clearTebGlobalPlanCache();
     return;
   } catch (std::exception & e) {
     RCLCPP_ERROR(this->get_logger(), "%s", e.what());
     publishZeroVelocity();
     std::shared_ptr<Action::Result> result = std::make_shared<Action::Result>();
     action_server_->terminate_current(result);
+    clearTebGlobalPlanCache();
     return;
-  } 
+  }
 
   RCLCPP_DEBUG(get_logger(), "Controller succeeded, setting result");
 
   publishZeroVelocity();
+  clearTebGlobalPlanCache();
 
   // TODO(orduno) #861 Handle a pending preemption and set controller name
   action_server_->succeeded_current();
@@ -563,6 +567,8 @@ bool ControllerServer::isSameDirect(){
 
 void ControllerServer::setPlannerPath(const nav_msgs::msg::Path & path)
 {
+  clearTebGlobalPlanCache();
+
   RCLCPP_DEBUG(
     get_logger(),
     "Providing path to the controller %s", current_controller_.c_str());
@@ -903,6 +909,13 @@ void ControllerServer::speedLimitCallback(const nav2_msgs::msg::SpeedLimit::Shar
   for (it = controllers_.begin(); it != controllers_.end(); ++it) {
     it->second->setSpeedLimit(msg->speed_limit, msg->percentage);
   }
+}
+
+void ControllerServer::clearTebGlobalPlanCache()
+{
+  std::lock_guard<std::mutex> lock(teb_global_plan_mutex_);
+  teb_global_plan_.poses.clear();
+  teb_global_plan_received_ = false;
 }
 
 void ControllerServer::tebGlobalPlanCallback(const nav_msgs::msg::Path::SharedPtr msg)
