@@ -828,25 +828,8 @@ bool ControllerServer::isGoalReached()
     return false;
   }
 
-  // 计算剩余路径长度
-  auto find_closest_pose_idx =
-    [&pose](const nav_msgs::msg::Path & path) {
-      size_t closest_pose_idx = 0;
-      double curr_min_dist = std::numeric_limits<double>::max();
-      for (size_t curr_idx = 0; curr_idx < path.poses.size(); ++curr_idx) {
-        double curr_dist = nav2_util::geometry_utils::euclidean_distance(
-          pose, path.poses[curr_idx]);
-        if (curr_dist < curr_min_dist) {
-          curr_min_dist = curr_dist;
-          closest_pose_idx = curr_idx;
-        }
-      }
-      return closest_pose_idx;
-    };
-
-  size_t closest_idx = find_closest_pose_idx(current_path_);
-  double remaining_path_length = nav2_util::geometry_utils::calculate_path_length(
-    current_path_, closest_idx);
+  // 路径已在 updateGlobalPath / TEB 内实时裁剪，poses[0] 即为剩余段起点
+  double remaining_path_length = nav2_util::geometry_utils::calculate_path_length(current_path_);
 
   bool path_short_enough = remaining_path_length <= remaining_path_length_threshold_;
 
@@ -861,9 +844,8 @@ bool ControllerServer::isGoalReached()
     if (!teb_plan.poses.empty() &&
       (teb_plan.header.frame_id.empty() || teb_plan.header.frame_id == pose.header.frame_id))
     {
-      size_t teb_closest_idx = find_closest_pose_idx(teb_plan);
-      double teb_remaining_path_length = nav2_util::geometry_utils::calculate_path_length(
-        teb_plan, teb_closest_idx);
+      double teb_remaining_path_length =
+        nav2_util::geometry_utils::calculate_path_length(teb_plan);
       if (teb_remaining_path_length <= teb_remaining_path_length_threshold_) {
         path_short_enough = true;
       }
