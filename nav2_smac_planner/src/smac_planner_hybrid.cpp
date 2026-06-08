@@ -914,6 +914,12 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   }
 
   if (!error.empty()) {
+    static const std::string kStartLethalMsg =
+      "Starting point in lethal space! Cannot create feasible plan.";
+    if (error == ("invalid use: " + kStartLethalMsg)) {
+      throw std::runtime_error(kStartLethalMsg);
+    }
+
     RCLCPP_WARN(
       _logger,
       "%s: failed to create plan, %s.",

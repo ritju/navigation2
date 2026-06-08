@@ -506,7 +506,7 @@ PlannerServer::computePlanThroughPoses()
             goal->planner_id.c_str(), curr_goal.pose.position.x,
             curr_goal.pose.position.y, ex.what());
 
-          // Recovery: if smac throws start-occupied/lethal-start, drop the last point from
+          // Recovery: if smac throws start-occupied or lethal-start, drop the last point from
           // concat_path (the next segment's start), update curr_start, and retry planning.
           const std::string ex_msg(ex.what());
           if ((ex_msg == start_occupied_msg || ex_msg == start_lethal_msg) &&
@@ -521,6 +521,9 @@ PlannerServer::computePlanThroughPoses()
               curr_start = start;
             }
             start_occupied_retries++;
+            RCLCPP_WARN(
+              get_logger(),
+              "[computePlanThroughPoses] Recovery: smac throws start-occupied or lethal-start, drop the last point from concat_path, start_occupied_retries: %d", start_occupied_retries);
             continue;
           }
 
