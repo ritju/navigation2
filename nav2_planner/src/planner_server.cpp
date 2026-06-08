@@ -489,6 +489,8 @@ PlannerServer::computePlanThroughPoses()
       static constexpr int kMaxStartOccupiedRetries = 50;
       int start_occupied_retries = 0;
       const std::string start_occupied_msg = "Cannot generate a plan, start is occupied!";
+      const std::string start_lethal_msg =
+        "Starting point in lethal space! Cannot create feasible plan.";
       while (rclcpp::ok()) {
         if (!transformPosesToGlobalFrame(action_server_poses_, curr_start, curr_goal)) {
           return;
@@ -504,9 +506,10 @@ PlannerServer::computePlanThroughPoses()
             goal->planner_id.c_str(), curr_goal.pose.position.x,
             curr_goal.pose.position.y, ex.what());
 
-          // Recovery: if smac throws "start is occupied", drop the last point from concat_path
-          // (the next segment's start), update curr_start, and retry planning for the same goal.
-          if (std::string(ex.what()) == start_occupied_msg &&
+          // Recovery: if smac throws start-occupied/lethal-start, drop the last point from
+          // concat_path (the next segment's start), update curr_start, and retry planning.
+          const std::string ex_msg(ex.what());
+          if ((ex_msg == start_occupied_msg || ex_msg == start_lethal_msg) &&
             start_occupied_retries < kMaxStartOccupiedRetries &&
             !concat_path.poses.empty())
           {
