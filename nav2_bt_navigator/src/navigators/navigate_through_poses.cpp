@@ -48,6 +48,12 @@ NavigateThroughPosesNavigator::configure(
 
   prune_path_blackboard_id_ = node->get_parameter("prune_path_blackboard_id_").as_string();
 
+  rclcpp::QoS mission_poses_qos(rclcpp::KeepLast(1));
+  mission_poses_qos.transient_local();
+  mission_poses_qos.reliable();
+  mission_poses_publisher_ = node->create_publisher<nav_msgs::msg::Path>(
+    "mission_poses", mission_poses_qos);
+
   // Odometry smoother object for getting current speed
   odom_smoother_ = odom_smoother;
   return true;
@@ -233,6 +239,13 @@ NavigateThroughPosesNavigator::initializeGoalPoses(ActionT::Goal::ConstSharedPtr
   }
   blackboard->set<Goals>(goals_blackboard_id_, add_pose_index_poses);
   blackboard->set<Goals>(std::string("gpp_goals"), Goals{});
+  nav_msgs::msg::Path mission_poses_message;
+  mission_poses_message.header.stamp = current_time;
+  if (!add_pose_index_poses.empty()) {
+    mission_poses_message.header.frame_id = add_pose_index_poses.front().header.frame_id;
+  }
+  mission_poses_message.poses = add_pose_index_poses;
+  mission_poses_publisher_->publish(mission_poses_message);
   nav_msgs::msg::Path empty_prune_path;
   empty_prune_path.poses.clear();
   blackboard->set<nav_msgs::msg::Path>(prune_path_blackboard_id_, empty_prune_path);
