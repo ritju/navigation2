@@ -512,6 +512,8 @@ void CollisionMonitor::process(const Velocity & cmd_vel_in)
           } else {
             local_plan_collision_stop_latched_ = false;
           }
+        } else if (local_plan_collision_stop_latched_){
+          local_plan_collision_stop_latched_ = false;
         }
       } else {
         if (local_plan_collision_stop_latched_) {
