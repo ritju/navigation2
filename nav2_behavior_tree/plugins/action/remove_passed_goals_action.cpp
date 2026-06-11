@@ -81,7 +81,32 @@ RemovePassedGoals::RemovePassedGoals(
     std::bind(&RemovePassedGoals::handleReceivedOdometry, this, std::placeholders::_1),
     subscription_options_exclusive);
 
+  rclcpp::QoS qos_enable_backward(rclcpp::KeepLast(1));
+  qos_enable_backward.transient_local();
+  qos_enable_backward.reliable();
+  publisher_enable_backward_ = node->create_publisher<std_msgs::msg::Bool>(
+    "/enable_backward", qos_enable_backward);
+
   clock_timestamp_last_valid_teb_plan_message_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+}
+
+void RemovePassedGoals::publishEnableBackwardIfChanged(bool desired_backward)
+{
+  if (!publisher_enable_backward_) {
+    return;
+  }
+  if (has_published_enable_backward_ && desired_backward == last_published_enable_backward_) {
+    return;
+  }
+  std_msgs::msg::Bool msg;
+  msg.data = desired_backward;
+  publisher_enable_backward_->publish(msg);
+  last_published_enable_backward_ = desired_backward;
+  has_published_enable_backward_ = true;
+  RCLCPP_INFO(
+    node->get_logger(),
+    "[RemovePassedGoals] /enable_backward published: %s",
+    desired_backward ? "true (backward)" : "false (forward)");
 }
 
 uint32_t RemovePassedGoals::missionPoseGoalIndexFromPoseZ(const geometry_msgs::msg::PoseStamped & pose_stamped_goal)
@@ -357,6 +382,9 @@ BT::NodeStatus RemovePassedGoals::tick()
     last_emitted_gpp_front_stamp_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
     setOutput("output_gpp_goals", Goals{});
     setOutput("output_goals", Goals{});
+    if (has_published_enable_backward_ && last_published_enable_backward_) {
+      publishEnableBackwardIfChanged(false);
+    }
     return BT::NodeStatus::SUCCESS;
   }
 
@@ -387,6 +415,10 @@ BT::NodeStatus RemovePassedGoals::tick()
     emitted_gpp_goal_stamp_by_mission_index_z_.clear();
     last_emitted_gpp_front_stamp_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
   }
+
+  bool enable_backward_mode = false;
+  getInput("enable_backward_mode", enable_backward_mode);
+  publishEnableBackwardIfChanged(enable_backward_mode);
 
   Goals & mission_goal_queue_mutable_ref = mission_goal_queue_internal_;
 

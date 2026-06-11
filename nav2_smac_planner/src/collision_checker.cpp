@@ -105,24 +105,17 @@ bool GridCollisionChecker::inCollision(
   costmap_->mapToWorld(static_cast<double>(x), static_cast<double>(y), wx, wy);
 
   if (!footprint_is_radius_) {
-    // If its inscribed, in collision, or unknown in the middle,
-    // no need to even check the footprint, its invalid
-
     footprint_cost_ = static_cast<float>(costmap_->getCost(
-    static_cast<unsigned int>(x + 0.5f), static_cast<unsigned int>(y + 0.5f)));
+      static_cast<unsigned int>(x + 0.5f), static_cast<unsigned int>(y + 0.5f)));
 
-    if (footprint_cost_  < possible_inscribed_cost_) {
-      if (possible_inscribed_cost_ > 0) {
-        return false;
-      } else {
-        RCLCPP_ERROR_THROTTLE(
-          logger_, *clock_, 1000,
-          "Inflation layer either not found or inflation is not set sufficiently for "
-          "optimized non-circular collision checking capabilities. It is HIGHLY recommended to set"
-          " the inflation radius to be at MINIMUM half of the robot's largest cross-section. See "
-          "github.com/ros-planning/navigation2/tree/main/nav2_smac_planner#potential-fields"
-          " for full instructions. This will substantially impact run-time performance.");
-      }
+    if (possible_inscribed_cost_ <= 0) {
+      RCLCPP_ERROR_THROTTLE(
+        logger_, *clock_, 1000,
+        "Inflation layer either not found or inflation is not set sufficiently for "
+        "non-circular collision checking. It is HIGHLY recommended to set the inflation "
+        "radius to be at MINIMUM half of the robot's largest cross-section. See "
+        "github.com/ros-planning/navigation2/tree/main/nav2_smac_planner#potential-fields "
+        "for full instructions.");
     }
 
     if (footprint_cost_ == UNKNOWN && !traverse_unknown) {
@@ -132,7 +125,8 @@ bool GridCollisionChecker::inCollision(
     if (footprint_cost_ == INSCRIBED || footprint_cost_ == OCCUPIED) {
       return true;
     }
-    // if possible inscribed, need to check actual footprint pose.
+
+    // Always check the oriented footprint, even when the center cell cost is low.
     // Use precomputed oriented footprints are done on initialization,
     // offset by translation value to collision check
     geometry_msgs::msg::Point new_pt;

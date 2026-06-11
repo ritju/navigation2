@@ -125,6 +125,17 @@ void AStarAlgorithm<NodeT>::setCollisionChecker(GridCollisionChecker * collision
 }
 
 template<typename NodeT>
+void AStarAlgorithm<NodeT>::setMotionModel(const MotionModel & motion_model)
+{
+  _motion_model = motion_model;
+  _expander = std::make_unique<AnalyticExpansion<NodeT>>(
+    _motion_model, _search_info, _traverse_unknown, _dim3_size);
+  if (_collision_checker) {
+    _expander->setCollisionChecker(_collision_checker);
+  }
+}
+
+template<typename NodeT>
 typename AStarAlgorithm<NodeT>::NodePtr AStarAlgorithm<NodeT>::addToGraph(
   const unsigned int & index)
 {

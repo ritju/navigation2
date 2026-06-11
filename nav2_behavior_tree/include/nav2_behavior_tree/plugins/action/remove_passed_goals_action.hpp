@@ -28,6 +28,7 @@
 #include "behaviortree_cpp_v3/action_node.h"
 #include "nav_msgs/msg/path.hpp"
 #include "nav_msgs/msg/odometry.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "tf2_ros/buffer.h"
 #include "capella_ros_msg/msg/passed_poses_index.hpp"
@@ -92,6 +93,8 @@ public:
       BT::InputPort<double>("passed_goal_distance_threshold", -1.0,
         "When >0: only append indexes to passed_pose_indexes if robot distance to that goal (m) is strictly "
         "less than this; when <=0, no extra distance gate on recording"),
+      BT::InputPort<bool>("enable_backward_mode", false,
+        "true: backward driving; false: forward. Publishes /enable_backward on state change only"),
     };
   }
 
@@ -130,6 +133,8 @@ private:
     Goals & gpp_goals,
     const rclcpp::Time & clock_now,
     bool assign_fresh_stamp_on_advance);
+  /** Publish /enable_backward only when desired state differs from last published. */
+  void publishEnableBackwardIfChanged(bool desired_backward);
 
   rclcpp::Node::SharedPtr node;
   std::shared_ptr<tf2_ros::Buffer> tf_;
@@ -137,6 +142,7 @@ private:
   rclcpp::executors::SingleThreadedExecutor callback_executor_exclusive_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr publisher_removed_plan_debug_;
   rclcpp::Publisher<capella_ros_msg::msg::PassedPosesIndex>::SharedPtr publisher_passed_pose_indexes_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr publisher_enable_backward_;
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr subscriber_teb_global_plan_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr subscriber_odometry_;
 
@@ -176,6 +182,9 @@ private:
   rclcpp::Time last_emitted_gpp_front_stamp_{0, 0, RCL_ROS_TIME};
 
   double previous_goal_queue_front_stamp_seconds_{0.0};
+
+  bool last_published_enable_backward_{false};
+  bool has_published_enable_backward_{false};
 };
 
 }  // namespace nav2_behavior_tree

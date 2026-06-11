@@ -109,6 +109,7 @@
       <input_port name="pass_check_min_odom_linear_x_mps">If &gt;=0, skip stripping when |odom vx| below this (m/s); &lt;0 disables</input_port>
       <input_port name="gpp_goal_pose_match_xy_m">When syncing output_gpp_goals to internal mission goals: max XY distance (m) to treat poses as the same point</input_port>
       <input_port name="gpp_goal_pose_match_yaw_rad">Pose match: max |delta yaw| (rad); if &lt;0, XY only</input_port>
+      <input_port name="enable_backward_mode" default="false">true: backward; false: forward. Publishes /enable_backward on state change only</input_port>
       <output_port name="output_goals">Goals after passed-point stripping; mirrors current mission queue for downstream nodes</output_port>
       <output_port name="output_gpp_goals">GPP window; between full emits, pruned so any point not still present in mission goals (pose match) is removed</output_port>
     </Action>

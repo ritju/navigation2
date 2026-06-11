@@ -430,6 +430,10 @@ void SmacPlannerHybrid::configure(
   node->get_parameter(name + ".max_planning_time", _max_planning_time);
 
   nav2_util::declare_parameter_if_not_declared(
+    node, name + ".enable_straight_expand", rclcpp::ParameterValue(true));
+  node->get_parameter(name + ".enable_straight_expand", _enable_straight_expand);
+  _enable_straight_expand_initial = _enable_straight_expand;
+  nav2_util::declare_parameter_if_not_declared(
     node, name + ".enable_close_range_roi_budget", rclcpp::ParameterValue(false));
   node->get_parameter(name + ".enable_close_range_roi_budget", _enable_close_range_roi_budget);
   nav2_util::declare_parameter_if_not_declared(
@@ -504,7 +508,9 @@ void SmacPlannerHybrid::configure(
     _costmap_ros->getUseRadius(),
     findCircumscribedCost(_costmap_ros));
 
-  // Initialize A* template
+  // 默认非窄通道：DUBIN（禁止倒车），并预计算两套启发式缓存供运行时切换
+  _motion_model = MotionModel::DUBIN;
+  _use_reeds_for_planning = false;
   _a_star = std::make_unique<AStarAlgorithm<NodeHybrid>>(_motion_model, _search_info);
   _a_star->initialize(
     _allow_unknown,
@@ -513,6 +519,8 @@ void SmacPlannerHybrid::configure(
     _max_planning_time,
     _lookup_table_dim,
     _angle_quantizations);
+  buildMotionModelCaches();
+  applyMotionModel(MotionModel::DUBIN);
 
   // Initialize path smoother
   if (smooth_path) {
@@ -533,6 +541,22 @@ void SmacPlannerHybrid::configure(
   _raw_plan_publisher = node->create_publisher<nav_msgs::msg::Path>("unsmoothed_plan", 1);
   _roi_connectivity_path_publisher =
     node->create_publisher<nav_msgs::msg::Path>("roi_connectivity_path", 1);
+
+  // 订阅狭窄通道区域（TransientLocal：晚启动的节点也能收到最近一次发布）
+  _narrow_passages_sub = node->create_subscription<garage_utils_msgs::msg::Polygons>(
+    "/narrow_passages",
+    rclcpp::QoS(1).transient_local().reliable(),
+    std::bind(&SmacPlannerHybrid::narrowPassagesCallback, this, _1));
+  _enable_backward_sub = node->create_subscription<std_msgs::msg::Bool>(
+    "/enable_backward",
+    rclcpp::QoS(1).transient_local().reliable(),
+    std::bind(&SmacPlannerHybrid::enableBackwardCallback, this, _1));
+  RCLCPP_INFO(
+    _logger,
+    "狭窄通道: 已订阅 /narrow_passages，默认非窄通道模式(DUBIN)，"
+    "enable_straight_expand 初始值=%s",
+    _enable_straight_expand_initial ? "true" : "false");
+  RCLCPP_INFO(_logger, "已订阅 /enable_backward，true 时强制 REEDS_SHEPP 倒车规划");
 
   RCLCPP_INFO(
     _logger, "Configured plugin %s of type SmacPlannerHybrid with "
@@ -585,6 +609,228 @@ void SmacPlannerHybrid::cleanup()
   }
   _raw_plan_publisher.reset();
   _roi_connectivity_path_publisher.reset();
+  _narrow_passages_sub.reset();
+  _enable_backward_sub.reset();
+  _narrow_polygons.clear();
+  _narrow_polygons_received = false;
+  _latched_narrow_passage = false;
+  _use_reeds_for_planning = false;
+  _motion_model_caches_built = false;
+  {
+    std::lock_guard<std::mutex> lock(_enable_backward_mutex);
+    _enable_backward_cmd_ = false;
+    _enable_backward_cmd_received_ = false;
+  }
+}
+
+// =============================================================================
+// 狭窄通道全局规划：订阅 /narrow_passages，按 latch 切换 DUBIN / REEDS_SHEPP
+// =============================================================================
+
+void SmacPlannerHybrid::enableBackwardCallback(const std_msgs::msg::Bool::SharedPtr msg)
+{
+  if (!msg) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(_enable_backward_mutex);
+  _enable_backward_cmd_ = msg->data;
+  _enable_backward_cmd_received_ = true;
+  RCLCPP_INFO(
+    _logger,
+    "/enable_backward: %s（%s）",
+    msg->data ? "true" : "false",
+    msg->data ? "强制倒车 REEDS_SHEPP" : "回退窄通道判断");
+}
+
+void SmacPlannerHybrid::narrowPassagesCallback(
+  const garage_utils_msgs::msg::Polygons::SharedPtr msg)
+{
+  std::lock_guard<std::mutex> lock(_narrow_polygons_mutex);
+  _narrow_polygons_received = true;
+  _narrow_polygons = msg->polygons;
+  if (_narrow_polygons.empty()) {
+    _latched_narrow_passage = false;
+    RCLCPP_WARN(
+      _logger,
+      "狭窄通道: 收到空的 /narrow_passages，切换为非窄通道模式(DUBIN)");
+  } else {
+    RCLCPP_INFO(
+      _logger,
+      "狭窄通道: 更新 /narrow_passages，多边形数量=%zu",
+      _narrow_polygons.size());
+  }
+}
+
+bool SmacPlannerHybrid::narrowPolygonsAvailable() const
+{
+  std::lock_guard<std::mutex> lock(_narrow_polygons_mutex);
+  return _narrow_polygons_received && !_narrow_polygons.empty();
+}
+
+bool SmacPlannerHybrid::isPointInNarrowPassage(const double x, const double y) const
+{
+  // 射线法判断点是否在多边形内
+  std::lock_guard<std::mutex> lock(_narrow_polygons_mutex);
+  for (const auto & polygon : _narrow_polygons) {
+    if (polygon.points.size() < 3) {
+      continue;
+    }
+    bool inside = false;
+    size_t j = polygon.points.size() - 1;
+    for (size_t i = 0; i < polygon.points.size(); ++i) {
+      const auto & pi = polygon.points[i];
+      const auto & pj = polygon.points[j];
+      const bool intersect =
+        ((pi.y > y) != (pj.y > y)) &&
+        (x < (pj.x - pi.x) * (y - pi.y) / (pj.y - pi.y + 1e-9) + pi.x);
+      if (intersect) {
+        inside = !inside;
+      }
+      j = i;
+    }
+    if (inside) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool SmacPlannerHybrid::isFootprintFullyOutsideNarrowPassages(
+  const geometry_msgs::msg::PoseStamped & pose) const
+{
+  std::lock_guard<std::mutex> lock(_narrow_polygons_mutex);
+  if (!_narrow_polygons_received || _narrow_polygons.empty()) {
+    return true;
+  }
+  const double yaw = tf2::getYaw(pose.pose.orientation);
+  const double cos_y = std::cos(yaw);
+  const double sin_y = std::sin(yaw);
+  const nav2_costmap_2d::Footprint footprint = _costmap_ros->getRobotFootprint();
+  for (const auto & pt : footprint) {
+    const double wx = pose.pose.position.x + pt.x * cos_y - pt.y * sin_y;
+    const double wy = pose.pose.position.y + pt.x * sin_y + pt.y * cos_y;
+    for (const auto & polygon : _narrow_polygons) {
+      if (polygon.points.size() < 3) {
+        continue;
+      }
+      bool inside = false;
+      size_t j = polygon.points.size() - 1;
+      for (size_t i = 0; i < polygon.points.size(); ++i) {
+        const auto & pi = polygon.points[i];
+        const auto & pj = polygon.points[j];
+        const bool intersect =
+          ((pi.y > wy) != (pj.y > wy)) &&
+          (wx < (pj.x - pi.x) * (wy - pi.y) / (pj.y - pi.y + 1e-9) + pi.x);
+        if (intersect) {
+          inside = !inside;
+        }
+        j = i;
+      }
+      if (inside) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+void SmacPlannerHybrid::updateNarrowPassageLatch(const geometry_msgs::msg::PoseStamped & start)
+{
+  const bool prev_latched = _latched_narrow_passage;
+  if (!narrowPolygonsAvailable()) {
+    _latched_narrow_passage = false;
+    if (prev_latched) {
+      RCLCPP_INFO(
+        _logger,
+        "狭窄通道: 无有效多边形，Latch 由 true 置 false（非窄通道模式）");
+    }
+    return;
+  }
+  // 进入条件（宽松）：base_link 中心点落入任一狭窄多边形
+  if (isPointInNarrowPassage(start.pose.position.x, start.pose.position.y)) {
+    _latched_narrow_passage = true;
+    if (!prev_latched) {
+      RCLCPP_INFO(
+        _logger,
+        "狭窄通道: base_link (%.2f, %.2f) 进入窄通道，Latch 置 true",
+        start.pose.position.x, start.pose.position.y);
+    }
+    return;
+  }
+  // 退出条件（严格）：footprint 全部顶点均在所有多边形外
+  if (isFootprintFullyOutsideNarrowPassages(start)) {
+    _latched_narrow_passage = false;
+    if (prev_latched) {
+      RCLCPP_INFO(
+        _logger,
+        "狭窄通道: footprint 完全离开窄通道，Latch 由 true 置 false");
+    }
+  }
+  // 否则保持 latch 不变（例如 base_link 已出但车尾仍在通道内）
+}
+
+bool SmacPlannerHybrid::isNarrowPassagePlanningActive(
+  const geometry_msgs::msg::PoseStamped & start,
+  const geometry_msgs::msg::PoseStamped & goal) const
+{
+  (void)start;
+  if (!narrowPolygonsAvailable()) {
+    return false;
+  }
+  return _latched_narrow_passage ||
+         isPointInNarrowPassage(goal.pose.position.x, goal.pose.position.y);
+}
+
+void SmacPlannerHybrid::buildMotionModelCaches()
+{
+  unsigned int size_x = _costmap->getSizeInCellsX();
+  unsigned int size_y = _costmap->getSizeInCellsY();
+  unsigned int angle_quantizations = _angle_quantizations;
+  SearchInfo search_info = _search_info;
+
+  NodeHybrid::initMotionModel(
+    MotionModel::DUBIN, size_x, size_y, angle_quantizations, search_info);
+  NodeHybrid::precomputeDistanceHeuristic(
+    _lookup_table_dim, MotionModel::DUBIN, angle_quantizations, search_info);
+  _dubin_dist_heuristic_cache = NodeHybrid::dist_heuristic_lookup_table;
+  _dubin_size_lookup_cache = NodeHybrid::size_lookup;
+
+  NodeHybrid::initMotionModel(
+    MotionModel::REEDS_SHEPP, size_x, size_y, angle_quantizations, search_info);
+  NodeHybrid::precomputeDistanceHeuristic(
+    _lookup_table_dim, MotionModel::REEDS_SHEPP, angle_quantizations, search_info);
+  _reeds_dist_heuristic_cache = NodeHybrid::dist_heuristic_lookup_table;
+  _reeds_size_lookup_cache = NodeHybrid::size_lookup;
+
+  _motion_model_caches_built = true;
+  RCLCPP_INFO(
+    _logger,
+    "狭窄通道: 已预计算 DUBIN / REEDS_SHEPP 两套距离启发式缓存 "
+    "(lookup_dim=%.0f, angle_bins=%u)",
+    _lookup_table_dim, _angle_quantizations);
+}
+
+void SmacPlannerHybrid::applyMotionModel(const MotionModel motion_model)
+{
+  // 从预计算缓存切换运动模型，避免每次 createPlan 重算启发式表
+  if (!_motion_model_caches_built || !_a_star) {
+    return;
+  }
+  unsigned int size_x = _costmap->getSizeInCellsX();
+  unsigned int size_y = _costmap->getSizeInCellsY();
+  unsigned int angle_quantizations = _angle_quantizations;
+  SearchInfo search_info = _search_info;
+  NodeHybrid::initMotionModel(motion_model, size_x, size_y, angle_quantizations, search_info);
+  if (motion_model == MotionModel::DUBIN) {
+    NodeHybrid::dist_heuristic_lookup_table = _dubin_dist_heuristic_cache;
+    NodeHybrid::size_lookup = _dubin_size_lookup_cache;
+  } else {
+    NodeHybrid::dist_heuristic_lookup_table = _reeds_dist_heuristic_cache;
+    NodeHybrid::size_lookup = _reeds_size_lookup_cache;
+  }
+  NodeHybrid::travel_distance_cost = NodeHybrid::motion_table.projections[0]._x;
+  _motion_model = motion_model;
+  _a_star->setMotionModel(motion_model);
 }
 
 nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
@@ -595,6 +841,45 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   steady_clock::time_point a = steady_clock::now();
 
   std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*(_costmap->getMutex()));
+
+  // --- 狭窄通道 / enable_backward：更新 latch 并按需切换运动模型 ---
+  updateNarrowPassageLatch(start);
+  const bool narrow_active = isNarrowPassagePlanningActive(start, goal);
+  const bool goal_in_narrow = narrowPolygonsAvailable() &&
+    isPointInNarrowPassage(goal.pose.position.x, goal.pose.position.y);
+  bool enable_backward_cmd = false;
+  bool enable_backward_cmd_received = false;
+  {
+    std::lock_guard<std::mutex> lock(_enable_backward_mutex);
+    enable_backward_cmd = _enable_backward_cmd_;
+    enable_backward_cmd_received = _enable_backward_cmd_received_;
+  }
+  const bool use_reeds = (enable_backward_cmd_received && enable_backward_cmd) ?
+    true : narrow_active;
+  if (use_reeds != _use_reeds_for_planning) {
+    applyMotionModel(use_reeds ? MotionModel::REEDS_SHEPP : MotionModel::DUBIN);
+    _use_reeds_for_planning = use_reeds;
+    RCLCPP_INFO(
+      _logger,
+      "运动模型切换为 %s（倒车=%s，来源=%s）",
+      use_reeds ? "REEDS_SHEPP" : "DUBIN",
+      use_reeds ? "是" : "否",
+      (enable_backward_cmd_received && enable_backward_cmd) ? "/enable_backward" :
+      (narrow_active ? "narrow_passage" : "default"));
+  }
+  const bool backward_planning_active = enable_backward_cmd_received && enable_backward_cmd;
+  _enable_straight_expand = (backward_planning_active || narrow_active) ?
+    false : _enable_straight_expand_initial;
+  RCLCPP_INFO_THROTTLE(
+    _logger, *_clock, 2000,
+    "规划模式: enable_backward=%s narrow_active=%s latched=%s goal_in=%s "
+    "straight_expand=%s model=%s",
+    backward_planning_active ? "是" : "否",
+    narrow_active ? "是" : "否",
+    _latched_narrow_passage ? "是" : "否",
+    goal_in_narrow ? "是" : "否",
+    _enable_straight_expand ? "是" : "否",
+    _use_reeds_for_planning ? "REEDS_SHEPP" : "DUBIN");
 
   // Downsample costmap, if required
   nav2_costmap_2d::Costmap2D * costmap = _costmap;
@@ -710,112 +995,111 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   goal_pose2d.y = goal_with_tolerance.pose.position.y;
   goal_pose2d.theta = tf2::getYaw(goal_with_tolerance.pose.orientation);
 
-  double yaw = atan2(goal_pose2d.y-start_pose2d.y, goal_pose2d.x-start_pose2d.x);
-  tf2::Quaternion quat;
-  quat.setRPY(0, 0, yaw);
+  if (_enable_straight_expand) {
+    double yaw = atan2(goal_pose2d.y - start_pose2d.y, goal_pose2d.x - start_pose2d.x);
+    tf2::Quaternion quat;
+    quat.setRPY(0, 0, yaw);
 
-  // Setup message
-  pose.pose.orientation.x = quat.x();
-  pose.pose.orientation.y = quat.y();
-  pose.pose.orientation.z = quat.z();
-  pose.pose.orientation.w = quat.w();
-  
-  double goal_footprint_cost = 0.0; 
+    // Setup message
+    pose.pose.orientation.x = quat.x();
+    pose.pose.orientation.y = quat.y();
+    pose.pose.orientation.z = quat.z();
+    pose.pose.orientation.w = quat.w();
 
-  // 检查从起点方向旋转至终点方向是否会碰撞，如果会碰撞，跳过生成直线路径
-  double start_theta = tf2::getYaw(start.pose.orientation);
-  double goal_theta = tf2::getYaw(goal_with_tolerance.pose.orientation);
+    double goal_footprint_cost = 0.0;
 
-  double diff_theta = goal_theta - start_theta;
-  diff_theta = std::fmod(diff_theta, 2 * M_PI);            // 取模到 (-2π, 2π)
-  if (diff_theta > M_PI)
-  {
-    diff_theta -= 2 * M_PI;
-  } else if(diff_theta < -M_PI)
-  {
-    diff_theta += 2 * M_PI;
-  }
-  double step = diff_theta < 0 ? -0.087 : 0.087;  // 设置步长为5度
+    // 检查从起点方向旋转至终点方向是否会碰撞，如果会碰撞，跳过生成直线路径
+    double start_theta = tf2::getYaw(start.pose.orientation);
+    double goal_theta = tf2::getYaw(goal_with_tolerance.pose.orientation);
 
-  for (size_t i = 1 ; i < floor(fabs(diff_theta / step)); ++i) {
-    geometry_msgs::msg::Pose2D pose2d;
-    pose2d.x = start.pose.position.x;
-    pose2d.y = start.pose.position.y;
-    if (start_theta + step * i > M_PI) {
-      pose2d.theta = start_theta + step * i - 2 * M_PI;  // 将角度限制在 (-π, π)
-    } else if (start_theta + step * i < -M_PI) {
-      pose2d.theta = start_theta + step * i + 2 * M_PI;  // 将角度限制在 (-π, π)
-    } else {
-      pose2d.theta = start_theta + step * i;
+    double diff_theta = goal_theta - start_theta;
+    diff_theta = std::fmod(diff_theta, 2 * M_PI);            // 取模到 (-2π, 2π)
+    if (diff_theta > M_PI) {
+      diff_theta -= 2 * M_PI;
+    } else if (diff_theta < -M_PI) {
+      diff_theta += 2 * M_PI;
     }
-    double footprint_cost = 0.0;
-    footprint_cost = _collision_checker.footprintCostAtPose(pose2d.x, pose2d.y, pose2d.theta, check_footprint);
-    if (footprint_cost == nav2_costmap_2d::LETHAL_OBSTACLE) {
-      RCLCPP_WARN(_logger, "Rotation to goal is occupied, jump to A* search!");
-      goto start_a_star;
-    }
-  }
-  
-  goal_footprint_cost = _collision_checker.footprintCostAtPose(goal_pose2d.x, goal_pose2d.y, yaw, check_footprint);
-  if (goal_footprint_cost != nav2_costmap_2d::LETHAL_OBSTACLE)
-  {
-    try
-    {
-      bool is_path_free = true;
-      double distance_start_to_goal = nav2_util::geometry_utils::euclidean_distance(start_pose2d, goal_pose2d);
-      for (double d = _costmap_resulution; d < distance_start_to_goal + _costmap_resulution; d += _costmap_resulution)
-      {
-            geometry_msgs::msg::Pose2D path_pose;
-            path_pose.theta = yaw;
-            find_pose(start_pose2d, goal_pose2d, d, path_pose);
-            geometry_msgs::msg::PoseStamped path_posestamped;
-            path_posestamped.header.frame_id = _global_frame;
-            path_posestamped.header.stamp = _clock->now();
-            path_posestamped.pose.position.x = path_pose.x;
-            path_posestamped.pose.position.y = path_pose.y;
-            path_posestamped.pose.orientation = getWorldOrientation(path_pose.theta);
-            if (d <= _costmap_resulution)
-            {
-              is_path_free = is_free(path_posestamped, costmap, _footprint_extend_back_x, -footprint_front_x_, _footprint_extend_y);
-            }
-            else if (d >= distance_start_to_goal - _costmap_resulution)
-            {
-              is_path_free = is_free(path_posestamped, costmap, -footprint_back_x_, -_footprint_extend_front_x, _footprint_extend_y);
-            }
-            else
-            {
-              is_path_free = is_free(path_posestamped, costmap, -footprint_back_x_, -footprint_front_x_, _footprint_extend_y);
-            }
-            if (is_path_free && d < distance_start_to_goal - _costmap_resulution)
-            {
-              pose.pose.position.x = path_pose.x;
-              pose.pose.position.y = path_pose.y;
-              plan.poses.emplace_back(pose);
-            }
-            else if (!is_path_free)
-            {
-              plan.poses.clear();
-              break;
-            }
+    double step = diff_theta < 0 ? -0.087 : 0.087;  // 设置步长为5度
+
+    for (size_t i = 1; i < floor(fabs(diff_theta / step)); ++i) {
+      geometry_msgs::msg::Pose2D pose2d;
+      pose2d.x = start.pose.position.x;
+      pose2d.y = start.pose.position.y;
+      if (start_theta + step * i > M_PI) {
+        pose2d.theta = start_theta + step * i - 2 * M_PI;  // 将角度限制在 (-π, π)
+      } else if (start_theta + step * i < -M_PI) {
+        pose2d.theta = start_theta + step * i + 2 * M_PI;  // 将角度限制在 (-π, π)
+      } else {
+        pose2d.theta = start_theta + step * i;
       }
-      if (is_path_free)
-      {
-        pose.pose = goal_with_tolerance.pose;
-        plan.poses.emplace_back(pose);
-        return plan;
+      double footprint_cost = 0.0;
+      footprint_cost = _collision_checker.footprintCostAtPose(
+        pose2d.x, pose2d.y, pose2d.theta, check_footprint);
+      if (footprint_cost == nav2_costmap_2d::LETHAL_OBSTACLE) {
+        RCLCPP_WARN(_logger, "Rotation to goal is occupied, jump to A* search!");
+        goto start_a_star;
       }
     }
-    catch (const nav2_costmap_2d::IllegalPoseException & e) {
-      RCLCPP_ERROR(_logger, "%s", e.what());
-    } catch (const nav2_costmap_2d::CollisionCheckerException & e) {
-      RCLCPP_ERROR(_logger, "%s", e.what());
-    } catch (const std::runtime_error & e) {
-      RCLCPP_ERROR(_logger, "%s", e.what());
-    } catch (...) {
-      RCLCPP_ERROR(_logger, "Failed to check pose score!");
+
+    goal_footprint_cost = _collision_checker.footprintCostAtPose(
+      goal_pose2d.x, goal_pose2d.y, yaw, check_footprint);
+    if (goal_footprint_cost != nav2_costmap_2d::LETHAL_OBSTACLE) {
+      try {
+        bool is_path_free = true;
+        double distance_start_to_goal =
+          nav2_util::geometry_utils::euclidean_distance(start_pose2d, goal_pose2d);
+        for (double d = _costmap_resulution;
+          d < distance_start_to_goal + _costmap_resulution;
+          d += _costmap_resulution)
+        {
+          geometry_msgs::msg::Pose2D path_pose;
+          path_pose.theta = yaw;
+          find_pose(start_pose2d, goal_pose2d, d, path_pose);
+          geometry_msgs::msg::PoseStamped path_posestamped;
+          path_posestamped.header.frame_id = _global_frame;
+          path_posestamped.header.stamp = _clock->now();
+          path_posestamped.pose.position.x = path_pose.x;
+          path_posestamped.pose.position.y = path_pose.y;
+          path_posestamped.pose.orientation = getWorldOrientation(path_pose.theta);
+          if (d <= _costmap_resulution) {
+            is_path_free = is_free(
+              path_posestamped, costmap, _footprint_extend_back_x, -footprint_front_x_,
+              _footprint_extend_y);
+          } else if (d >= distance_start_to_goal - _costmap_resulution) {
+            is_path_free = is_free(
+              path_posestamped, costmap, -footprint_back_x_, -_footprint_extend_front_x,
+              _footprint_extend_y);
+          } else {
+            is_path_free = is_free(
+              path_posestamped, costmap, -footprint_back_x_, -footprint_front_x_,
+              _footprint_extend_y);
+          }
+          if (is_path_free && d < distance_start_to_goal - _costmap_resulution) {
+            pose.pose.position.x = path_pose.x;
+            pose.pose.position.y = path_pose.y;
+            plan.poses.emplace_back(pose);
+          } else if (!is_path_free) {
+            plan.poses.clear();
+            break;
+          }
+        }
+        if (is_path_free) {
+          pose.pose = goal_with_tolerance.pose;
+          plan.poses.emplace_back(pose);
+          return plan;
+        }
+      } catch (const nav2_costmap_2d::IllegalPoseException & e) {
+        RCLCPP_ERROR(_logger, "%s", e.what());
+      } catch (const nav2_costmap_2d::CollisionCheckerException & e) {
+        RCLCPP_ERROR(_logger, "%s", e.what());
+      } catch (const std::runtime_error & e) {
+        RCLCPP_ERROR(_logger, "%s", e.what());
+      } catch (...) {
+        RCLCPP_ERROR(_logger, "Failed to check pose score!");
+      }
     }
   }
-  
+
   start_a_star:
   ScopedHybridAStarLimits limits_scope(_a_star.get(), _max_iterations, _max_planning_time);
   double smooth_budget_ceiling = _max_planning_time;
@@ -1171,6 +1455,11 @@ SmacPlannerHybrid::dynamicParametersCallback(std::vector<rclcpp::Parameter> para
       } else if (name == _name + ".allow_unknown") {
         reinit_a_star = true;
         _allow_unknown = parameter.as_bool();
+      } else if (name == _name + ".enable_straight_expand") {
+        _enable_straight_expand_initial = parameter.as_bool();
+        if (!_use_reeds_for_planning) {
+          _enable_straight_expand = _enable_straight_expand_initial;
+        }
       } else if (name == _name + ".enable_close_range_roi_budget") {
         _enable_close_range_roi_budget = parameter.as_bool();
       } else if (name == _name + ".cache_obstacle_heuristic") {
@@ -1266,6 +1555,9 @@ SmacPlannerHybrid::dynamicParametersCallback(std::vector<rclcpp::Parameter> para
         _max_planning_time,
         _lookup_table_dim,
         _angle_quantizations);
+      buildMotionModelCaches();
+      applyMotionModel(
+        _use_reeds_for_planning ? MotionModel::REEDS_SHEPP : MotionModel::DUBIN);
     }
 
     // Re-Initialize costmap downsampler

@@ -120,6 +120,12 @@ public:
   void setCollisionChecker(GridCollisionChecker * collision_checker);
 
   /**
+   * @brief Switch motion model and reinitialize analytic expansion
+   * @param motion_model Motion model to use for subsequent searches
+   */
+  void setMotionModel(const MotionModel & motion_model);
+
+  /**
    * @brief Set the goal for planning, as a node index
    * @param mx The node X index of the goal
    * @param my The node Y index of the goal

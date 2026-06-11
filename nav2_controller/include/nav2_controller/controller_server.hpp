@@ -302,6 +302,26 @@ private:
    */
   void clearTebGlobalPlanCache();
   void tebGlobalPlanCallback(const nav_msgs::msg::Path::SharedPtr msg);
+
+  void isPipesAndWiresInPathCallback(const std_msgs::msg::Bool::SharedPtr msg);
+  void backwardModeCallback(const std_msgs::msg::Bool::SharedPtr msg);
+  void cleaningToolFullyRetractedCallback(const std_msgs::msg::Bool::SharedPtr msg);
+  /** Gate cmd_vel when backward/avoidance active and cleaning tool not retracted. */
+  bool isVelocityPublishAllowed() const;
+
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr is_pipes_and_wires_in_path_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr backward_mode_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr cleaning_tool_fully_retracted_sub_;
+  mutable std::mutex velocity_gate_mutex_;
+  bool is_pipes_and_wires_in_path_{false};
+  bool backward_mode_{false};
+  bool cleaning_tool_fully_retracted_{true};
+  bool is_pipes_and_wires_received_{false};
+  bool backward_mode_received_{false};
+  bool cleaning_tool_received_{false};
+  /** Previous tick blocked by velocity gate; used to reset progress_checker on release. */
+  bool velocity_gate_blocking_prev_{false};
+
   bool stop = false;
   double goal_x,goal_y;
   bool follow_person_ = false;

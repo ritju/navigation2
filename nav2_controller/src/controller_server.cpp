@@ -277,7 +277,26 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   teb_global_plan_sub_ = create_subscription<nav_msgs::msg::Path>(
     teb_global_plan_topic_, rclcpp::QoS(rclcpp::KeepLast(1)),
     std::bind(&ControllerServer::tebGlobalPlanCallback, this, std::placeholders::_1));
-  
+
+  {
+    auto velocity_gate_qos = rclcpp::QoS(rclcpp::KeepLast(1));
+    velocity_gate_qos.transient_local();
+    velocity_gate_qos.reliable();
+    is_pipes_and_wires_in_path_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "/is_pipes_and_wires_in_path", velocity_gate_qos,
+      std::bind(&ControllerServer::isPipesAndWiresInPathCallback, this, std::placeholders::_1));
+    backward_mode_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "/backward_mode", velocity_gate_qos,
+      std::bind(&ControllerServer::backwardModeCallback, this, std::placeholders::_1));
+    cleaning_tool_fully_retracted_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "/cleaning_tool_fully_retracted", velocity_gate_qos,
+      std::bind(&ControllerServer::cleaningToolFullyRetractedCallback, this, std::placeholders::_1));
+    RCLCPP_INFO(
+      get_logger(),
+      "Subscribed velocity gate topics: /is_pipes_and_wires_in_path, /backward_mode, "
+      "/cleaning_tool_fully_retracted");
+  }
+
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
@@ -349,6 +368,19 @@ ControllerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   speed_limit_sub_.reset();
   teb_global_plan_sub_.reset();
   following_person_subscribe_.reset();
+  is_pipes_and_wires_in_path_sub_.reset();
+  backward_mode_sub_.reset();
+  cleaning_tool_fully_retracted_sub_.reset();
+  {
+    std::lock_guard<std::mutex> lock(velocity_gate_mutex_);
+    is_pipes_and_wires_in_path_ = false;
+    backward_mode_ = false;
+    cleaning_tool_fully_retracted_ = true;
+    is_pipes_and_wires_received_ = false;
+    backward_mode_received_ = false;
+    cleaning_tool_received_ = false;
+    velocity_gate_blocking_prev_ = false;
+  }
   clearTebGlobalPlanCache();
 
   return nav2_util::CallbackReturn::SUCCESS;
@@ -442,6 +474,7 @@ void ControllerServer::computeControl()
 
     setPlannerPath(action_server_->get_current_goal()->path);
     progress_checker_->reset();
+    velocity_gate_blocking_prev_ = false;
 
     last_valid_cmd_time_ = now();
     rclcpp::WallRate loop_rate(controller_frequency_);
@@ -683,6 +716,60 @@ bool ControllerServer::pruneGlobalPlan(const geometry_msgs::msg::PoseStamped& gl
   return true;
 }
 
+void ControllerServer::isPipesAndWiresInPathCallback(const std_msgs::msg::Bool::SharedPtr msg)
+{
+  if (!msg) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(velocity_gate_mutex_);
+  is_pipes_and_wires_in_path_ = msg->data;
+  is_pipes_and_wires_received_ = true;
+  RCLCPP_INFO(
+    get_logger(),
+    "/is_pipes_and_wires_in_path: %s",
+    msg->data ? "true (avoiding)" : "false (normal)");
+}
+
+void ControllerServer::backwardModeCallback(const std_msgs::msg::Bool::SharedPtr msg)
+{
+  if (!msg) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(velocity_gate_mutex_);
+  backward_mode_ = msg->data;
+  backward_mode_received_ = true;
+  RCLCPP_INFO(
+    get_logger(),
+    "/backward_mode: %s",
+    msg->data ? "true (backward)" : "false (forward)");
+}
+
+void ControllerServer::cleaningToolFullyRetractedCallback(const std_msgs::msg::Bool::SharedPtr msg)
+{
+  if (!msg) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(velocity_gate_mutex_);
+  cleaning_tool_fully_retracted_ = msg->data;
+  cleaning_tool_received_ = true;
+  RCLCPP_INFO(
+    get_logger(),
+    "/cleaning_tool_fully_retracted: %s",
+    msg->data ? "true" : "false");
+}
+
+bool ControllerServer::isVelocityPublishAllowed() const
+{
+  std::lock_guard<std::mutex> lock(velocity_gate_mutex_);
+  const bool need_gate = backward_mode_ || is_pipes_and_wires_in_path_;
+  if (!need_gate) {
+    return true;
+  }
+  const bool retracted_effective = cleaning_tool_received_ ?
+    cleaning_tool_fully_retracted_ : true;
+  return retracted_effective;
+}
+
 void ControllerServer::computeAndPublishVelocity()
 {
   geometry_msgs::msg::PoseStamped pose;
@@ -691,7 +778,17 @@ void ControllerServer::computeAndPublishVelocity()
     throw nav2_core::PlannerException("Failed to obtain robot pose");
   }
 
-  if (!progress_checker_->check(pose)) {
+  const bool velocity_publish_allowed = isVelocityPublishAllowed();
+
+  if (velocity_publish_allowed && velocity_gate_blocking_prev_) {
+    progress_checker_->reset();
+    RCLCPP_INFO(
+      get_logger(),
+      "[ControllerServer] 门控解除，progress_checker 基准已重置");
+  }
+  velocity_gate_blocking_prev_ = !velocity_publish_allowed;
+
+  if (velocity_publish_allowed && !progress_checker_->check(pose)) {
     throw nav2_core::PlannerException("Failed to make progress");
   }
 
@@ -755,7 +852,26 @@ void ControllerServer::computeAndPublishVelocity()
   action_server_->publish_feedback(feedback);
 
   RCLCPP_DEBUG(get_logger(), "Publishing velocity at time %.2f", now().seconds());
-  publishVelocity(cmd_vel_2d);
+  if (velocity_publish_allowed) {
+    publishVelocity(cmd_vel_2d);
+  } else {
+    publishZeroVelocity();
+    bool log_backward_mode = false;
+    bool log_pipes_wires = false;
+    bool log_retracted = true;
+    {
+      std::lock_guard<std::mutex> lock(velocity_gate_mutex_);
+      log_backward_mode = backward_mode_;
+      log_pipes_wires = is_pipes_and_wires_in_path_;
+      log_retracted = cleaning_tool_fully_retracted_;
+    }
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 2000,
+      "[ControllerServer] 等待清洁工具收起: backward_mode=%s pipes_wires=%s retracted=%s",
+      log_backward_mode ? "true" : "false",
+      log_pipes_wires ? "true" : "false",
+      log_retracted ? "true" : "false");
+  }
 }
 
 void ControllerServer::updateGlobalPath()

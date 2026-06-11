@@ -18,6 +18,7 @@
 #include <memory>
 #include <vector>
 #include <string>
+#include <mutex>
 
 #include "nav2_smac_planner/a_star.hpp"
 #include "nav2_smac_planner/smoother.hpp"
@@ -29,6 +30,8 @@
 #include "nav2_costmap_2d/costmap_2d_ros.hpp"
 #include "nav2_costmap_2d/costmap_2d.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "garage_utils_msgs/msg/polygons.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "nav2_util/lifecycle_node.hpp"
 #include "nav2_util/node_utils.hpp"
 #include "tf2/utils.h"
@@ -99,6 +102,34 @@ public:
                double footprint_extend_y,
                bool ignore_inscribed = false);
 
+private:
+  /** /narrow_passages 话题回调，更新狭窄通道多边形列表 */
+  void narrowPassagesCallback(const garage_utils_msgs::msg::Polygons::SharedPtr msg);
+  /** /enable_backward 话题回调，外部指令切换倒车/前进规划模式 */
+  void enableBackwardCallback(const std_msgs::msg::Bool::SharedPtr msg);
+  /** 预计算 DUBIN / REEDS_SHEPP 两套距离启发式缓存，供运行时快速切换 */
+  void buildMotionModelCaches();
+  /** 将指定运动模型及其启发式缓存应用到 NodeHybrid 与 A* */
+  void applyMotionModel(const MotionModel motion_model);
+  /**
+   * 更新狭窄通道 latch 状态：
+   * - 进入（宽松）：base_link 落在多边形内
+   * - 退出（严格）：footprint 全部顶点均在所有多边形外
+   * - 中间态：保持上一状态，避免边界抖动
+   */
+  void updateNarrowPassageLatch(const geometry_msgs::msg::PoseStamped & start);
+  /** 是否已收到非空的狭窄通道多边形 */
+  bool narrowPolygonsAvailable() const;
+  /** 判断 map 系下一点是否落在任一狭窄通道多边形内 */
+  bool isPointInNarrowPassage(double x, double y) const;
+  /** 判断 footprint 是否完全在所有狭窄通道多边形外 */
+  bool isFootprintFullyOutsideNarrowPassages(
+    const geometry_msgs::msg::PoseStamped & pose) const;
+  /** 本次全局规划是否启用窄通道模式（latch 或 goal 在通道内） */
+  bool isNarrowPassagePlanningActive(
+    const geometry_msgs::msg::PoseStamped & start,
+    const geometry_msgs::msg::PoseStamped & goal) const;
+
 protected:
   /**
    * @brief Callback executed when a paramter change is detected
@@ -134,6 +165,29 @@ protected:
   double _goal_close_to_obstacle_distance;
   double _footprint_extend_back_x, _footprint_extend_front_x, _footprint_extend_y, _costmap_resulution;
   double footprint_back_x_, footprint_front_x_;
+  /** 是否启用直线扩展捷径（窄通道内会被临时关闭） */
+  bool _enable_straight_expand{true};
+  /** 参数配置的直线扩展初始值（非窄通道模式恢复用） */
+  bool _enable_straight_expand_initial{true};
+  /** 狭窄通道 latch：进入宽松（base_link 在内），退出严格（footprint 全在外） */
+  bool _latched_narrow_passage{false};
+  /** 是否至少收到过一次 /narrow_passages 消息 */
+  bool _narrow_polygons_received{false};
+  /** 当前是否处于 REEDS_SHEPP 倒车规划模式 */
+  bool _use_reeds_for_planning{false};
+  /** DUBIN / REEDS 启发式缓存是否已构建 */
+  bool _motion_model_caches_built{false};
+  LookupTable _dubin_dist_heuristic_cache;
+  LookupTable _reeds_dist_heuristic_cache;
+  float _dubin_size_lookup_cache{0.0f};
+  float _reeds_size_lookup_cache{0.0f};
+  mutable std::mutex _narrow_polygons_mutex;
+  std::vector<geometry_msgs::msg::Polygon> _narrow_polygons;
+  rclcpp::Subscription<garage_utils_msgs::msg::Polygons>::SharedPtr _narrow_passages_sub;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr _enable_backward_sub;
+  mutable std::mutex _enable_backward_mutex;
+  bool _enable_backward_cmd_{false};
+  bool _enable_backward_cmd_received_{false};
   /** When enabled, shorten Hybrid-A* limits if ROI 8-connected weighted distance is below threshold. */
   bool _enable_close_range_roi_budget{false};
   double _close_range_roi_margin{5.0};
