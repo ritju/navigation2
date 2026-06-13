@@ -106,8 +106,22 @@ NavigateThroughPosesNavigator::goalReceived(ActionT::Goal::ConstSharedPtr goal)
 void
 NavigateThroughPosesNavigator::goalCompleted(
   typename ActionT::Result::SharedPtr /*result*/,
-  const nav2_behavior_tree::BtStatus /*final_bt_status*/)
+  const nav2_behavior_tree::BtStatus final_bt_status)
 {
+  RCLCPP_INFO(
+    logger_,
+    "Navigate through poses completed with status %d, publishing empty mission_poses",
+    static_cast<int>(final_bt_status));
+  publishEmptyMissionPoses();
+}
+
+void
+NavigateThroughPosesNavigator::publishEmptyMissionPoses()
+{
+  nav_msgs::msg::Path mission_poses_message;
+  mission_poses_message.header.stamp = clock_->now();
+  mission_poses_message.poses.clear();
+  mission_poses_publisher_->publish(mission_poses_message);
 }
 
 void

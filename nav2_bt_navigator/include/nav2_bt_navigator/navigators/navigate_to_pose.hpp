@@ -119,9 +119,12 @@ protected:
    */
   void initializeGoalPose(ActionT::Goal::ConstSharedPtr goal);
 
+  void publishEmptyMissionPoses();
+
   rclcpp::Time start_time_;
 
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr mission_poses_publisher_;
   rclcpp_action::Client<ActionT>::SharedPtr self_client_;
 
   std::string goal_blackboard_id_;

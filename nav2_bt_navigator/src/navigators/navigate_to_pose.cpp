@@ -51,6 +51,12 @@ NavigateToPoseNavigator::configure(
     "goal_pose",
     rclcpp::SystemDefaultsQoS(),
     std::bind(&NavigateToPoseNavigator::onGoalPoseReceived, this, std::placeholders::_1));
+
+  rclcpp::QoS mission_poses_qos(rclcpp::KeepLast(1));
+  mission_poses_qos.transient_local();
+  mission_poses_qos.reliable();
+  mission_poses_publisher_ = node->create_publisher<nav_msgs::msg::Path>(
+    "mission_poses", mission_poses_qos);
   return true;
 }
 
@@ -79,6 +85,7 @@ bool
 NavigateToPoseNavigator::cleanup()
 {
   goal_sub_.reset();
+  mission_poses_publisher_.reset();
   self_client_.reset();
   return true;
 }
@@ -103,8 +110,22 @@ NavigateToPoseNavigator::goalReceived(ActionT::Goal::ConstSharedPtr goal)
 void
 NavigateToPoseNavigator::goalCompleted(
   typename ActionT::Result::SharedPtr /*result*/,
-  const nav2_behavior_tree::BtStatus /*final_bt_status*/)
+  const nav2_behavior_tree::BtStatus final_bt_status)
 {
+  RCLCPP_INFO(
+    logger_,
+    "Navigate to pose completed with status %d, publishing empty mission_poses",
+    static_cast<int>(final_bt_status));
+  publishEmptyMissionPoses();
+}
+
+void
+NavigateToPoseNavigator::publishEmptyMissionPoses()
+{
+  nav_msgs::msg::Path mission_poses_message;
+  mission_poses_message.header.stamp = clock_->now();
+  mission_poses_message.poses.clear();
+  mission_poses_publisher_->publish(mission_poses_message);
 }
 
 void
@@ -215,6 +236,8 @@ NavigateToPoseNavigator::initializeGoalPose(ActionT::Goal::ConstSharedPtr goal)
 
   // Update the goal pose on the blackboard
   blackboard->set<geometry_msgs::msg::PoseStamped>(goal_blackboard_id_, goal->pose);
+
+  publishEmptyMissionPoses();
 }
 
 void

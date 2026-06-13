@@ -108,6 +108,8 @@ protected:
    */
   void initializeGoalPoses(ActionT::Goal::ConstSharedPtr goal);
 
+  void publishEmptyMissionPoses();
+
   rclcpp::Time start_time_;
   std::string goals_blackboard_id_;
   std::string path_blackboard_id_;
