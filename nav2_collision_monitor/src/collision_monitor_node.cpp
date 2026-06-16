@@ -692,9 +692,19 @@ std::optional<bool> CollisionMonitor::processLocalPlanCollision(
   double arc_length = 0.0;
   double last_sample_arc = -spacing;
 
-  for (size_t i = 0; i < path.poses.size(); ++i)
-  {
-    const geometry_msgs::msg::Pose& pose = path.poses[i].pose;
+  // 原地转 local_plan：xy 弧长≈0，需对每个 yaw 采样点做 footprint 检查
+  double total_xy_arc = 0.0;
+  for (size_t i = 1; i < path.poses.size(); ++i) {
+    const geometry_msgs::msg::Point & prev = path.poses[i - 1].pose.position;
+    const geometry_msgs::msg::Point & curr = path.poses[i].pose.position;
+    total_xy_arc += std::hypot(curr.x - prev.x, curr.y - prev.y);
+  }
+  static constexpr double kRotationDominantXYArcThreshold = 0.05;
+  const bool rotation_dominant_path =
+    path.poses.size() > 1 && total_xy_arc < kRotationDominantXYArcThreshold;
+
+  for (size_t i = 0; i < path.poses.size(); ++i) {
+    const geometry_msgs::msg::Pose & pose = path.poses[i].pose;
     const double wx = pose.position.x;
     const double wy = pose.position.y;
     const double yaw = tf2::getYaw(pose.orientation);
@@ -710,9 +720,10 @@ std::optional<bool> CollisionMonitor::processLocalPlanCollision(
       break;
     }
 
-    const bool should_check = (i == 0) || (arc_length - last_sample_arc >= spacing);
-    if (!should_check)
-    {
+    const bool should_check =
+      rotation_dominant_path ||
+      (i == 0) || (arc_length - last_sample_arc >= spacing);
+    if (!should_check) {
       continue;
     }
     last_sample_arc = arc_length;
