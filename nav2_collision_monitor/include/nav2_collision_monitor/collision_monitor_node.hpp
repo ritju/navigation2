@@ -38,6 +38,7 @@
 #include "nav2_collision_monitor/scan.hpp"
 #include "nav2_collision_monitor/pointcloud.hpp"
 #include "nav2_collision_monitor/range.hpp"
+#include "nav2_ignore_polygon_manager/ignore_polygon_manager.hpp"
 
 namespace nav2_collision_monitor
 {
@@ -52,7 +53,7 @@ public:
    * @brief Constructor for the nav2_collision_safery::CollisionMonitor
    * @param options Additional options to control creation of the node.
    */
-  explicit CollisionMonitor(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
+  explicit CollisionMonitor(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
   /**
    * @brief Destructor for the nav2_collision_safery::CollisionMonitor
    */
@@ -65,31 +66,31 @@ protected:
    * @param state Lifecycle Node's state
    * @return Success or Failure
    */
-  nav2_util::CallbackReturn on_configure(const rclcpp_lifecycle::State & state) override;
+  nav2_util::CallbackReturn on_configure(const rclcpp_lifecycle::State& state) override;
   /**
    * @brief: Activates LifecyclePublishers, polygons and main processor, creates bond connection
    * @param state Lifecycle Node's state
    * @return Success or Failure
    */
-  nav2_util::CallbackReturn on_activate(const rclcpp_lifecycle::State & state) override;
+  nav2_util::CallbackReturn on_activate(const rclcpp_lifecycle::State& state) override;
   /**
    * @brief: Deactivates LifecyclePublishers, polygons and main processor, destroys bond connection
    * @param state Lifecycle Node's state
    * @return Success or Failure
    */
-  nav2_util::CallbackReturn on_deactivate(const rclcpp_lifecycle::State & state) override;
+  nav2_util::CallbackReturn on_deactivate(const rclcpp_lifecycle::State& state) override;
   /**
    * @brief: Resets all subscribers/publishers, polygons/data sources arrays
    * @param state Lifecycle Node's state
    * @return Success or Failure
    */
-  nav2_util::CallbackReturn on_cleanup(const rclcpp_lifecycle::State & state) override;
+  nav2_util::CallbackReturn on_cleanup(const rclcpp_lifecycle::State& state) override;
   /**
    * @brief Called in shutdown state
    * @param state Lifecycle Node's state
    * @return Success or Failure
    */
-  nav2_util::CallbackReturn on_shutdown(const rclcpp_lifecycle::State & state) override;
+  nav2_util::CallbackReturn on_shutdown(const rclcpp_lifecycle::State& state) override;
 
 protected:
   /**
@@ -102,7 +103,7 @@ protected:
    * quit to publish 0-velocity.
    * @param robot_action Robot action to publish
    */
-  void publishVelocity(const Action & robot_action);
+  void publishVelocity(const Action& robot_action);
 
   /**
    * @brief Supporting routine obtaining all ROS-parameters
@@ -111,18 +112,14 @@ protected:
    * is required.
    * @return True if all parameters were obtained or false in failure case
    */
-  bool getParameters(
-    std::string & cmd_vel_in_topic,
-    std::string & cmd_vel_out_topic);
+  bool getParameters(std::string& cmd_vel_in_topic, std::string& cmd_vel_out_topic);
   /**
    * @brief Supporting routine creating and configuring all polygons
    * @param base_frame_id Robot base frame ID
    * @param transform_tolerance Transform tolerance
    * @return True if all polygons were configured successfully or false in failure case
    */
-  bool configurePolygons(
-    const std::string & base_frame_id,
-    const tf2::Duration & transform_tolerance);
+  bool configurePolygons(const std::string& base_frame_id, const tf2::Duration& transform_tolerance);
   /**
    * @brief Supporting routine creating and configuring all data sources
    * @param base_frame_id Robot base frame ID
@@ -132,17 +129,14 @@ protected:
    * @param source_timeout Maximum time interval in which data is considered valid
    * @return True if all sources were configured successfully or false in failure case
    */
-  bool configureSources(
-    const std::string & base_frame_id,
-    const std::string & odom_frame_id,
-    const tf2::Duration & transform_tolerance,
-    const rclcpp::Duration & source_timeout);
+  bool configureSources(const std::string& base_frame_id, const std::string& odom_frame_id,
+                        const tf2::Duration& transform_tolerance, const rclcpp::Duration& source_timeout);
 
   /**
    * @brief Main processing routine
    * @param cmd_vel_in Input desired robot velocity
    */
-  void process(const Velocity & cmd_vel_in);
+  void process(const Velocity& cmd_vel_in);
 
   /**
    * @brief Processes the polygon of STOP and SLOWDOWN action type
@@ -152,11 +146,8 @@ protected:
    * @param robot_action Output processed robot action
    * @return True if returned action is caused by current polygon, otherwise false
    */
-  bool processStopSlowdown(
-    const std::shared_ptr<Polygon> polygon,
-    const std::vector<Point> & collision_points,
-    const Velocity & velocity,
-    Action & robot_action) const;
+  bool processStopSlowdown(const std::shared_ptr<Polygon> polygon, const std::vector<Point>& collision_points,
+                           const Velocity& velocity, Action& robot_action) const;
 
   /**
    * @brief Processes APPROACH action type
@@ -166,11 +157,8 @@ protected:
    * @param robot_action Output processed robot action
    * @return True if returned action is caused by current polygon, otherwise false
    */
-  bool processApproach(
-    const std::shared_ptr<Polygon> polygon,
-    const std::vector<Point> & collision_points,
-    const Velocity & velocity,
-    Action & robot_action) const;
+  bool processApproach(const std::shared_ptr<Polygon> polygon, const std::vector<Point>& collision_points,
+                       const Velocity& velocity, Action& robot_action) const;
 
   /**
    * @brief Latest local plan callback (stores path for next process() tick)
@@ -189,21 +177,17 @@ protected:
    *         std::nullopt if skipped (invalid input, TF failure, or plan expired per
    *         local_plan_validity_timeout_ — expiry does not STOP, only skips the check).
    */
-  std::optional<bool> processLocalPlanCollision(
-    const nav_msgs::msg::Path & path,
-    const std::vector<Point> & collision_points,
-    const rclcpp::Time & curr_time,
-    const rclcpp::Time & plan_receive_time,
-    const std::shared_ptr<Polygon> & approach_polygon,
-    Action & robot_action);
+  std::optional<bool> processLocalPlanCollision(const nav_msgs::msg::Path& path,
+                                                const std::vector<Point>& collision_points,
+                                                const rclcpp::Time& curr_time, const rclcpp::Time& plan_receive_time,
+                                                const std::shared_ptr<Polygon>& approach_polygon, Action& robot_action);
 
   /**
    * @brief Prints robot action and polygon caused it (if it was)
    * @param robot_action Robot action to print
    * @param action_polygon Pointer to a polygon causing a selected action
    */
-  void printAction(
-    const Action & robot_action, const std::shared_ptr<Polygon> action_polygon) const;
+  void printAction(const Action& robot_action, const std::shared_ptr<Polygon> action_polygon) const;
 
   /**
    * @brief Polygons publishing routine. Made for visualization.
@@ -223,6 +207,9 @@ protected:
   /// @brief Data sources array
   std::vector<std::shared_ptr<Source>> sources_;
 
+  /// @brief Ignore polygon manager shared across all sources
+  std::shared_ptr<nav2_ignore_polygon_manager::IgnorePolygonManager> ignore_manager_;
+
   // Input/output speed controls
   /// @beirf Input cmd_vel subscriber
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_in_sub_;
@@ -241,23 +228,25 @@ protected:
 
   /// @brief Robot base frame (cached for TF in local plan checks)
   std::string base_frame_id_;
+  /// @brief Global frame (e.g. "map") for ignore manager robot position lookup
+  std::string global_frame_id_;
   /// @brief TF transform tolerance
-  tf2::Duration transform_tolerance_{tf2::durationFromSec(0.0)};
+  tf2::Duration transform_tolerance_{ tf2::durationFromSec(0.0) };
 
   /// @brief Enable velocity-based APPROACH (TTC) processing
-  bool use_velocity_approach_prediction_{true};
+  bool use_velocity_approach_prediction_{ true };
   /// @brief Enable local plan footprint collision branch (STOP on hit)
-  bool use_local_plan_collision_check_{false};
+  bool use_local_plan_collision_check_{ false };
   /// @brief Topic for nav_msgs/Path local plan
-  std::string local_plan_topic_{"local_plan"};
+  std::string local_plan_topic_{ "local_plan" };
   /// @brief Forward distance along path from first pose to check (m)
-  double local_plan_lookahead_distance_{5.0};
+  double local_plan_lookahead_distance_{ 5.0 };
   /// @brief Sample spacing along path = ratio * footprint bbox max side (m), after updatePolygon
-  double local_plan_sample_spacing_ratio_{0.5};
+  double local_plan_sample_spacing_ratio_{ 0.5 };
   /// @brief If >0, path older than this vs header/receive time skips local plan collision check
-  rclcpp::Duration local_plan_validity_timeout_{0, 0};
+  rclcpp::Duration local_plan_validity_timeout_{ 0, 0 };
   /// @brief After local-plan footprint STOP, hold STOP until a new path is checked collision-free
-  bool local_plan_collision_stop_latched_{false};
+  bool local_plan_collision_stop_latched_{ false };
 
   /// @brief Whether main routine is active
   bool process_active_;

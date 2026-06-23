@@ -42,14 +42,10 @@ public:
    * @param transform_tolerance Transform tolerance
    * @param source_timeout Maximum time interval in which data is considered valid
    */
-  PointCloud(
-    const nav2_util::LifecycleNode::WeakPtr & node,
-    const std::string & source_name,
-    const std::shared_ptr<tf2_ros::Buffer> tf_buffer,
-    const std::string & base_frame_id,
-    const std::string & global_frame_id,
-    const tf2::Duration & transform_tolerance,
-    const rclcpp::Duration & source_timeout);
+  PointCloud(const nav2_util::LifecycleNode::WeakPtr& node, const std::string& source_name,
+             const std::shared_ptr<tf2_ros::Buffer> tf_buffer, const std::string& base_frame_id,
+             const std::string& global_frame_id, const tf2::Duration& transform_tolerance,
+             const rclcpp::Duration& source_timeout);
   /**
    * @brief PointCloud destructor
    */
@@ -67,16 +63,14 @@ public:
    * @param data Array where the data from source to be added.
    * Added data is transformed to base_frame_id_ coordinate system at curr_time.
    */
-  void getData(
-    const rclcpp::Time & curr_time,
-    std::vector<Point> & data) const;
+  void getData(const rclcpp::Time& curr_time, std::vector<Point>& data) const;
 
 protected:
   /**
    * @brief Getting sensor-specific ROS-parameters
    * @param source_topic Output name of source subscription topic
    */
-  void getParameters(std::string & source_topic);
+  void getParameters(std::string& source_topic);
 
   /**
    * @brief PointCloud data callback
