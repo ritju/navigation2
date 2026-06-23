@@ -18,6 +18,7 @@ IgnorePolygonManager::IgnorePolygonManager(const rclcpp_lifecycle::LifecycleNode
 IgnorePolygonManager::~IgnorePolygonManager()
 {
   lane_center_paths_sub_.reset();
+  collision_points_pub_.reset();
 }
 
 void IgnorePolygonManager::configure()
@@ -32,11 +33,14 @@ void IgnorePolygonManager::configure()
 
   nav2_util::declare_parameter_if_not_declared(node_ptr, prefix + "ignore_width", rclcpp::ParameterValue(0));
   nav2_util::declare_parameter_if_not_declared(node_ptr, prefix + "ignore_range", rclcpp::ParameterValue(5.0));
+  nav2_util::declare_parameter_if_not_declared(node_ptr, prefix + "debug_mode", rclcpp::ParameterValue(false));
 
   ignore_width_.store(node_ptr->get_parameter(prefix + "ignore_width").as_int());
   ignore_range_.store(node_ptr->get_parameter(prefix + "ignore_range").as_double());
+  debug_mode_.store(node_ptr->get_parameter(prefix + "debug_mode").as_bool());
 
-  RCLCPP_INFO(logger_, "ignore_width=%d, ignore_range=%.2f", ignore_width_.load(), ignore_range_.load());
+  RCLCPP_INFO(logger_, "ignore_width=%d, ignore_range=%.2f, debug_mode=%d",
+              ignore_width_.load(), ignore_range_.load(), debug_mode_.load());
 
   rclcpp::QoS lane_qos(10);
   lane_qos.transient_local();
@@ -47,6 +51,21 @@ void IgnorePolygonManager::configure()
       std::bind(&IgnorePolygonManager::laneCenterPathsCallback, this, std::placeholders::_1));
 
   RCLCPP_INFO(logger_, "Subscribed to edge_reference_paths_no_collision_check");
+
+  if (debug_mode_.load())
+  {
+    std::string topic = node_ptr->get_name();
+    if (!param_prefix_.empty())
+    {
+      topic += "/" + param_prefix_;
+    }
+    topic += "/collision_points";
+
+    collision_points_pub_ = node_ptr->create_publisher<sensor_msgs::msg::PointCloud2>(
+        topic, rclcpp::SensorDataQoS());
+    collision_points_pub_->on_activate();
+    RCLCPP_INFO(logger_, "Debug mode enabled: publishing collision points to '%s' topic", topic.c_str());
+  }
 }
 
 void IgnorePolygonManager::laneCenterPathsCallback(capella_ros_msg::msg::LaneCenterPaths::ConstSharedPtr msg)
@@ -269,7 +288,7 @@ void IgnorePolygonManager::setIgnoreWidth(int width)
 
 int IgnorePolygonManager::getIgnoreWidth() const
 {
-  return ignore_width_.load();
+  return ignore_width_;
 }
 
 void IgnorePolygonManager::setIgnoreRange(double range)
@@ -280,6 +299,20 @@ void IgnorePolygonManager::setIgnoreRange(double range)
 double IgnorePolygonManager::getIgnoreRange() const
 {
   return ignore_range_.load();
+}
+
+bool IgnorePolygonManager::getDebugMode() const
+{
+  return debug_mode_.load() && ignore_width_.load()!=0;
+}
+
+void IgnorePolygonManager::publishCollisionPoints(std::unique_ptr<sensor_msgs::msg::PointCloud2> cloud)
+{
+  if (!collision_points_pub_)
+  {
+    return;
+  }
+  collision_points_pub_->publish(std::move(cloud));
 }
 
 }  // namespace nav2_ignore_polygon_manager

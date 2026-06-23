@@ -6,11 +6,13 @@
 #include <string>
 #include <vector>
 #include <atomic>
+#include <utility>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "geometry_msgs/msg/polygon_stamped.hpp"
+#include "sensor_msgs/msg/point_cloud2.hpp"
 #include "capella_ros_msg/msg/lane_center_paths.hpp"
 
 namespace nav2_ignore_polygon_manager
@@ -63,6 +65,19 @@ public:
   void setIgnoreRange(double range);
   double getIgnoreRange() const;
 
+  /**
+   * @brief Check if debug mode is enabled
+   * @return true if debug point cloud output is enabled
+   */
+  bool getDebugMode() const;
+
+  /**
+   * @brief Publish a pre-built PointCloud2 for debug visualization.
+   * Only publishes when debug_mode is enabled; otherwise returns immediately.
+   * @param cloud Pre-built PointCloud2 message to publish
+   */
+  void publishCollisionPoints(std::unique_ptr<sensor_msgs::msg::PointCloud2> cloud);
+
 private:
   /**
    * @brief LaneCenterPaths subscription callback
@@ -87,11 +102,17 @@ private:
   /// @brief LaneCenterPaths subscriber (QoS: TransientLocal + Reliable)
   rclcpp::Subscription<capella_ros_msg::msg::LaneCenterPaths>::SharedPtr lane_center_paths_sub_;
 
+  /// @brief Debug collision points publisher (active only when debug_mode is true)
+  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::PointCloud2>::SharedPtr collision_points_pub_;
+
   /// @brief Ignore width in cm (atomic for dynamic updates). 0=disabled
   std::atomic<int> ignore_width_{ 0 };
 
   /// @brief Ignore range in meters (atomic for dynamic updates)
   std::atomic<double> ignore_range_{ 5.0 };
+
+  /// @brief Debug mode flag: when true, collision points are published as point cloud
+  std::atomic<bool> debug_mode_{ false };
 
   /// @brief Raw paths received from LaneCenterPaths topic
   std::vector<nav_msgs::msg::Path> ignore_paths_;

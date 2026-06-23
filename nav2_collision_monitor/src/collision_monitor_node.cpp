@@ -27,6 +27,9 @@
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "tf2_ros/create_timer_ros.h"
 
+#include "sensor_msgs/msg/point_cloud2.hpp"
+#include "sensor_msgs/point_cloud2_iterator.hpp"
+
 #include "nav2_util/node_utils.hpp"
 
 #include "nav2_collision_monitor/kinematics.hpp"
@@ -458,7 +461,7 @@ void CollisionMonitor::process(const Velocity& cmd_vel_in)
     try
     {
       geometry_msgs::msg::TransformStamped tf_base_to_global =
-          tf_buffer_->lookupTransform(global_frame_id_, base_frame_id_, curr_time,
+          tf_buffer_->lookupTransform("map", base_frame_id_, curr_time,
                                       rclcpp::Duration::from_seconds(tf2::durationToSec(transform_tolerance_)));
       ignore_manager_->update(tf_base_to_global.transform.translation.x, tf_base_to_global.transform.translation.y);
     }
@@ -466,6 +469,7 @@ void CollisionMonitor::process(const Velocity& cmd_vel_in)
     {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
                            "Failed to get base->global transform for ignore manager: %s", e.what());
+      return;
     }
   }
 
@@ -473,6 +477,30 @@ void CollisionMonitor::process(const Velocity& cmd_vel_in)
   for (std::shared_ptr<Source> source : sources_)
   {
     source->getData(curr_time, collision_points);
+  }
+  
+  // Debug: publish collision points as PointCloud2 when debug_mode is enabled
+  if (ignore_manager_ && ignore_manager_->getDebugMode())
+  {
+    auto cloud = std::make_unique<sensor_msgs::msg::PointCloud2>();
+    sensor_msgs::PointCloud2Modifier modifier(*cloud);
+    modifier.setPointCloud2FieldsByString(1, "xyz");
+    modifier.resize(collision_points.size());
+
+    sensor_msgs::PointCloud2Iterator<float> iter_x(*cloud, "x");
+    sensor_msgs::PointCloud2Iterator<float> iter_y(*cloud, "y");
+    sensor_msgs::PointCloud2Iterator<float> iter_z(*cloud, "z");
+    for (const auto& p : collision_points)
+    {
+      *iter_x = static_cast<float>(p.x);
+      *iter_y = static_cast<float>(p.y);
+      *iter_z = 0.0f;
+      ++iter_x; ++iter_y; ++iter_z;
+    }
+
+    cloud->header.stamp = curr_time;
+    cloud->header.frame_id = base_frame_id_;
+    ignore_manager_->publishCollisionPoints(std::move(cloud));
   }
 
   // By default - there is no action

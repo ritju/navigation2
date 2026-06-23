@@ -103,7 +103,7 @@ protected:
   bool getTransform(const std::string& source_frame_id, const rclcpp::Time& source_time, const rclcpp::Time& curr_time,
                     tf2::Transform& tf_transform) const;
   bool getTransformToMap(const std::string& source_frame_id, const rclcpp::Time& source_time,
-                         const rclcpp::Time& curr_time, tf2::Transform& tf_transform) const;
+                         tf2::Transform& tf_transform) const;
 
   // ----- Variables -----
 

@@ -9,6 +9,8 @@ collision_monitor:
     source_timeout: 5.0
     stop_pub_timeout: 2.0
     recover_stop_timeout: 20.0
+    # Debug mode: publish collision_points as PointCloud2 on "collision_points" topic
+    debug_mode: False
     # Velocity-based APPROACH (time-to-collision) branch
     use_velocity_approach_prediction: True
     # Local plan footprint check: STOP if obstacle points exceed APPROACH max_points along path

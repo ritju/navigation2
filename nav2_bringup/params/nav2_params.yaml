@@ -184,77 +184,441 @@ local_costmap:
     ros__parameters:
       update_frequency: 5.0
       publish_frequency: 2.0
-      global_frame: odom
+      global_frame: map
       robot_base_frame: base_link
-      use_sim_time: True
+      use_sim_time: true
       rolling_window: true
-      width: 3
-      height: 3
+      width: 10
+      height: 10
       resolution: 0.05
-      robot_radius: 0.22
-      plugins: ["voxel_layer", "inflation_layer"]
-      inflation_layer:
-        plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.55
-      voxel_layer:
-        plugin: "nav2_costmap_2d::VoxelLayer"
-        enabled: True
-        publish_voxel_map: True
-        origin_z: 0.0
-        z_resolution: 0.05
-        z_voxels: 16
-        max_obstacle_height: 2.0
-        mark_threshold: 0
-        observation_sources: scan
-        scan:
-          topic: /scan
-          max_obstacle_height: 2.0
-          clearing: True
-          marking: True
-          data_type: "LaserScan"
-          raytrace_max_range: 3.0
-          raytrace_min_range: 0.0
-          obstacle_max_range: 2.5
-          obstacle_min_range: 0.0
+      footprint: "[[0.3, 0.3], [0.3, -0.3], [-0.3, -0.3], [-0.3, 0.3]]"
+      plugins:
+        [
+          "static_layer",
+          "spatio_temporal_voxel_layer",
+          "inflation_layer",
+        ]
+      filters: ["keepout_filter", "inflation_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 3.0
+        inflation_radius: 1.0
+        plugin: "spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer"
+        enabled: true
+        voxel_decay: 30.0 # seconds if linear, e^n if exponential
+        decay_model: 0 # 0=linear, 1=exponential, -1=persistent
+        voxel_size: 0.05 # meters
+        track_unknown_space: true # default space is known
+        mark_threshold: 0 # voxel height
+        update_footprint_enabled: false
+        combination_method: 1 # 1=max, 0=override
+        origin_z: 0.0 # meters
+        publish_voxel_map: false # default off
+        transform_tolerance: 0.3 # seconds
+        mapping_mode: false # default off, saves map not for navigation
+        map_save_duration: 60.0 # default 60s, how often to autosave
+        observation_sources: front_depth_camera
+        front_depth_camera:
+          data_type: PointCloud2
+          topic: /intel_realsense_r200_depth/points
+          marking: true
+          clearing: true
+          obstacle_range: 1.0 # meters
+          min_obstacle_range: 0.1
+          min_obstacle_height: 0.0 # default 0, meters
+          max_obstacle_height: 0.5 # default 3, meters
+          expected_update_rate: 0.0 # default 0, if not updating at this rate at least, remove from buffer
+          observation_persistence: 0.0 # default 0, use all measurements taken during now-value, 0=latest
+          inf_is_valid: true # default false, for laser scans
+          filter: "voxel" # default passthrough, apply "voxel", "passthrough", or no filter to sensor data, recommend on
+          voxel_min_points: 4 # default 0, minimum points per voxel for voxel filter
+          clear_after_reading: true # default false, clear the buffer after the layer gets readings from it
+          max_z: 7.0 # default 0, meters
+          min_z: 0.1 # default 10, meters
+          vertical_fov_angle: 1.143 # default 0.7, radians
+          horizontal_fov_angle: 1.391 # default 1.04, radians
+          decay_acceleration: 0.05 # default 0, 1/s^2. If laser scanner MUST be 0
+          model_type: 0 # default 0, model type for frustum. 0=depth camera, 1=3d lidar like VLP16 or similar
+        right_depth_camera:
+          data_type: PointCloud2
+          topic: /camera2/depth/low_points_cloud
+          marking: true
+          clearing: true
+          obstacle_range: 1.0 # meters
+          min_obstacle_range: 0.1
+          min_obstacle_height: 0.0 # default 0, meters
+          max_obstacle_height: 0.5 # default 3, meters
+          enable_cut: false
+          cut_min_z: 0.0
+          cut_max_z: 0.6
+          cut_inside_x: 0.5
+          cut_inside_y: -0.5
+          cut_outside_x: 0.5
+          cut_outside_y: -0.8
+          cut_extend_outside_x: 1.0
+          cut_extend_outside_y: -0.8
+          cut_extend_inside_x: 1.0
+          cut_extend_inside_y: -0.5
+          expected_update_rate: 0.0 # default 0, if not updating at this rate at least, remove from buffer
+          observation_persistence: 0.0 # default 0, use all measurements taken during now-value, 0=latest
+          inf_is_valid: true # default false, for laser scans
+          filter: "voxel" # default passthrough, apply "voxel", "passthrough", or no filter to sensor data, recommend on
+          voxel_min_points: 4 # default 0, minimum points per voxel for voxel filter
+          clear_after_reading: true # default false, clear the buffer after the layer gets readings from it
+          max_z: 7.0 # default 0, meters
+          min_z: 0.1 # default 10, meters
+          vertical_fov_angle: 1.143 # default 0.7, radians
+          horizontal_fov_angle: 1.391 # default 1.04, radians
+          decay_acceleration: 0.05 # default 0, 1/s^2. If laser scanner MUST be 0
+          model_type: 0 # default 0, model type for frustum. 0=depth camera, 1=3d lidar like VLP16 or similar
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        footprint_clearing_enabled: True
+        observation_sources: camera1 camera2
+        min_obstacle_height: 0.0
+        max_obstacle_height: 0.5
+        combination_method: 1
+        camera1:
+          topic: /intel_realsense_r200_depth/points
+          clearing: False
+          marking: True
+          data_type: "PointCloud2"
+          obstacle_min_range: 0.2
+          obstacle_max_range: 3.0
+          min_obstacle_height: 0.0
+          max_obstacle_height: 0.5
+          raytrace_min_range: 0.0
+          raytrace_max_range: 3.0
+          expected_update_rate: 0.0
+        camera2:
+          topic: /camera2/depth/low_points_cloud
+          clearing: False
+          marking: True
+          data_type: "PointCloud2"
+          obstacle_min_range: 0.2
+          obstacle_max_range: 1.5
+          min_obstacle_height: 0.0
+          max_obstacle_height: 0.5
+          raytrace_min_range: 0.0
+          raytrace_max_range: 3.0
+          expected_update_rate: 0.0
+      spatio_temporal_voxel_layer:
+        plugin: "spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer"
+        enabled: true
+        voxel_decay: 2.0 # seconds if linear, e^n if exponential
+        decay_model: 0 # 0=linear, 1=exponential, -1=persistent
+        voxel_size: 0.05 # meters
+        track_unknown_space: true # default space is known
+        mark_threshold: 0 # voxel height
+        update_footprint_enabled: false
+        combination_method: 1 # 1=max, 0=override
+        origin_z: 0.0 # meters
+        publish_voxel_map: false # default off
+        transform_tolerance: 0.3 # seconds
+        mapping_mode: false # default off, saves map not for navigation
+        map_save_duration: 60.0 # default 60s, how often to autosave
+        ignore_width: 20
+        ignore_range: 5.2
+        debug_mode: true
+        observation_sources: front_depth_camera
+        vanjee_lidar:
+          data_type: PointCloud2
+          topic: /vanjee/lidar
+          marking: true
+          clearing: true
+          obstacle_range: 7.0 # meters
+          min_obstacle_range: 2.0
+          min_obstacle_height: 0.8 # default 0, meters
+          max_obstacle_height: 1.5 # default 3, meters
+          expected_update_rate: 0.0 # default 0, if not updating at this rate at least, remove from buffer
+          observation_persistence: 0.0 # default 0, use all measurements taken during now-value, 0=latest
+          inf_is_valid: true # default false, for laser scans
+          filter: "voxel" # default passthrough, apply "voxel", "passthrough", or no filter to sensor data, recommend on     voxel_min_points: 0          # default 0, minimum points per voxel for voxel filter
+          voxel_min_points: 4
+          clear_after_reading: true # default false, clear the buffer after the layer gets readings from it
+          max_z: 8.0 # default 0, meters
+          min_z: 1.0 # default 10, meters
+          vertical_fov_angle: 0.5585 # default 0.7, radians. For 3D lidars it's the symmetric FOV about the planar axis.
+          vertical_fov_padding: 0.05 # 3D Lidar only. Default 0, in meters
+          horizontal_fov_angle: 6.29 # 3D lidar scanners like the VLP16 have 360 deg horizontal FOV.
+          decay_acceleration: 0.0 # default 0, 1/s^2.
+          model_type: 1 # default 0, model type for frustum. 0=depth camera, 1=3d lidar like VLP16 or similar
+        front_depth_camera:
+          data_type: PointCloud2
+          topic: /intel_realsense_r200_depth/points
+          marking: true
+          clearing: true
+          obstacle_range: 3.5 # meters
+          min_obstacle_range: 0.1
+          min_obstacle_height: 0.0 # default 0, meters
+          max_obstacle_height: 1.5 # default 3, meters
+          expected_update_rate: 0.0 # default 0, if not updating at this rate at least, remove from buffer
+          observation_persistence: 0.0 # default 0, use all measurements taken during now-value, 0=latest
+          inf_is_valid: true # default false, for laser scans
+          filter: "voxel" # default passthrough, apply "voxel", "passthrough", or no filter to sensor data, recommend on
+          voxel_min_points: 4 # default 0, minimum points per voxel for voxel filter
+          clear_after_reading: true # default false, clear the buffer after the layer gets readings from it
+          max_z: 7.0 # default 0, meters
+          min_z: 0.1 # default 10, meters
+          vertical_fov_angle: 1.143 # default 0.7, radians
+          horizontal_fov_angle: 1.391 # default 1.04, radians
+          decay_acceleration: 0.0 # default 0, 1/s^2. If laser scanner MUST be 0
+          model_type: 0 # default 0, model type for frustum. 0=depth camera, 1=3d lidar like VLP16 or similar
+        front_scan:
+          topic: /scan
+          clearing: true
+          marking: true
+          data_type: "LaserScan"
+          inf_is_valid: true
+          obstacle_range: 4.0 # meters
+          min_obstacle_range: 1.5
+          min_obstacle_height: 0.0 # default 0, meters
+          max_obstacle_height: 1.5
+          expected_update_rate: 0.0 # default 0, if not updating at this rate at least, remove from buffer
+          observation_persistence: 0.0 # default 0, use all measurements taken during now-value, 0=latest
+          filter: "voxel" # default passthrough, apply "voxel", "passthrough", or no filter to sensor data, recommend on
+          voxel_min_points: 2 # default 0, minimum points per voxel for voxel filter
+          clear_after_reading: true # default false, clear the buffer after the layer gets readings from it
+          max_z: 7.0 # default 0, meters
+          min_z: 0.1 # default 10, meters
+          vertical_fov_angle: 0.0 # default 0.7, radians
+          horizontal_fov_angle: 6.28 # default 1.04, radians
+          decay_acceleration: 0.0 # default 0, 1/s^2. If laser scanner MUST be 0
+          model_type: 0 # default 0, model type for frustum. 0=depth camera, 1=3d lidar like VLP16 or similar
+        back_scan:
+          topic: /back_scan
+          clearing: true
+          marking: true
+          data_type: "LaserScan"
+          inf_is_valid: true
+          obstacle_range: 4.0 # meters
+          min_obstacle_range: 1.5
+          min_obstacle_height: 0.0 # default 0, meters
+          max_obstacle_height: 1.5
+          expected_update_rate: 0.0 # default 0, if not updating at this rate at least, remove from buffer
+          observation_persistence: 0.0 # default 0, use all measurements taken during now-value, 0=latest
+          filter: "voxel" # default passthrough, apply "voxel", "passthrough", or no filter to sensor data, recommend on
+          voxel_min_points: 2 # default 0, minimum points per voxel for voxel filter
+          clear_after_reading: true # default false, clear the buffer after the layer gets readings from it
+          max_z: 7.0 # default 0, meters
+          min_z: 0.1 # default 10, meters
+          vertical_fov_angle: 0.0 # default 0.7, radians
+          horizontal_fov_angle: 6.28 # default 1.04, radians
+          decay_acceleration: 0.0 # default 0, 1/s^2. If laser scanner MUST be 0
+          model_type: 0 # default 0, model type for frustum. 0=depth camera, 1=3d lidar like VLP16 or similar
+      range_sensor_layer:
+        plugin: "nav2_costmap_2d::RangeSensorLayer"
+        enabled: True
+        topics:
+          [
+            "/ultrasonic1",
+            "/ultrasonic2",
+            "/ultrasonic3",
+            "/ultrasonic4",
+            "/ultrasonic5",
+            "/ultrasonic6",
+            "/ultrasonic7",
+            "/ultrasonic8",
+          ]
+        clear_threshold: 0.2
+        mark_threshold: 0.8
+        input_sensor_type: "VARIABLE"
+        clear_on_max_reading: True #是否清楚超过最大范围的数值.
+      keepout_filter:
+        plugin: "nav2_costmap_2d::KeepoutFilter"
+        enabled: True
+        filter_info_topic: "/nav/keepout/info"
       always_send_full_costmap: True
 
 global_costmap:
   global_costmap:
     ros__parameters:
-      update_frequency: 1.0
+      update_frequency: 5.0
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
-      use_sim_time: True
-      robot_radius: 0.22
-      resolution: 0.05
-      track_unknown_space: true
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
-      obstacle_layer:
-        plugin: "nav2_costmap_2d::ObstacleLayer"
-        enabled: True
-        observation_sources: scan
-        scan:
-          topic: /scan
-          max_obstacle_height: 2.0
-          clearing: True
-          marking: True
-          data_type: "LaserScan"
-          raytrace_max_range: 3.0
-          raytrace_min_range: 0.0
-          obstacle_max_range: 2.5
-          obstacle_min_range: 0.0
+      use_sim_time: false
+      footprint: "[[1.3, 0.3], [1.15, -0.3], [-0.68, -0.3], [-0.68, 0.3]]"
+      resolution: 0.1
+      track_unknown_space: false
+      footprint_clearing_enabled: true
+      plugins:
+        [
+          "static_layer",
+          "spatio_temporal_voxel_layer",
+          "inflation_layer",
+        ]
+      filters: ["keepout_filter", "inflation_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.55
+        inflation_radius: 1.0
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        footprint_clearing_enabled: True
+        observation_sources: camera1
+        min_obstacle_height: 0.0
+        max_obstacle_height: 0.5
+        combination_method: 1
+        camera1:
+          topic: /intel_realsense_r200_depth/points
+          clearing: False
+          marking: True
+          data_type: "PointCloud2"
+          obstacle_min_range: 0.2
+          obstacle_max_range: 2.0
+          min_obstacle_height: 0.0
+          max_obstacle_height: 0.5
+          raytrace_min_range: 0.0
+          raytrace_max_range: 3.0
+          expected_update_rate: 0.0
+        camera2:
+          topic: /camera2/depth/low_points_cloud
+          clearing: False
+          marking: True
+          data_type: "PointCloud2"
+          obstacle_min_range: 0.2
+          obstacle_max_range: 1.5
+          min_obstacle_height: 0.0
+          max_obstacle_height: 0.5
+          raytrace_min_range: 0.0
+          raytrace_max_range: 3.0
+          expected_update_rate: 0.0
+      spatio_temporal_voxel_layer:
+        plugin: "spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer"
+        enabled: true
+        voxel_decay: 5.0 # seconds if linear, e^n if exponential
+        decay_model: 0 # 0=linear, 1=exponential, -1=persistent
+        voxel_size: 0.1 # meters
+        track_unknown_space: true # default space is known
+        mark_threshold: 0 # voxel height
+        update_footprint_enabled: true
+        combination_method: 1 # 1=max, 0=override
+        origin_z: 0.0 # meters
+        publish_voxel_map: false # default off
+        transform_tolerance: 0.3 # seconds
+        mapping_mode: false # default off, saves map not for navigation
+        map_save_duration: 60.0 # default 60s, how often to autosave
+        ignore_width: 20
+        ignore_range: 5.2
+        debug_mode: true
+        observation_sources: front_depth_camera
+        vanjee_lidar:
+          data_type: PointCloud2
+          topic: /vanjee/lidar
+          marking: true
+          clearing: true
+          obstacle_range: 6.0 # meters
+          min_obstacle_range: 2.0
+          min_obstacle_height: 0.5 # default 0, meters
+          max_obstacle_height: 1.2 # default 3, meters
+          expected_update_rate: 0.0 # default 0, if not updating at this rate at least, remove from buffer
+          observation_persistence: 0.0 # default 0, use all measurements taken during now-value, 0=latest
+          inf_is_valid: true # default false, for laser scans
+          filter: "voxel" # default passthrough, apply "voxel", "passthrough", or no filter to sensor data, recommend on     voxel_min_points: 0          # default 0, minimum points per voxel for voxel filter
+          voxel_min_points: 4
+          clear_after_reading: true # default false, clear the buffer after the layer gets readings from it
+          max_z: 8.0 # default 0, meters
+          min_z: 1.0 # default 10, meters
+          vertical_fov_angle: 0.5585 # default 0.7, radians. For 3D lidars it's the symmetric FOV about the planar axis.
+          vertical_fov_padding: 0.05 # 3D Lidar only. Default 0, in meters
+          horizontal_fov_angle: 6.29 # 3D lidar scanners like the VLP16 have 360 deg horizontal FOV.
+          decay_acceleration: 0.0 # default 0, 1/s^2.
+          model_type: 1 # default 0, model type for frustum. 0=depth camera, 1=3d lidar like VLP16 or similar
+        front_depth_camera:
+          data_type: PointCloud2
+          topic: /intel_realsense_r200_depth/points
+          marking: true
+          clearing: true
+          obstacle_range: 3.5 # meters
+          min_obstacle_range: 0.1
+          min_obstacle_height: 0.0 # default 0, meters
+          max_obstacle_height: 1.5 # default 3, meters
+          expected_update_rate: 0.0 # default 0, if not updating at this rate at least, remove from buffer
+          observation_persistence: 0.0 # default 0, use all measurements taken during now-value, 0=latest
+          inf_is_valid: true # default false, for laser scans
+          filter: "voxel" # default passthrough, apply "voxel", "passthrough", or no filter to sensor data, recommend on
+          voxel_min_points: 4 # default 0, minimum points per voxel for voxel filter
+          clear_after_reading: true # default false, clear the buffer after the layer gets readings from it
+          max_z: 7.0 # default 0, meters
+          min_z: 0.1 # default 10, meters
+          vertical_fov_angle: 1.143 # default 0.7, radians
+          horizontal_fov_angle: 1.391 # default 1.04, radians
+          decay_acceleration: 0.0 # default 0, 1/s^2. If laser scanner MUST be 0
+          model_type: 0 # default 0, model type for frustum. 0=depth camera, 1=3d lidar like VLP16 or similar
+        front_scan:
+          topic: /scan
+          clearing: true
+          marking: true
+          data_type: "LaserScan"
+          inf_is_valid: true
+          obstacle_range: 5.0 # meters
+          min_obstacle_range: 1.5
+          min_obstacle_height: 0.0 # default 0, meters
+          max_obstacle_height: 1.5
+          expected_update_rate: 0.0 # default 0, if not updating at this rate at least, remove from buffer
+          observation_persistence: 0.0 # default 0, use all measurements taken during now-value, 0=latest
+          filter: "voxel" # default passthrough, apply "voxel", "passthrough", or no filter to sensor data, recommend on
+          voxel_min_points: 2 # default 0, minimum points per voxel for voxel filter
+          clear_after_reading: true # default false, clear the buffer after the layer gets readings from it
+          max_z: 7.0 # default 0, meters
+          min_z: 0.1 # default 10, meters
+          vertical_fov_angle: 0.0 # default 0.7, radians
+          horizontal_fov_angle: 6.28 # default 1.04, radians
+          decay_acceleration: 0.0 # default 0, 1/s^2. If laser scanner MUST be 0
+          model_type: 0 # default 0, model type for frustum. 0=depth camera, 1=3d lidar like VLP16 or similar
+        back_scan:
+          topic: /back_scan
+          clearing: true
+          marking: true
+          data_type: "LaserScan"
+          inf_is_valid: true
+          obstacle_range: 5.0 # meters
+          min_obstacle_range: 1.5
+          min_obstacle_height: 0.0 # default 0, meters
+          max_obstacle_height: 1.5
+          expected_update_rate: 0.0 # default 0, if not updating at this rate at least, remove from buffer
+          observation_persistence: 0.0 # default 0, use all measurements taken during now-value, 0=latest
+          filter: "voxel" # default passthrough, apply "voxel", "passthrough", or no filter to sensor data, recommend on
+          voxel_min_points: 2 # default 0, minimum points per voxel for voxel filter
+          clear_after_reading: true # default false, clear the buffer after the layer gets readings from it
+          max_z: 7.0 # default 0, meters
+          min_z: 0.1 # default 10, meters
+          vertical_fov_angle: 0.0 # default 0.7, radians
+          horizontal_fov_angle: 6.28 # default 1.04, radians
+          decay_acceleration: 0.0 # default 0, 1/s^2. If laser scanner MUST be 0
+          model_type: 0 # default 0, model type for frustum. 0=depth camera, 1=3d lidar like VLP16 or similar
+
+      range_sensor_layer:
+        plugin: "nav2_costmap_2d::RangeSensorLayer"
+        enabled: True
+        topics:
+          [
+            "/ultrasonic1",
+            "/ultrasonic2",
+            "/ultrasonic3",
+            "/ultrasonic4",
+            "/ultrasonic5",
+            "/ultrasonic6",
+            "/ultrasonic7",
+            "/ultrasonic8",
+          ]
+        clear_threshold: 0.2
+        mark_threshold: 0.8
+        input_sensor_type: "VARIABLE"
+        clear_on_max_reading: True #是否清楚超过最大范围的数值.
+      keepout_filter:
+        plugin: "nav2_costmap_2d::KeepoutFilter"
+        enabled: True
+        filter_info_topic: "/nav/keepout/info"
       always_send_full_costmap: True
 
 map_server:
@@ -350,7 +714,7 @@ velocity_smoother:
 
 collision_monitor:
   ros__parameters:
-    use_sim_time: True
+    use_sim_time: false
     base_frame_id: "base_footprint"
     odom_frame_id: "odom"
     cmd_vel_in_topic: "cmd_vel_nav_ctr"
@@ -358,27 +722,42 @@ collision_monitor:
     transform_tolerance: 0.5
     source_timeout: 5.0
     stop_pub_timeout: 2.0
-    recover_stop_timeout: 10.0
+    recover_stop_timeout: 20.0
+    # Velocity-based APPROACH (time-to-collision) branch
+    use_velocity_approach_prediction: False
+    # Local plan footprint check: STOP if obstacle points exceed APPROACH max_points along path
+    use_local_plan_collision_check: True
+    local_plan_topic: "local_plan"
+    local_plan_lookahead_distance: 1.5
+    # Arc-length sample step = ratio * max(footprint AABB width, height); invalid footprint uses 0.5 m
+    local_plan_sample_spacing_ratio: 0.5
+    local_plan_validity_timeout: 5.0
+    # ignore collision
+    ignore_width: 20  # 需要忽略的距离path的宽度 为0则屏蔽该功能, 单位cm
+    ignore_range: 5.2 # 筛选给定的path, 只有当前机器人距离path在这个范围内时, 对应忽略框才生效
+    debug_mode: true # 是否打印调试额点云
     # Polygons represent zone around the robot for "stop" and "slowdown" action types,
     # and robot footprint for "approach" action type.
     # Footprint could be "polygon" type with dynamically set footprint from footprint_topic
     # or "circle" type with static footprint set by radius. "footprint_topic" parameter
     # to be ignored in circular case.
-    polygons: ["FootprintApproach", "PolygonSlow", "PolygonStop"]
+    # polygons: ["FootprintApproach", "PolygonSlow", "PolygonStop"]
+    polygons: ["FootprintApproach"]
     PolygonStop:
       type: "polygon"
-      points: [0.3, 0.3, 0.3, -0.3, 0.0, -0.3, 0.0, 0.3]
+      points: [0.3, 0.3, 0.3, -0.3, -0.3, -0.3, 0.3, 0.3]
       action_type: "stop"
-      max_points: 3
-      visualize: True
+      max_points: 2
+      slowdown_ratio: 0.5
+      visualize: true
       polygon_pub_topic: "polygon_stop"
     PolygonSlow:
       type: "polygon"
-      points: [0.4, 0.4, 0.4, -0.4, -0.4, -0.4, -0.4, 0.4]
+      points: [3.0, 0.8, 3.0, -0.8, -0.8, -0.8, -0.8, 0.8]
       action_type: "slowdown"
-      max_points: 3
-      slowdown_ratio: 0.3
-      visualize: True
+      max_points: 2
+      slowdown_ratio: 1.0
+      visualize: true
       polygon_pub_topic: "polygon_slowdown"
     FootprintApproach:
       type: "polygon"
@@ -386,14 +765,26 @@ collision_monitor:
       footprint_topic: "/local_costmap/published_footprint"
       time_before_collision: 2.0
       simulation_time_step: 0.1
-      max_points: 5
-      visualize: False
-    observation_sources: ["scan"]
-    scan:
+      max_points: 2
+      visualize: false
+    observation_sources:
+      [
+        "dabai_camera1",
+        #"vanjee",
+      ]
+    back_scan:
+      type: "scan"
+      topic: "/back_scan"
+    front_scan:
       type: "scan"
       topic: "/scan"
-    pointcloud:
+    vanjee:
+      type: "pointcloud"
+      topic: "/vanjee/lidar"
+      min_height: 0.2
+      max_height: 1.5
+    dabai_camera1:
       type: "pointcloud"
       topic: "/intel_realsense_r200_depth/points"
-      min_height: 0.1
-      max_height: 0.5
+      min_height: 0.2
+      max_height: 1.5

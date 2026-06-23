@@ -14,6 +14,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(capella_ros_msg REQUIRED)
 find_package(nav2_util REQUIRED)
 
@@ -22,6 +23,7 @@ set(dependencies
   rclcpp_lifecycle
   nav_msgs
   geometry_msgs
+  sensor_msgs
   capella_ros_msg
   nav2_util
 )

@@ -87,7 +87,7 @@ void PointCloud::getData(const rclcpp::Time& curr_time, std::vector<Point>& data
   bool have_ignore_transform = false;
   if (ignore_manager_ && ignore_manager_->getIgnoreWidth() != 0)
   {
-    have_ignore_transform = getTransformToMap(base_frame_id_, curr_time, curr_time, tf_base_to_global);
+    have_ignore_transform = getTransformToMap(base_frame_id_, data_->header.stamp, tf_base_to_global);
   }
 
   // Refill data array with PointCloud points in base frame
