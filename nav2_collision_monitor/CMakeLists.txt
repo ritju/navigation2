@@ -15,6 +15,7 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(nav2_common REQUIRED)
 find_package(nav2_util REQUIRED)
 find_package(nav2_costmap_2d REQUIRED)
+find_package(nav2_ignore_polygon_manager REQUIRED)
 
 ### Header ###
 
@@ -37,6 +38,7 @@ set(dependencies
   tf2_geometry_msgs
   nav2_util
   nav2_costmap_2d
+  nav2_ignore_polygon_manager
 )
 
 set(executable_name collision_monitor)
