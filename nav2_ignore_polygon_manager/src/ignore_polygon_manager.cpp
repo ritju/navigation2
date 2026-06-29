@@ -34,13 +34,15 @@ void IgnorePolygonManager::configure()
   nav2_util::declare_parameter_if_not_declared(node_ptr, prefix + "ignore_width", rclcpp::ParameterValue(0));
   nav2_util::declare_parameter_if_not_declared(node_ptr, prefix + "ignore_range", rclcpp::ParameterValue(5.0));
   nav2_util::declare_parameter_if_not_declared(node_ptr, prefix + "debug_mode", rclcpp::ParameterValue(false));
+  nav2_util::declare_parameter_if_not_declared(node_ptr, prefix + "ignore_height_above", rclcpp::ParameterValue(0.0));
 
   ignore_width_.store(node_ptr->get_parameter(prefix + "ignore_width").as_int());
   ignore_range_.store(node_ptr->get_parameter(prefix + "ignore_range").as_double());
   debug_mode_.store(node_ptr->get_parameter(prefix + "debug_mode").as_bool());
+  ignore_height_above_.store(node_ptr->get_parameter(prefix + "ignore_height_above").as_double());
 
-  RCLCPP_INFO(logger_, "ignore_width=%d, ignore_range=%.2f, debug_mode=%d",
-              ignore_width_.load(), ignore_range_.load(), debug_mode_.load());
+  RCLCPP_INFO(logger_, "ignore_width=%d, ignore_range=%.2f, debug_mode=%d, ignore_height_above=%.2f",
+              ignore_width_.load(), ignore_range_.load(), debug_mode_.load(), ignore_height_above_.load());
 
   rclcpp::QoS lane_qos(10);
   lane_qos.transient_local();
@@ -89,8 +91,10 @@ void IgnorePolygonManager::laneCenterPathsCallback(capella_ros_msg::msg::LaneCen
   RCLCPP_DEBUG(logger_, "Received %zu paths, stored %zu valid paths.", msg->paths.size(), paths.size());
 }
 
-void IgnorePolygonManager::update(const double& robot_x, const double& robot_y)
+void IgnorePolygonManager::update(const double& robot_x, const double& robot_y, const double& robot_z)
 {
+  robot_z_.store(robot_z);
+
   const int width = ignore_width_.load();
   if (width == 0)
   {
@@ -257,8 +261,14 @@ void IgnorePolygonManager::update(const double& robot_x, const double& robot_y)
   }
 }
 
-bool IgnorePolygonManager::isPointIgnored(const double& px, const double& py) const
+bool IgnorePolygonManager::isPointIgnored(const double& px, const double& py, const double& pz) const
 {
+  const double height_threshold = robot_z_.load() + ignore_height_above_.load();
+  if (pz <= height_threshold)
+  {
+    return false;
+  }
+
   std::lock_guard<std::mutex> lock(active_ignore_rects_mutex_);
   for (const auto& rect : active_ignore_rects_)
   {

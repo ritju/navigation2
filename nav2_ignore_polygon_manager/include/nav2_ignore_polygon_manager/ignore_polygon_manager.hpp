@@ -40,16 +40,19 @@ public:
    * @brief Select active ignore rects based on robot position — call once per cycle
    * @param robot_x Robot x position in global frame
    * @param robot_y Robot y position in global frame
+   * @param robot_z Robot z position in global frame
    */
-  void update(const double& robot_x, const double& robot_y);
+  void update(const double& robot_x, const double& robot_y, const double& robot_z);
 
   /**
    * @brief Check if a point should be ignored (uses pre-selected active rects)
    * @param px Point x coordinate
    * @param py Point y coordinate
-   * @return true if point is inside any active ignore rectangle
+   * @param pz Point z coordinate
+   * @return true if point is inside any active ignore rectangle and
+   *         pz > robot_z + ignore_height_above_
    */
-  bool isPointIgnored(const double& px, const double& py) const;
+  bool isPointIgnored(const double& px, const double& py, const double& pz) const;
 
   /**
    * @brief Set ignore width dynamically (atomic, in cm)
@@ -113,6 +116,13 @@ private:
 
   /// @brief Debug mode flag: when true, collision points are published as point cloud
   std::atomic<bool> debug_mode_{ false };
+
+  /// @brief Height threshold above robot_z in meters; a point is ignored only if
+  ///        its z > robot_z + ignore_height_above_
+  std::atomic<double> ignore_height_above_{ 0.0 };
+
+  /// @brief Robot z position in global frame (set by update(), read by isPointIgnored())
+  std::atomic<double> robot_z_{ 0.0 };
 
   /// @brief Raw paths received from LaneCenterPaths topic
   std::vector<nav_msgs::msg::Path> ignore_paths_;
