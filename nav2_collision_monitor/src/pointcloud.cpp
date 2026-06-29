@@ -104,7 +104,7 @@ void PointCloud::getData(const rclcpp::Time& curr_time, std::vector<Point>& data
       if (have_ignore_transform)
       {
         tf2::Vector3 p_v3_g = tf_base_to_global * p_v3_b;
-        if (ignore_manager_->isPointIgnored(p_v3_g.x(), p_v3_g.y()))
+        if (ignore_manager_->isPointIgnored(p_v3_g.x(), p_v3_g.y(), p_v3_g.z()))
         {
           continue;
         }

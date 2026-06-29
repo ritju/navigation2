@@ -463,7 +463,7 @@ void CollisionMonitor::process(const Velocity& cmd_vel_in)
       geometry_msgs::msg::TransformStamped tf_base_to_global =
           tf_buffer_->lookupTransform("map", base_frame_id_, curr_time,
                                       rclcpp::Duration::from_seconds(tf2::durationToSec(transform_tolerance_)));
-      ignore_manager_->update(tf_base_to_global.transform.translation.x, tf_base_to_global.transform.translation.y);
+      ignore_manager_->update(tf_base_to_global.transform.translation.x, tf_base_to_global.transform.translation.y, 0.0);
     }
     catch (const tf2::TransformException& e)
     {
