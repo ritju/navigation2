@@ -13,9 +13,11 @@ collision_monitor:
     debug_mode: False
     # Velocity-based APPROACH (time-to-collision) branch
     use_velocity_approach_prediction: True
-    # Local plan footprint check: STOP if obstacle points exceed APPROACH max_points along path
+    # Local plan footprint check: STOP if obstacle points exceed max_points inside footprint along path
     use_local_plan_collision_check: False
     local_plan_topic: "local_plan"
+    local_plan_footprint_topic: "/local_costmap/published_footprint"
+    local_plan_collision_max_points: 0
     local_plan_lookahead_distance: 1.5
     # Arc-length sample step = ratio * max(footprint AABB width, height); invalid footprint uses 0.5 m
     local_plan_sample_spacing_ratio: 0.5

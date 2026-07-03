@@ -31,6 +31,8 @@
 
 #include "nav2_util/lifecycle_node.hpp"
 
+#include "nav2_costmap_2d/footprint_subscriber.hpp"
+
 #include "nav2_collision_monitor/types.hpp"
 #include "nav2_collision_monitor/polygon.hpp"
 #include "nav2_collision_monitor/circle.hpp"
@@ -171,16 +173,22 @@ protected:
    * @param collision_points Obstacle points in base_frame_id_.
    * @param curr_time Time used for TF lookups.
    * @param plan_receive_time Time when path was received (fallback if header.stamp unset).
-   * @param approach_polygon Footprint model (APPROACH polygon/circle) for point-in-footprint test.
    * @param robot_action In/out action; may be forced to STOP with zero velocity.
    * @return true if collision detected; false if path was fully checked and clear;
-   *         std::nullopt if skipped (invalid input, TF failure, or plan expired per
+   *         std::nullopt if skipped (invalid input, TF failure, missing footprint, or plan expired per
    *         local_plan_validity_timeout_ — expiry does not STOP, only skips the check).
    */
   std::optional<bool> processLocalPlanCollision(const nav_msgs::msg::Path& path,
                                                 const std::vector<Point>& collision_points,
                                                 const rclcpp::Time& curr_time, const rclcpp::Time& plan_receive_time,
-                                                const std::shared_ptr<Polygon>& approach_polygon, Action& robot_action);
+                                                Action& robot_action);
+
+  /**
+   * @brief Reads latest robot footprint from local_costmap topic into base frame.
+   * @param footprint_poly Output footprint vertices in robot frame
+   * @return True if a valid footprint (>= 3 vertices) was received
+   */
+  bool updateLocalPlanFootprint(std::vector<Point>& footprint_poly);
 
   /**
    * @brief Prints robot action and polygon caused it (if it was)
@@ -218,6 +226,8 @@ protected:
 
   /// @brief Optional subscriber for local plan footprint collision checks
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr local_plan_sub_;
+  /// @brief Footprint subscriber for local plan collision checks (local_costmap published footprint)
+  std::unique_ptr<nav2_costmap_2d::FootprintSubscriber> local_plan_footprint_sub_;
 
   /// @brief Latest local plan (protected by local_plan_mutex_)
   nav_msgs::msg::Path latest_local_plan_;
@@ -239,6 +249,10 @@ protected:
   bool use_local_plan_collision_check_{ false };
   /// @brief Topic for nav_msgs/Path local plan
   std::string local_plan_topic_{ "local_plan" };
+  /// @brief Topic for robot footprint used by local plan collision checks
+  std::string local_plan_footprint_topic_{ "/local_costmap/published_footprint" };
+  /// @brief Max obstacle points inside footprint along path before STOP (noise tolerance)
+  int local_plan_collision_max_points_{ 0 };
   /// @brief Forward distance along path from first pose to check (m)
   double local_plan_lookahead_distance_{ 5.0 };
   /// @brief Sample spacing along path = ratio * footprint bbox max side (m), after updatePolygon

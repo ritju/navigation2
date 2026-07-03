@@ -60,6 +60,45 @@ double footprint_bbox_max_extent(const std::vector<Point>& fp)
   return std::max(max_x - min_x, max_y - min_y);
 }
 
+/** Ray-crossing point-in-polygon test (same algorithm as Polygon::isPointInside). */
+bool isPointInsidePolygon(const Point& point, const std::vector<Point>& poly)
+{
+  const int poly_size = static_cast<int>(poly.size());
+  if (poly_size < 3)
+  {
+    return false;
+  }
+  int i = poly_size - 1;
+  bool res = false;
+  for (int j = 0; j < poly_size; ++j)
+  {
+    if ((point.y <= poly[i].y) == (point.y > poly[j].y))
+    {
+      const double x_inter =
+          poly[i].x + (point.y - poly[i].y) * (poly[j].x - poly[i].x) / (poly[j].y - poly[i].y);
+      if (x_inter > point.x)
+      {
+        res = !res;
+      }
+    }
+    i = j;
+  }
+  return res;
+}
+
+int countPointsInsidePolygon(const std::vector<Point>& points, const std::vector<Point>& poly)
+{
+  int num = 0;
+  for (const Point& point : points)
+  {
+    if (isPointInsidePolygon(point, poly))
+    {
+      ++num;
+    }
+  }
+  return num;
+}
+
 }  // namespace
 
 CollisionMonitor::CollisionMonitor(const rclcpp::NodeOptions& options)
@@ -107,6 +146,9 @@ nav2_util::CallbackReturn CollisionMonitor::on_configure(const rclcpp_lifecycle:
     local_plan_sub_ = this->create_subscription<nav_msgs::msg::Path>(
         local_plan_topic_, rclcpp::QoS(1).best_effort(),
         std::bind(&CollisionMonitor::localPlanCallback, this, std::placeholders::_1));
+    local_plan_footprint_sub_ = std::make_unique<nav2_costmap_2d::FootprintSubscriber>(
+        shared_from_this(), local_plan_footprint_topic_, *tf_buffer_, base_frame_id_,
+        tf2::durationToSec(transform_tolerance_));
     latest_local_plan_receive_time_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
   }
 
@@ -171,6 +213,7 @@ nav2_util::CallbackReturn CollisionMonitor::on_cleanup(const rclcpp_lifecycle::S
   cmd_vel_in_sub_.reset();
   cmd_vel_out_pub_.reset();
   local_plan_sub_.reset();
+  local_plan_footprint_sub_.reset();
 
   {
     std::lock_guard<std::mutex> lk(local_plan_mutex_);
@@ -291,6 +334,13 @@ bool CollisionMonitor::getParameters(std::string& cmd_vel_in_topic, std::string&
   nav2_util::declare_parameter_if_not_declared(node, "local_plan_topic",
                                                rclcpp::ParameterValue(std::string("local_plan")));
   local_plan_topic_ = get_parameter("local_plan_topic").as_string();
+
+  nav2_util::declare_parameter_if_not_declared(node, "local_plan_footprint_topic",
+                                               rclcpp::ParameterValue("/local_costmap/published_footprint"));
+  local_plan_footprint_topic_ = get_parameter("local_plan_footprint_topic").as_string();
+
+  nav2_util::declare_parameter_if_not_declared(node, "local_plan_collision_max_points", rclcpp::ParameterValue(0));
+  local_plan_collision_max_points_ = get_parameter("local_plan_collision_max_points").as_int();
 
   nav2_util::declare_parameter_if_not_declared(node, "local_plan_lookahead_distance", rclcpp::ParameterValue(5.0));
   local_plan_lookahead_distance_ = get_parameter("local_plan_lookahead_distance").as_double();
@@ -544,33 +594,18 @@ void CollisionMonitor::process(const Velocity& cmd_vel_in)
     }
   }
 
-  std::shared_ptr<Polygon> approach_polygon;
-  for (std::shared_ptr<Polygon> polygon : polygons_)
-  {
-    if (polygon->getActionType() == APPROACH)
-    {
-      approach_polygon = polygon;
-      break;
-    }
-  }
   if (use_local_plan_collision_check_)
   {
     if (!path_this_cycle.poses.empty())
     {
-      if (!approach_polygon)
-      {
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
-                             "Local plan collision check is enabled, but no APPROACH polygon is configured; skipping.");
-      }
-      else if (!collision_points.empty())
+      if (!collision_points.empty())
       {
         const std::optional<bool> lp_res = processLocalPlanCollision(
-            path_this_cycle, collision_points, curr_time, local_plan_receive_time, approach_polygon, robot_action);
+            path_this_cycle, collision_points, curr_time, local_plan_receive_time, robot_action);
         if (lp_res.has_value())
         {
           if (lp_res.value())
           {
-            action_polygon = approach_polygon;
             local_plan_collision_stop_latched_ = true;
           }
           else
@@ -609,10 +644,6 @@ void CollisionMonitor::process(const Velocity& cmd_vel_in)
       robot_action.req_vel.x = 0.0;
       robot_action.req_vel.y = 0.0;
       robot_action.req_vel.tw = 0.0;
-      if (approach_polygon)
-      {
-        action_polygon = approach_polygon;
-      }
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 500, "Execute stop cmd due to local plan collision!");
     }
   }
@@ -649,7 +680,7 @@ void CollisionMonitor::process(const Velocity& cmd_vel_in)
 
 std::optional<bool> CollisionMonitor::processLocalPlanCollision(
     const nav_msgs::msg::Path& path, const std::vector<Point>& collision_points, const rclcpp::Time& curr_time,
-    const rclcpp::Time& plan_receive_time, const std::shared_ptr<Polygon>& approach_polygon, Action& robot_action)
+    const rclcpp::Time& plan_receive_time, Action& robot_action)
 {
   if (path.poses.empty() || path.header.frame_id.empty())
   {
@@ -709,10 +740,15 @@ std::optional<bool> CollisionMonitor::processLocalPlanCollision(
     points_path = collision_points;
   }
 
-  approach_polygon->updatePolygon();
-
   std::vector<Point> footprint_poly;
-  approach_polygon->getPolygon(footprint_poly);
+  if (!updateLocalPlanFootprint(footprint_poly))
+  {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                         "Local plan collision check skipped: no footprint from topic '%s'.",
+                         local_plan_footprint_topic_.c_str());
+    return std::nullopt;
+  }
+
   const double fp_extent = footprint_bbox_max_extent(footprint_poly);
   static constexpr double k_fallback_footprint_extent = 0.5;
   const double char_len = (fp_extent > 1.0e-6) ? fp_extent : k_fallback_footprint_extent;
@@ -767,8 +803,8 @@ std::optional<bool> CollisionMonitor::processLocalPlanCollision(
       points_robot_frame.push_back({ dx * c - dy * s, dx * s + dy * c });
     }
 
-    const int inside_cnt = approach_polygon->getPointsInside(points_robot_frame);
-    const int max_pts = approach_polygon->getMaxPoints();
+    const int inside_cnt = countPointsInsidePolygon(points_robot_frame, footprint_poly);
+    const int max_pts = local_plan_collision_max_points_;
     if (inside_cnt > max_pts)
     {
       robot_action.action_type = STOP;
@@ -776,14 +812,36 @@ std::optional<bool> CollisionMonitor::processLocalPlanCollision(
       robot_action.req_vel.y = 0.0;
       robot_action.req_vel.tw = 0.0;
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 500,
-                           "STOP due to local plan footprint collision ahead (model: %s): "
+                           "STOP due to local plan footprint collision ahead (footprint: %s): "
                            "inside=%d max_allowed=%d path_pose_index=%zu arc_length=%.3f m",
-                           approach_polygon->getName().c_str(), inside_cnt, max_pts, i, arc_length);
+                           local_plan_footprint_topic_.c_str(), inside_cnt, max_pts, i, arc_length);
       return true;
     }
   }
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000, "Local plan collision check passed!");
   return false;
+}
+
+bool CollisionMonitor::updateLocalPlanFootprint(std::vector<Point>& footprint_poly)
+{
+  if (!local_plan_footprint_sub_)
+  {
+    return false;
+  }
+
+  std::vector<geometry_msgs::msg::Point> footprint_vec;
+  std_msgs::msg::Header footprint_header;
+  if (!local_plan_footprint_sub_->getFootprintInRobotFrame(footprint_vec, footprint_header))
+  {
+    return false;
+  }
+
+  footprint_poly.resize(footprint_vec.size());
+  for (size_t i = 0; i < footprint_vec.size(); ++i)
+  {
+    footprint_poly[i] = { footprint_vec[i].x, footprint_vec[i].y };
+  }
+  return footprint_poly.size() >= 3;
 }
 
 bool CollisionMonitor::processStopSlowdown(const std::shared_ptr<Polygon> polygon,
