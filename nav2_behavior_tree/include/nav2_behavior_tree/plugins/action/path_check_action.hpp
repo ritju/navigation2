@@ -15,6 +15,7 @@
 #ifndef NAV2_BEHAVIOR_TREE__PLUGINS__ACTION__PATH_CHECK_ACTION_HPP_
 #define NAV2_BEHAVIOR_TREE__PLUGINS__ACTION__PATH_CHECK_ACTION_HPP_
 
+#include <cstdint>
 #include <string>
 
 #include "nav2_behavior_tree/bt_action_node.hpp"
@@ -62,7 +63,7 @@ public:
   }
   double check_distance_;
   Goals input_goals_;
-
+  std::uint64_t input_goals_mission_fingerprint_{0};
 };
 
 }  // namespace nav2_behavior_tree

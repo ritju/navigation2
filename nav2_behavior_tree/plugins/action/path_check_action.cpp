@@ -20,6 +20,25 @@
 namespace nav2_behavior_tree
 {
 
+namespace
+{
+
+std::uint64_t fingerprintMissionQueueTailGoalStampOnly(
+  const std::vector<geometry_msgs::msg::PoseStamped> & mission_goal_queue)
+{
+  if (mission_goal_queue.empty()) {
+    return 0;
+  }
+  std::uint64_t fingerprint_mix = 0;
+  const auto & stamp_terminal_goal_only = mission_goal_queue.back().header.stamp;
+  fingerprint_mix ^= static_cast<std::uint64_t>(static_cast<std::uint32_t>(stamp_terminal_goal_only.sec)) *
+    0x9e3779b97f4a7c15ULL;
+  fingerprint_mix ^= static_cast<std::uint64_t>(stamp_terminal_goal_only.nanosec);
+  return fingerprint_mix;
+}
+
+}  // namespace
+
   PathCheckAction::PathCheckAction(
   const std::string & xml_tag_name,
   const std::string & action_name,
@@ -34,6 +53,7 @@ void PathCheckAction::on_tick()
 {
   getInput("check_distance", check_distance_);
   getInput("input_goals", input_goals_);
+  input_goals_mission_fingerprint_ = fingerprintMissionQueueTailGoalStampOnly(input_goals_);
   goal_.distance = check_distance_;
   goal_.input_goals = input_goals_;
 }
@@ -44,6 +64,21 @@ BT::NodeStatus PathCheckAction::on_success()
     RCLCPP_WARN(node_->get_logger(), "PathCheckAction: output_goals is empty! Do not update output_goals!");
     return BT::NodeStatus::SUCCESS;
   }
+
+  Goals current_input_goals;
+  getInput("input_goals", current_input_goals);
+  const std::uint64_t current_mission_fingerprint =
+    fingerprintMissionQueueTailGoalStampOnly(current_input_goals);
+  if (current_mission_fingerprint != input_goals_mission_fingerprint_) {
+    RCLCPP_WARN(
+      node_->get_logger(),
+      "PathCheckAction: goals mission changed since action start (fp %lx -> %lx), "
+      "skip output_goals writeback to avoid preempt overwrite",
+      static_cast<unsigned long>(input_goals_mission_fingerprint_),
+      static_cast<unsigned long>(current_mission_fingerprint));
+    return BT::NodeStatus::SUCCESS;
+  }
+
   setOutput("output_goals", result_.result->output_goals);
   return BT::NodeStatus::SUCCESS;
 }
