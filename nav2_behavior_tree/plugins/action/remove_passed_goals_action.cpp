@@ -308,6 +308,9 @@ RemovePassedGoals::Goals RemovePassedGoals::pruneOutputGppGoalsByMissionPoseMatc
     for (const auto & pose_stamped_mission : mission_goals) {
       const uint32_t discrete_goal_index_z_mission =
         missionPoseGoalIndexFromPoseZ(pose_stamped_mission);
+      if (discrete_goal_index_z_mission < discrete_goal_index_z_gpp) {
+        continue;
+      }
       if (discrete_goal_index_z_mission > discrete_goal_index_z_gpp) {
         break;
       }
@@ -315,8 +318,8 @@ RemovePassedGoals::Goals RemovePassedGoals::pruneOutputGppGoalsByMissionPoseMatc
           pose_stamped_gpp.pose, pose_stamped_mission.pose, match_xy_m, match_yaw_rad))
       {
         pruned.push_back(pose_stamped_mission);
-        break;
       }
+      break;
     }
   }
   return pruned;
@@ -831,15 +834,21 @@ BT::NodeStatus RemovePassedGoals::tick()
     // Detect whether the terminal mission goal has entered the GPP window.
     if (!terminal_goal_dispatched_to_gpp_window_ && !mission_goal_queue_mutable_ref.empty()) {
       const uint32_t z_terminal = missionPoseGoalIndexFromPoseZ(mission_goal_queue_mutable_ref.back());
-      for (const auto & pose_stamped_gpp : filtered_gpp_goal_window_after_prune) {
-        if (missionPoseGoalIndexFromPoseZ(pose_stamped_gpp) == z_terminal) {
-          terminal_goal_dispatched_to_gpp_window_ = true;
-          RCLCPP_INFO(
-            node->get_logger(),
-            "[RemovePassedGoals] terminal goal z=%u entered gpp window: stamp freeze active",
-            static_cast<unsigned int>(z_terminal));
-          break;
+      bool terminal_in_gpp_window = batch_span_goal_index_z_end_ >= z_terminal;
+      if (!terminal_in_gpp_window) {
+        for (const auto & pose_stamped_gpp : filtered_gpp_goal_window_after_prune) {
+          if (missionPoseGoalIndexFromPoseZ(pose_stamped_gpp) == z_terminal) {
+            terminal_in_gpp_window = true;
+            break;
+          }
         }
+      }
+      if (terminal_in_gpp_window) {
+        terminal_goal_dispatched_to_gpp_window_ = true;
+        RCLCPP_INFO(
+          node->get_logger(),
+          "[RemovePassedGoals] terminal goal z=%u entered gpp window: stamp freeze active",
+          static_cast<unsigned int>(z_terminal));
       }
     }
 
