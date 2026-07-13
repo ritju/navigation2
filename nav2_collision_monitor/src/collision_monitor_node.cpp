@@ -518,8 +518,9 @@ void CollisionMonitor::process(const Velocity& cmd_vel_in)
     catch (const tf2::TransformException& e)
     {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-                           "Failed to get base->global transform for ignore manager: %s", e.what());
-      return;
+                           "Failed to get base->global transform for ignore manager: %s; "
+                           "skip ignore update and continue collision check.",
+                           e.what());
     }
   }
 
@@ -919,17 +920,42 @@ void CollisionMonitor::printAction(const Action& robot_action, const std::shared
 {
   if (robot_action.action_type == STOP)
   {
-    RCLCPP_INFO(get_logger(), "Robot to stop due to %s polygon", action_polygon->getName().c_str());
+    if (action_polygon)
+    {
+      RCLCPP_INFO(get_logger(), "Robot to stop due to %s polygon", action_polygon->getName().c_str());
+    }
+    else if (local_plan_collision_stop_latched_)
+    {
+      RCLCPP_INFO(get_logger(), "Robot to stop due to local plan footprint collision");
+    }
+    else
+    {
+      RCLCPP_INFO(get_logger(), "Robot to stop");
+    }
   }
   else if (robot_action.action_type == SLOWDOWN)
   {
-    RCLCPP_INFO(get_logger(), "Robot to slowdown for %f percents due to %s polygon",
-                action_polygon->getSlowdownRatio() * 100, action_polygon->getName().c_str());
+    if (action_polygon)
+    {
+      RCLCPP_INFO(get_logger(), "Robot to slowdown for %f percents due to %s polygon",
+                  action_polygon->getSlowdownRatio() * 100, action_polygon->getName().c_str());
+    }
+    else
+    {
+      RCLCPP_INFO(get_logger(), "Robot to slowdown");
+    }
   }
   else if (robot_action.action_type == APPROACH)
   {
-    RCLCPP_INFO(get_logger(), "Robot to approach for %f seconds away from collision",
-                action_polygon->getTimeBeforeCollision());
+    if (action_polygon)
+    {
+      RCLCPP_INFO(get_logger(), "Robot to approach for %f seconds away from collision",
+                  action_polygon->getTimeBeforeCollision());
+    }
+    else
+    {
+      RCLCPP_INFO(get_logger(), "Robot to approach");
+    }
   }
   else
   {  // robot_action.action_type == DO_NOTHING
