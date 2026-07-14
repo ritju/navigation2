@@ -250,7 +250,7 @@ bool InsertGarbagePose::tryInsertPreferCloserToRobot(
 }
 
 // 接收到垃圾后的后处理函数，返回处理后的 garbage_list
-// history 只拷贝不掏空：处理成功（或明确丢弃）后再从 history 删除，失败则仍留在 history
+
 InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
 {
   std::deque<capella_ros_msg::msg::GarbageDetect> snapshot;
@@ -285,7 +285,7 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
              std::fabs(a.pose.pose.position.y - b.pose.pose.position.y) < 1e-6;
     };
 
-  // 从 history 里删掉已处理完的那一条（按原始消息匹配）
+  // 从 history 里删掉已处理完的那一条
   auto eraseFromHistory =
     [this, &sameDetect](const capella_ros_msg::msg::GarbageDetect & original) {
       std::lock_guard<std::mutex> lock(history_mutex_);
@@ -300,12 +300,12 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
   for (const auto & original : snapshot) {
     capella_ros_msg::msg::GarbageDetect garbage = original;
 
-    // 第一步：转到 map（失败则留在 history，下一轮再试）
+    // 第一步：转到 map
     if (!transformGarbageToMap(garbage)) {
       continue;
     }
 
-    // 第二步：禁扫区丢弃 → 已决策，从 history 去掉
+    // 第二步：禁扫区丢弃 
     if (isPointInSpecialTerrain(
         garbage.pose.pose.position.x, garbage.pose.pose.position.y))
     {
@@ -317,7 +317,7 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
       continue;
     }
 
-    // 第三步：与已有列表去重 → 已决策，从 history 去掉
+    // 第三步：与已有列表去重
     if (isDuplicateOfKept(garbage, garbage_list_)) {
       RCLCPP_DEBUG(
         node_->get_logger(),
@@ -327,7 +327,7 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
       continue;
     }
 
-    // 第四步：成功写入 garbage_list_ 后再从 history 删除；写不进去（更远）则仍留着
+    // 第四步：成功写入 garbage_list_ 后再从 history 删除
     if (tryInsertPreferCloserToRobot(std::move(garbage), robot_x, robot_y)) {
       eraseFromHistory(original);
     } else {
@@ -356,7 +356,7 @@ InsertGarbagePose::Goals InsertGarbagePose::receiveGoals()
   return received_goals_;
 }
 
-// 点到无限直线 AB 的垂足（平面 xy）
+// 点到无限直线 AB 的垂足
 void InsertGarbagePose::projectPointToInfiniteLine(
   double px, double py,
   double ax, double ay,
