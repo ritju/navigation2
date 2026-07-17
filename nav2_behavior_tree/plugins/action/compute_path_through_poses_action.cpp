@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "nav2_behavior_tree/plugins/action/compute_path_through_poses_action.hpp"
+#include "nav2_behavior_tree/mission_path_sync.hpp"
 
 namespace nav2_behavior_tree
 {
@@ -54,6 +55,9 @@ void ComputePathThroughPosesAction::on_tick()
 BT::NodeStatus ComputePathThroughPosesAction::on_success()
 {
   setOutput("path", result_.result->path);
+  if (!result_.result->path.poses.empty()) {
+    markPathSyncedToCurrentMission(config().blackboard);
+  }
   return BT::NodeStatus::SUCCESS;
 }
 

@@ -17,7 +17,11 @@
 
 #include <string>
 #include <memory>
+#include <vector>
 
+#include "builtin_interfaces/msg/time.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
+#include "nav_msgs/msg/path.hpp"
 #include "nav2_msgs/action/follow_path.hpp"
 #include "nav2_behavior_tree/bt_action_node.hpp"
 
@@ -46,6 +50,8 @@ public:
    */
   void on_tick() override;
 
+  bool on_tick_send_goal() override;
+
   /**
    * @brief Function to perform some user-defined operation after a timeout
    * waiting for a result that hasn't been received yet
@@ -53,6 +59,8 @@ public:
    */
   void on_wait_for_result(
     std::shared_ptr<const nav2_msgs::action::FollowPath::Feedback> feedback) override;
+
+  BT::NodeStatus on_success() override;
 
   /**
    * @brief Creates list of BT ports
@@ -68,6 +76,13 @@ public:
         BT::InputPort<std::vector<geometry_msgs::msg::PoseStamped>>("input_goals", ""),
       });
   }
+
+private:
+  bool getCurrentInputGoalsStamp(builtin_interfaces::msg::Time & stamp_out) const;
+  bool tryApplyMissionPathUpdate();
+
+  builtin_interfaces::msg::Time mission_goals_stamp_at_send_{};
+  bool mission_goals_stamp_valid_{false};
 };
 
 }  // namespace nav2_behavior_tree

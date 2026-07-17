@@ -9,6 +9,15 @@ find_package(rclcpp_lifecycle REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+# Prefer the workspace overlay of nav2_behavior_tree when present. Otherwise
+# CMAKE_PREFIX_PATH may resolve to /opt/ros/humble (1.1.16) which lacks
+# Capella headers such as mission_path_sync.hpp.
+if(EXISTS "${CMAKE_INSTALL_PREFIX}/include/nav2_behavior_tree/mission_path_sync.hpp"
+    AND EXISTS "${CMAKE_INSTALL_PREFIX}/share/nav2_behavior_tree/cmake/nav2_behavior_treeConfig.cmake")
+  set(nav2_behavior_tree_DIR
+    "${CMAKE_INSTALL_PREFIX}/share/nav2_behavior_tree/cmake"
+    CACHE PATH "Workspace overlay nav2_behavior_tree" FORCE)
+endif()
 find_package(nav2_behavior_tree REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
@@ -17,11 +26,13 @@ find_package(std_srvs REQUIRED)
 find_package(nav2_util REQUIRED)
 find_package(nav2_core REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(nav2_behavior_tree REQUIRED)
 
 nav2_package()
 
 include_directories(
   include
+  ${nav2_behavior_tree_INCLUDE_DIRS}
 )
 
 set(executable_name bt_navigator)
@@ -47,6 +58,7 @@ set(dependencies
   nav2_util
   nav2_core
   tf2_ros
+  nav2_behavior_tree
 )
 
 add_library(${library_name} SHARED

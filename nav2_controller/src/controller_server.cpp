@@ -478,47 +478,67 @@ void ControllerServer::computeControl()
 
     last_valid_cmd_time_ = now();
     rclcpp::WallRate loop_rate(controller_frequency_);
-    while (rclcpp::ok()) {
-      if (action_server_ == nullptr || !action_server_->is_server_active()) {
-        RCLCPP_DEBUG(get_logger(), "Action server unavailable or inactive. Stopping.");
-        clearTebGlobalPlanCache();
-        return;
+    bool keep_following = true;
+    while (keep_following && rclcpp::ok()) {
+      keep_following = false;
+      while (rclcpp::ok()) {
+        if (action_server_ == nullptr || !action_server_->is_server_active()) {
+          RCLCPP_DEBUG(get_logger(), "Action server unavailable or inactive. Stopping.");
+          clearTebGlobalPlanCache();
+          return;
+        }
+
+        if (action_server_->is_cancel_requested()) {
+          RCLCPP_INFO(get_logger(), "Goal was canceled. Stopping the robot.");
+          action_server_->terminate_all();
+          publishZeroVelocity();
+          clearTebGlobalPlanCache();
+          return;
+        }
+
+        rclcpp::Rate r(100);
+        while (!costmap_ros_->isCurrent()) {
+          r.sleep();
+        }
+
+        if (action_server_->get_current_goal()->path.poses.empty()) {
+          RCLCPP_WARN(
+            get_logger(),
+            "%s path is empty.", current_controller_.c_str());
+          publishZeroVelocity();
+          throw std::runtime_error("Path is empty.");
+        }
+        updateGlobalPath();
+
+        computeAndPublishVelocity();
+
+        if (isGoalReached()) {
+          if (action_server_->is_preempt_requested()) {
+            RCLCPP_INFO(
+              get_logger(),
+              "Reached the goal but a new path was preempted; continuing with updated path.");
+            updateGlobalPath();
+            continue;
+          }
+          RCLCPP_INFO(get_logger(), "Reached the goal!");
+          break;
+        }
+
+        if (!loop_rate.sleep()) {
+          auto now = rclcpp::Clock();
+          RCLCPP_WARN_STREAM_THROTTLE(
+            get_logger(), now, 5000,
+            "Control loop missed its desired rate of " << controller_frequency_ << " Hz");
+        }
       }
 
-      if (action_server_->is_cancel_requested()) {
-        RCLCPP_INFO(get_logger(), "Goal was canceled. Stopping the robot.");
-        action_server_->terminate_all();
-        publishZeroVelocity();
-        clearTebGlobalPlanCache();
-        return;
-      }
-      
-      rclcpp::Rate r(100);
-      while (!costmap_ros_->isCurrent()) {
-        r.sleep();
-      }
-
-      if (action_server_->get_current_goal()->path.poses.empty()) {
-        RCLCPP_WARN(
-        get_logger(),
-        "%s path is empty.", current_controller_.c_str());
-        publishZeroVelocity();
-        // action_server_->terminate_current();
-        throw( std::runtime_error("Path is empty."));
-        // break;
-      }
-      updateGlobalPath();
-
-      computeAndPublishVelocity();
-
-      if (isGoalReached()) {
-        RCLCPP_INFO(get_logger(), "Reached the goal!");
-        break;
-      }
-
-      if (!loop_rate.sleep()) {
-        auto now = rclcpp::Clock();
-        RCLCPP_WARN_STREAM_THROTTLE(get_logger(), now, 5000, "Control loop missed its desired rate of " << controller_frequency_ << " Hz");
+      if (action_server_->is_preempt_requested()) {
+        RCLCPP_INFO(
+          get_logger(),
+          "New path preempted after control loop exit; continuing with updated path.");
+        updateGlobalPath();
+        progress_checker_->reset();
+        keep_following = true;
       }
     }
   } catch (nav2_core::PlannerException & e) {
@@ -548,7 +568,6 @@ void ControllerServer::computeControl()
   publishZeroVelocity();
   clearTebGlobalPlanCache();
 
-  // TODO(orduno) #861 Handle a pending preemption and set controller name
   action_server_->succeeded_current();
 }
 

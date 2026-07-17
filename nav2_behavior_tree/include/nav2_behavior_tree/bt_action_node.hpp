@@ -141,6 +141,16 @@ public:
   }
 
   /**
+   * @brief Prepare and validate goal before sending to the action server.
+   * @return false to defer send_new_goal() and retry on the next tick (node stays RUNNING).
+   */
+  virtual bool on_tick_send_goal()
+  {
+    on_tick();
+    return true;
+  }
+
+  /**
    * @brief Function to perform some user-defined operation after a timeout
    * waiting for a result that hasn't been received yet. Also provides access to
    * the latest feedback message from the action server. Feedback will be nullptr
@@ -159,6 +169,29 @@ public:
   virtual BT::NodeStatus on_success()
   {
     return BT::NodeStatus::SUCCESS;
+  }
+
+  /**
+   * @brief Re-queue this node to send a new action goal on the next tick (IDLE transition).
+   * Used when navigation was preempted but the controller should keep running with a new path.
+   */
+  void requeueForNewGoalOnNextTick()
+  {
+    requeue_on_next_tick_ = true;
+    goal_result_available_ = false;
+    goal_handle_.reset();
+    future_goal_handle_.reset();
+    setStatus(BT::NodeStatus::IDLE);
+  }
+
+  bool shouldRequeueOnNextTick() const
+  {
+    return requeue_on_next_tick_;
+  }
+
+  void clearRequeueOnNextTick()
+  {
+    requeue_on_next_tick_ = false;
   }
 
   /**
@@ -185,13 +218,19 @@ public:
    */
   BT::NodeStatus tick() override
   {
+    if (shouldRequeueOnNextTick()) {
+      clearRequeueOnNextTick();
+    }
+
     // first step to be done only at the beginning of the Action
     if (status() == BT::NodeStatus::IDLE) {
       // setting the status to RUNNING to notify the BT Loggers (if any)
       setStatus(BT::NodeStatus::RUNNING);
 
-      // user defined callback
-      on_tick();
+      if (!on_tick_send_goal()) {
+        setStatus(BT::NodeStatus::IDLE);
+        return BT::NodeStatus::RUNNING;
+      }
 
       send_new_goal();
     }
@@ -228,6 +267,10 @@ public:
         if (goal_updated_ && (goal_status == action_msgs::msg::GoalStatus::STATUS_EXECUTING ||
           goal_status == action_msgs::msg::GoalStatus::STATUS_ACCEPTED))
         {
+          if (!on_tick_send_goal()) {
+            setStatus(BT::NodeStatus::IDLE);
+            return BT::NodeStatus::RUNNING;
+          }
           goal_updated_ = false;
           send_new_goal();
           auto elapsed = (node_->now() - time_goal_sent_).to_chrono<std::chrono::milliseconds>();
@@ -446,6 +489,7 @@ protected:
   std::shared_ptr<std::shared_future<typename rclcpp_action::ClientGoalHandle<ActionT>::SharedPtr>>
   future_goal_handle_;
   rclcpp::Time time_goal_sent_;
+  bool requeue_on_next_tick_{false};
 };
 
 }  // namespace nav2_behavior_tree

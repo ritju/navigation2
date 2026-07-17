@@ -18,6 +18,7 @@
 #include <memory>
 #include <limits>
 #include "nav2_bt_navigator/navigators/navigate_through_poses.hpp"
+#include "nav2_behavior_tree/mission_path_sync.hpp"
 
 namespace nav2_bt_navigator
 {
@@ -213,9 +214,9 @@ NavigateThroughPosesNavigator::onPreempt(ActionT::Goal::ConstSharedPtr goal)
     (goal->behavior_tree.empty() &&
     bt_action_server_->getCurrentBTFilename() == bt_action_server_->getDefaultBTFilename()))
   {
-    // if pending goal requests the same BT as the current goal, accept the pending goal
-    // if pending goal has an empty behavior_tree field, it requests the default BT file
-    // accept the pending goal if the current goal is running the default BT file
+    // Accept pending goal and refresh blackboard mission data.
+    // Do not halt FollowPath / cancel controller: FollowPathAction will push the
+    // replanned path via action preempt while the control loop keeps running.
     initializeGoalPoses(bt_action_server_->acceptPendingGoal());
   } else {
     RCLCPP_WARN(
@@ -253,6 +254,21 @@ NavigateThroughPosesNavigator::initializeGoalPoses(ActionT::Goal::ConstSharedPtr
   }
   blackboard->set<Goals>(goals_blackboard_id_, add_pose_index_poses);
   blackboard->set<Goals>(std::string("gpp_goals"), Goals{});
+
+  const uint64_t mission_generation_id = nav2_behavior_tree::bumpNavMissionGenerationId(blackboard);
+  nav_msgs::msg::Path cleared_path;
+  cleared_path.header.stamp = current_time;
+  if (!add_pose_index_poses.empty()) {
+    cleared_path.header.frame_id = add_pose_index_poses.front().header.frame_id;
+  }
+  cleared_path.poses.clear();
+  blackboard->set<nav_msgs::msg::Path>(path_blackboard_id_, cleared_path);
+
+  RCLCPP_INFO(
+    logger_,
+    "Mission generation id=%lu: cleared stale path until planner completes",
+    static_cast<unsigned long>(mission_generation_id));
+
   nav_msgs::msg::Path mission_poses_message;
   mission_poses_message.header.stamp = current_time;
   if (!add_pose_index_poses.empty()) {
