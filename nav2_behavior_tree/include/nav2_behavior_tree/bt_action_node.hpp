@@ -220,15 +220,25 @@ public:
   {
     if (shouldRequeueOnNextTick()) {
       clearRequeueOnNextTick();
+      // BehaviorTree.CPP executeTick() overwrites status with tick()'s return value.
+      // requeueForNewGoalOnNextTick() may have set IDLE then returned RUNNING, so the
+      // stored status is RUNNING on the next entry — force the send-goal path again.
+      setStatus(BT::NodeStatus::IDLE);
     }
 
-    // first step to be done only at the beginning of the Action
-    if (status() == BT::NodeStatus::IDLE) {
+    // After mission preemption, we may intentionally have no goal_handle_ while waiting
+    // for a synced replanned path. BT may also leave status as RUNNING after a deferred
+    // send, so do not rely on IDLE alone.
+    const bool needs_new_goal =
+      status() == BT::NodeStatus::IDLE ||
+      (!goal_handle_ && !future_goal_handle_ && !goal_result_available_);
+
+    if (needs_new_goal) {
       // setting the status to RUNNING to notify the BT Loggers (if any)
       setStatus(BT::NodeStatus::RUNNING);
 
       if (!on_tick_send_goal()) {
-        setStatus(BT::NodeStatus::IDLE);
+        // Keep node RUNNING without a goal_handle_ until inputs are ready.
         return BT::NodeStatus::RUNNING;
       }
 
@@ -257,6 +267,11 @@ public:
 
       // The following code corresponds to the "RUNNING" loop
       if (rclcpp::ok() && !goal_result_available_) {
+        if (!goal_handle_) {
+          // Deferred send or requeue left us without a handle; retry on next tick.
+          return BT::NodeStatus::RUNNING;
+        }
+
         // user defined callback. May modify the value of "goal_updated_"
         on_wait_for_result(feedback_);
 
@@ -268,7 +283,7 @@ public:
           goal_status == action_msgs::msg::GoalStatus::STATUS_ACCEPTED))
         {
           if (!on_tick_send_goal()) {
-            setStatus(BT::NodeStatus::IDLE);
+            // Keep current goal_handle_ until a synced path is available.
             return BT::NodeStatus::RUNNING;
           }
           goal_updated_ = false;
@@ -307,26 +322,30 @@ public:
       }
     }
 
-    BT::NodeStatus status;
+    BT::NodeStatus node_status;
     switch (result_.code) {
       case rclcpp_action::ResultCode::SUCCEEDED:
-        status = on_success();
+        node_status = on_success();
         break;
 
       case rclcpp_action::ResultCode::ABORTED:
-        status = on_aborted();
+        node_status = on_aborted();
         break;
 
       case rclcpp_action::ResultCode::CANCELED:
-        status = on_cancelled();
+        node_status = on_cancelled();
         break;
 
       default:
         throw std::logic_error("BtActionNode::Tick: invalid status value");
     }
 
-    goal_handle_.reset();
-    return status;
+    // on_success() may requeue and return RUNNING (mission preempt after segment success).
+    // Do not clear handles again in that case — requeue already reset them.
+    if (node_status != BT::NodeStatus::RUNNING) {
+      goal_handle_.reset();
+    }
+    return node_status;
   }
 
   /**
@@ -388,6 +407,12 @@ protected:
             node_->get_logger(),
             "Goal result for %s available, but it hasn't received the goal response yet. "
             "It's probably a goal result for the last goal request", action_name_.c_str());
+          return;
+        }
+
+        // Goal may have been cleared by requeueForNewGoalOnNextTick() while waiting for
+        // a replanned path after mission preemption.
+        if (!this->goal_handle_) {
           return;
         }
 
