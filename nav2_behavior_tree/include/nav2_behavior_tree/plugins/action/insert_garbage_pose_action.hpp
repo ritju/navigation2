@@ -19,12 +19,16 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "behaviortree_cpp_v3/action_node.h"
 #include "capella_ros_msg/msg/garbage_detect.hpp"
 #include "garage_utils_msgs/msg/polygons.hpp"
+#include "geometry_msgs/msg/point.hpp"
+#include "geometry_msgs/msg/point32.hpp"
 #include "geometry_msgs/msg/polygon.hpp"
+#include "geometry_msgs/msg/polygon_stamped.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "tf2_ros/buffer.h"
@@ -41,27 +45,25 @@ public:
   typedef std::vector<capella_ros_msg::msg::GarbageDetect> GarbageList;
   /** 历史垃圾队列最大长度 */
   static constexpr std::size_t kMaxHistorySize = 1;
-  /** map 下去重距离阈值（m），后到且更近于此的删掉 */
+  /** map 下去重距离阈值米，后到且更近于此的删掉 */
   static constexpr double kDedupDistanceM = 0.15;
 
-  /**
-   * 插入逻辑所需的全部信息（一次采集，后续都用这份）
-   * valid=false 时不要做删点/插点
-   */
+  // 插入前采集到的全部信息，valid 为 false 时不做删点插点
   struct InsertInfo
   {
     bool valid{false};
     std::string invalid_reason;
 
-    Goals goals;                          // 完整 {goals}
-    geometry_msgs::msg::PoseStamped robot_pose;   // 机器人当前 map 位姿
-    geometry_msgs::msg::PoseStamped goal_a;       // goals[0]
-    geometry_msgs::msg::PoseStamped goal_b;       // goals[1]
-    capella_ros_msg::msg::GarbageDetect garbage;  // 单堆：map 位姿/角点/class_id
-    double radius_m{0.0};                 // R = |robot - garbage|
-    double circle_center_x{0.0};          // 垃圾向 goal_a–goal_b 无限直线的垂足
-    double circle_center_y{0.0};
-    double path_yaw{0.0};                 // goal_a→goal_b 方向，插入朝向用
+    Goals goals;                                          // 完整 {goals}
+    geometry_msgs::msg::PoseStamped robot_pose;           // 机器人当前 map 位姿
+    geometry_msgs::msg::PoseStamped goala;                // 投影线起点：机器人当前位置
+    geometry_msgs::msg::PoseStamped goalc;                // 投影线终点：从机器人沿路径第一个角点
+    std::size_t goalc_idx{0};                             // goalc 在 goals 中的下标
+    capella_ros_msg::msg::GarbageDetect garbage;          // 单堆：map 位姿、角点、class_id
+    double radius_m{0.0};                                 // R = 机器人到垃圾距离
+    double goald_x{0.0};                                  // 垃圾向 goala-goalc 无限直线的垂足
+    double goald_y{0.0};
+    double path_yaw{0.0};                                 // goala 到 goalc 方向，插入朝向用
   };
 
   InsertGarbagePose(
@@ -78,6 +80,15 @@ public:
       BT::InputPort<std::string>(
         "special_terrain_topic", std::string("/cleaning_tool_retraction_areas"),
         "Special / retraction area polygons topic"),
+      BT::InputPort<std::string>(
+        "footprint_topic", std::string("local_costmap/published_footprint"),
+        "Robot footprint topic"),
+      BT::InputPort<double>(
+        "arrived_radius", 0.5, "Stop inserting when footprint enters this radius around garbage"),
+      BT::InputPort<double>(
+        "clip_extend_m", 1.0, "After garbage foot on path, delete goals for this distance (m)"),
+      BT::InputPort<double>(
+        "corner_angle_deg", 60.0, "Goals with turn angle above this are corners (deg)"),
       BT::InputPort<std::string>("global_frame", std::string("map"), "Global frame"),
       BT::InputPort<std::string>("robot_base_frame", std::string("base_link"), "Robot base frame"),
     };
@@ -94,16 +105,34 @@ private:
   /** 特殊清扫/禁扫区域话题回调 */
   void special_terrain_callback(const garage_utils_msgs::msg::Polygons::SharedPtr msg);
 
+  /** footprint 话题回调 */
+  void footprintCallback(const geometry_msgs::msg::PolygonStamped::SharedPtr msg);
+
   /** 接收到垃圾后的后处理函数，返回处理后的 garbage_list */
   GarbageList postProcessHistory();
 
   /** 接收完整的 {goals} 路径点 */
   Goals receiveGoals();
 
+  /** 对比 goals 时间戳，外部重发任务时清空 history 和 garbage */
+  void checkAndResetOnNewMission();
+
+  /** 获取机器人当前 footprint，并转到 map */
+  bool getRobotFootprintInMap(std::vector<geometry_msgs::msg::Point> & footprint_map);
+
+  /** 判断 footprint 是否已进入垃圾附近，应停止再插入 */
+  bool shouldStopInsertingGarbage(
+    const capella_ros_msg::msg::GarbageDetect & garbage,
+    const std::vector<geometry_msgs::msg::Point> & footprint_map,
+    double arrived_radius) const;
+
   /** 获取插入所需的全部信息并返回 */
   InsertInfo gatherInsertInfo();
 
-  /** 根据 InsertInfo：剔圆内点、插入真实垃圾、统一时间戳 */
+  /** 插入垃圾前按折线下标删点：clip 起点到离垃圾最近点，再从折线垂足延伸 */
+  Goals clipGoalsNearGarbage(const InsertInfo & info, const Goals & goals);
+
+  /** 剔圆内点、插入真实垃圾、统一时间戳 */
   Goals insertGarbageIntoGoals(const InsertInfo & info);
 
   /** 把单个垃圾从 base_link 转到 map */
@@ -117,52 +146,74 @@ private:
   static bool isDuplicateOfKept(
     const capella_ros_msg::msg::GarbageDetect & garbage,
     const GarbageList & kept);
-  /** 平面距离平方（map xy） */
+  /** 是否落在已到达过、不再插入的垃圾附近 */
+  bool isNearReachedGarbage(double x, double y) const;
+  /** 平面距离平方 */
   static double squaredDistanceXY(
     double x1, double y1, double x2, double y2);
-  /**
-   * 尝试写入 garbage_list_：未满直接加；
-   * 满了则若新垃圾比队列中离机器人最远的更近，就踢掉最远的再加，否则不加
-   */
+  /** 写入 garbage_list_，满了时优先保留离机器人更近的 */
   bool tryInsertPreferCloserToRobot(
     capella_ros_msg::msg::GarbageDetect garbage,
     double robot_x, double robot_y);
-  /** 点到无限直线 AB 的垂足（平面 xy） */
+  /** 点到无限直线 AB 的垂足 */
   static void projectPointToInfiniteLine(
     double px, double py,
     double ax, double ay,
     double bx, double by,
     double & out_x, double & out_y);
-  /** 点在无限直线 AB 上的参数 t（P ≈ A + t*(B-A)） */
+  /** 点在无限直线 AB 上的参数 t */
   static double lineParameterT(
     double px, double py,
     double ax, double ay,
     double bx, double by);
+  /** true=非角点，false=角点；无前点用机器人坐标，无后点视为非角点 */
+  bool isGoalNotCorner(
+    const Goals & goals,
+    std::size_t idx,
+    double robot_x, double robot_y) const;
+  /** 从机器人沿路径找第一个角点下标；找不到返回 false */
+  bool findFirstCornerFromRobot(
+    const Goals & goals,
+    double robot_x, double robot_y,
+    std::size_t & corner_idx) const;
 
   rclcpp::Node::SharedPtr node_;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   rclcpp::executors::SingleThreadedExecutor callback_group_executor_;
   rclcpp::Subscription<capella_ros_msg::msg::GarbageDetect>::SharedPtr garbage_sub_;
   rclcpp::Subscription<garage_utils_msgs::msg::Polygons>::SharedPtr special_terrain_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PolygonStamped>::SharedPtr footprint_sub_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
 
   std::string garbage_topic_;
   std::string special_terrain_topic_;
+  std::string footprint_topic_;
   std::string global_frame_;
   std::string robot_base_frame_;
   double transform_tolerance_{0.1};
+  double arrived_radius_{0.5};
+  double clip_extend_m_{1.0};
+  double corner_angle_deg_{60.0};
 
   std::mutex history_mutex_;
-  /** 原始接收缓存，最多 kMaxHistorySize 个 */
+  /** 原始接收缓存 */
   std::deque<capella_ros_msg::msg::GarbageDetect> history_list_;
-  /** 后处理最终结果列表（map 坐标 / 角点 / 类别） */
+  /** 后处理结果列表 */
   GarbageList garbage_list_;
-  /** 从黑板接收到的完整 goals 路径点 */
+  /** 从黑板接收到的完整 goals */
   Goals received_goals_;
+  /** 当前认定的任务时间戳，与 goals 上统一 stamp 对齐 */
+  rclcpp::Time mission_stamp_record_{0, 0, RCL_ROS_TIME};
+  bool has_mission_stamp_{false};
+  /** 本任务内已到达过、不再插入的垃圾 map 坐标 */
+  std::vector<std::pair<double, double>> reached_garbage_xy_;
 
   mutable std::mutex special_terrain_mutex_;
-  /** 禁扫/特殊清扫区域多边形 */
+  /** 禁扫区多边形 */
   std::vector<geometry_msgs::msg::Polygon> special_terrain_polygons_;
+
+  mutable std::mutex footprint_mutex_;
+  geometry_msgs::msg::PolygonStamped::SharedPtr latest_footprint_;
 };
 
 }  // namespace nav2_behavior_tree
