@@ -57,8 +57,9 @@ public:
     Goals goals;                                          // 完整 {goals}
     geometry_msgs::msg::PoseStamped robot_pose;           // 机器人当前 map 位姿
     geometry_msgs::msg::PoseStamped goala;                // 投影线起点：机器人当前位置
-    geometry_msgs::msg::PoseStamped goalc;                // 投影线终点：从机器人沿路径第一个角点
+    geometry_msgs::msg::PoseStamped goalc;                // 投影线终点：第一角点；无角点则为前方 range 内末点
     std::size_t goalc_idx{0};                             // goalc 在 goals 中的下标
+    Goals goaltotal;                                      // 本轮逻辑判定要删除的 goals（最后一块删）
     capella_ros_msg::msg::GarbageDetect garbage;          // 单堆：map 位姿、角点、class_id
     double radius_m{0.0};                                 // R = 机器人到垃圾距离
     double goald_x{0.0};                                  // 垃圾向 goala-goalc 无限直线的垂足
@@ -89,6 +90,9 @@ public:
         "clip_extend_m", 1.0, "After garbage foot on path, delete goals for this distance (m)"),
       BT::InputPort<double>(
         "corner_angle_deg", 60.0, "Goals with turn angle above this are corners (deg)"),
+      BT::InputPort<double>(
+        "goaltotal_range_m", 10.0,
+        "If no corner ahead, use last goal within this path distance as goalc (m)"),
       BT::InputPort<std::string>("global_frame", std::string("map"), "Global frame"),
       BT::InputPort<std::string>("robot_base_frame", std::string("base_link"), "Robot base frame"),
     };
@@ -129,11 +133,11 @@ private:
   /** 获取插入所需的全部信息并返回 */
   InsertInfo gatherInsertInfo();
 
-  /** 插入垃圾前按折线下标删点：clip 起点到离垃圾最近点，再从折线垂足延伸 */
-  Goals clipGoalsNearGarbage(const InsertInfo & info, const Goals & goals);
+  /** 按 goala/goalc/goald 收集待删点到 goaltotal，再一块删除 */
+  Goals clipGoalsNearGarbage(InsertInfo & info);
 
   /** 剔圆内点、插入真实垃圾、统一时间戳 */
-  Goals insertGarbageIntoGoals(const InsertInfo & info);
+  Goals insertGarbageIntoGoals(InsertInfo & info);
 
   /** 把单个垃圾从 base_link 转到 map */
   bool transformGarbageToMap(capella_ros_msg::msg::GarbageDetect & garbage) const;
@@ -171,11 +175,25 @@ private:
     const Goals & goals,
     std::size_t idx,
     double robot_x, double robot_y) const;
-  /** 从机器人沿路径找第一个角点下标；找不到返回 false */
+  /** 从机器人沿路径找第一个角点下标（仅 goaltotal_range_m 内）；找不到返回 false */
   bool findFirstCornerFromRobot(
     const Goals & goals,
     double robot_x, double robot_y,
     std::size_t & corner_idx) const;
+  /** 从 after_idx 之后找下一个角点（仅再往前 goaltotal_range_m 内）；找不到返回 false */
+  bool findNextCornerAfter(
+    const Goals & goals,
+    std::size_t after_idx,
+    double robot_x, double robot_y,
+    std::size_t & corner_idx) const;
+  /** 机器人前方累计路径 range_m 内的最后一个 goal；可选带回最近段与前向起点 */
+  bool findLastGoalWithinPathRange(
+    const Goals & goals,
+    double robot_x, double robot_y,
+    double range_m,
+    std::size_t & out_idx,
+    std::size_t * nearest_seg_out = nullptr,
+    std::size_t * start_idx_out = nullptr) const;
 
   rclcpp::Node::SharedPtr node_;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
@@ -194,6 +212,7 @@ private:
   double arrived_radius_{0.5};
   double clip_extend_m_{1.0};
   double corner_angle_deg_{60.0};
+  double goaltotal_range_m_{10.0};
 
   std::mutex history_mutex_;
   /** 原始接收缓存 */
