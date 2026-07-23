@@ -65,6 +65,9 @@ public:
     double goald_x{0.0};                                  // 垃圾向 goala-goalc 无限直线的垂足
     double goald_y{0.0};
     double path_yaw{0.0};                                 // goala 到 goalc 方向，插入朝向用
+    bool hit_mid_case{false};                             // 垂足落在段中 ①/②
+    bool hit_forward_case{false};                         // 前方延长线 ③
+    std::vector<std::pair<double, double>> corners_kept_xy;  // ③ 经过并保留的角点 xy
   };
 
   InsertGarbagePose(
@@ -133,10 +136,10 @@ private:
   /** 获取插入所需的全部信息并返回 */
   InsertInfo gatherInsertInfo();
 
-  /** 按 goala/goalc/goald 收集待删点到 goaltotal，再一块删除 */
+  /** 按 goala/goalc/goald 收集待删点到 goaltotal，再删除 */
   Goals clipGoalsNearGarbage(InsertInfo & info);
 
-  /** 剔圆内点、插入真实垃圾、统一时间戳 */
+  /** 删点后插入真实垃圾并统一时间戳；①/② 插队首，仅 ③ 插在保留角点后 */
   Goals insertGarbageIntoGoals(InsertInfo & info);
 
   /** 把单个垃圾从 base_link 转到 map */
@@ -170,7 +173,7 @@ private:
     double px, double py,
     double ax, double ay,
     double bx, double by);
-  /** true=非角点，false=角点；无前点用机器人坐标，无后点视为非角点 */
+  /** true=非角点，false=角点；队首优先用 mission_goals_ 前驱，否则用机器人 */
   bool isGoalNotCorner(
     const Goals & goals,
     std::size_t idx,
@@ -186,7 +189,7 @@ private:
     std::size_t after_idx,
     double robot_x, double robot_y,
     std::size_t & corner_idx) const;
-  /** 机器人前方累计路径 range_m 内的最后一个 goal；可选带回最近段与前向起点 */
+  /** 从剩余队列头沿路径量 range_m 内末点；勿用整条折线欧氏最近段起算 */
   bool findLastGoalWithinPathRange(
     const Goals & goals,
     double robot_x, double robot_y,
@@ -194,6 +197,11 @@ private:
     std::size_t & out_idx,
     std::size_t * nearest_seg_out = nullptr,
     std::size_t * start_idx_out = nullptr) const;
+
+  /** 离轨判定：到剩余路径窗口折线超过该距离则 robot_fwd=0 */
+  static constexpr double kOffPathSnapM = 1.0;
+  /** 在 mission_goals_ 中匹配队首点时的距离阈值（m） */
+  static constexpr double kMissionPrevMatchM = 0.08;
 
   rclcpp::Node::SharedPtr node_;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
@@ -221,6 +229,8 @@ private:
   GarbageList garbage_list_;
   /** 从黑板接收到的完整 goals */
   Goals received_goals_;
+  /** 本任务开始时的路径快照，供队首角点取路径前驱（对齐 demo original_goals） */
+  Goals mission_goals_;
   /** 当前认定的任务时间戳，与 goals 上统一 stamp 对齐 */
   rclcpp::Time mission_stamp_record_{0, 0, RCL_ROS_TIME};
   bool has_mission_stamp_{false};
