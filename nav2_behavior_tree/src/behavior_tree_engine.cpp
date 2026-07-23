@@ -51,9 +51,12 @@ BehaviorTreeEngine::run(
         return BtStatus::CANCELED;
       }
 
-      result = tree->tickRoot();
-
+      // Process preempt / feedback before ticking so a pending NavigateThroughPoses
+      // preempt is visible to FollowPath::on_success / mission-path sync on this tick,
+      // instead of being accepted only after the tree has already returned SUCCESS.
       onLoop();
+
+      result = tree->tickRoot();
 
       loopRate.sleep();
     }

@@ -171,6 +171,17 @@ void FollowPathAction::on_wait_for_result(
 
 BT::NodeStatus FollowPathAction::on_success()
 {
+  // Controller may have succeeded for the previous segment while a NavigateThroughPoses
+  // preempt already bumped the mission generation and cleared the path. Do not bubble
+  // SUCCESS up the tree until the planner has synced a path for the current mission.
+  if (!isPathReadyForCurrentMission(config().blackboard)) {
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "FollowPathAction: segment success but path not synced to current mission; waiting");
+    requeueForNewGoalOnNextTick();
+    return BT::NodeStatus::RUNNING;
+  }
+
   if (!mission_goals_stamp_valid_) {
     return BT::NodeStatus::SUCCESS;
   }
