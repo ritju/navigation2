@@ -59,15 +59,15 @@ public:
     geometry_msgs::msg::PoseStamped goala;                // 投影线起点：机器人当前位置
     geometry_msgs::msg::PoseStamped goalc;                // 投影线终点：第一角点；无角点则为前方 range 内末点
     std::size_t goalc_idx{0};                             // goalc 在 goals 中的下标
-    Goals goaltotal;                                      // 本轮逻辑判定要删除的 goals（最后一块删）
+    Goals goaltotal;                                      // 本轮逻辑判定要删除的 goals最后一块删
     capella_ros_msg::msg::GarbageDetect garbage;          // 单堆：map 位姿、角点、class_id
     double radius_m{0.0};                                 // R = 机器人到垃圾距离
     double goald_x{0.0};                                  // 垃圾向 goala-goalc 无限直线的垂足
     double goald_y{0.0};
     double path_yaw{0.0};                                 // goala 到 goalc 方向，插入朝向用
-    bool hit_mid_case{false};                             // 垂足落在段中 ①/②
-    bool hit_forward_case{false};                         // 前方延长线 ③
-    std::vector<std::pair<double, double>> corners_kept_xy;  // ③ 经过并保留的角点 xy
+    bool hit_mid_case{false};                             // 垂足落在段中
+    bool hit_forward_case{false};                         // 前方延长线 
+    std::vector<std::pair<double, double>> corners_kept_xy;  // 经过并保留的角点 xy
   };
 
   InsertGarbagePose(
@@ -127,7 +127,7 @@ private:
   /** 获取机器人当前 footprint，并转到 map */
   bool getRobotFootprintInMap(std::vector<geometry_msgs::msg::Point> & footprint_map);
 
-  /** 判断 footprint 是否已进入垃圾附近，应停止再插入 */
+  /** 判断 footprint 是否已进入垃圾附近 */
   bool shouldStopInsertingGarbage(
     const capella_ros_msg::msg::GarbageDetect & garbage,
     const std::vector<geometry_msgs::msg::Point> & footprint_map,

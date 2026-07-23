@@ -286,7 +286,7 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
   {
     std::lock_guard<std::mutex> lock(history_mutex_);
     snapshot = history_list_;
-  }
+  } // 加锁
 
   if (snapshot.empty()) {
     return garbage_list_;
@@ -305,7 +305,7 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
   const double robot_x = robot_pose.pose.position.x;
   const double robot_y = robot_pose.pose.position.y;
 
-  auto sameDetect =
+  auto sameDetect =     // id，stamp，xy 都相同则认为是同一条垃圾
     [](const capella_ros_msg::msg::GarbageDetect & a,
       const capella_ros_msg::msg::GarbageDetect & b) {
       return a.class_id == b.class_id &&
@@ -394,14 +394,15 @@ InsertGarbagePose::Goals InsertGarbagePose::receiveGoals()
 }
 
 // 对比 goals 时间戳，外部重发任务时清空 history 和 garbage
+// 看当前是不是一次新的导航任务；如果是，就把上一任务留下的垃圾缓存清掉，免得串到新任务里
 void InsertGarbagePose::checkAndResetOnNewMission()
 {
   const Goals goals = receiveGoals();
   if (goals.empty()) {
     return;
   }
-
-  const rclcpp::Time current_stamp = goals.front().header.stamp;
+  // 取第一个goals
+  const rclcpp::Time current_stamp = goals.front().header.stamp;   
   if (!has_mission_stamp_) {
     mission_stamp_record_ = current_stamp;
     has_mission_stamp_ = true;
@@ -410,7 +411,7 @@ void InsertGarbagePose::checkAndResetOnNewMission()
     return;
   }
 
-  if (current_stamp == mission_stamp_record_) {
+  if (current_stamp == mission_stamp_record_) {  // 时间戳相同，说明是同一任务
     return;
   }
 
@@ -473,7 +474,7 @@ bool InsertGarbagePose::getRobotFootprintInMap(
   return !footprint_map.empty();
 }
 
-// 判断 footprint 是否已进入垃圾附近，应停止再插入
+// 判断 footprint 是否已进入垃圾附近
 bool InsertGarbagePose::shouldStopInsertingGarbage(
   const capella_ros_msg::msg::GarbageDetect & garbage,
   const std::vector<geometry_msgs::msg::Point> & footprint_map,
@@ -519,7 +520,7 @@ bool InsertGarbagePose::isNearReachedGarbage(double x, double y) const
 namespace
 {
 
-// 点到有限线段 AB 的距离平方；t_out 为夹在 [0,1] 的投影参数（可选）
+// 点到有限线段 AB 的距离平方；t_out 为夹在 [0,1] 的投影参数
 double squaredDistancePointToSegment(
   double px, double py,
   double ax, double ay,
@@ -650,7 +651,7 @@ bool InsertGarbagePose::isGoalNotCorner(
   return theta <= corner_angle_rad;
 }
 
-// 从机器人前方沿路径找第一个角点（只在 goaltotal_range_m 窗口内）
+// 从机器人前方沿路径找第一个角点
 bool InsertGarbagePose::findFirstCornerFromRobot(
   const Goals & goals,
   double robot_x, double robot_y,
@@ -677,7 +678,7 @@ bool InsertGarbagePose::findFirstCornerFromRobot(
   return false;
 }
 
-// 从 after_idx 之后找下一个角点（只再往前 goaltotal_range_m）
+// 从 after_idx 之后找下一个角点
 bool InsertGarbagePose::findNextCornerAfter(
   const Goals & goals,
   std::size_t after_idx,
@@ -713,9 +714,8 @@ bool InsertGarbagePose::findNextCornerAfter(
   return false;
 }
 
-// 机器人前方累计路径 range_m 内的最后一个 goal（无角点时当假 goalc）
-// 窗口从剩余队列头 goals[0] 沿路径量起，禁止用整条折线欧氏最近段起算：
-// 否则机器人去垃圾点离轨时会吸到后面扫行，goalc/分支误判。
+// 机器人前方累计路径 range_m 内的最后一个 goal    无角点时当假 goalc
+
 bool InsertGarbagePose::findLastGoalWithinPathRange(
   const Goals & goals,
   double robot_x, double robot_y,
@@ -996,7 +996,7 @@ InsertGarbagePose::Goals InsertGarbagePose::clipGoalsNearGarbage(InsertInfo & in
       continue;
     }
 
-    // ①/② 垂足在段中：从 robot_fwd 或上一段角点删到垂足+clip_extend，或删到角点前
+    // 垂足在段中：从 robot_fwd 或上一段角点删到垂足+clip_extend，或删到角点前
     info.hit_mid_case = true;
     const double s_d = footArcOnPath(dx, dy);
     const double s_c = arc_s[c_idx];
@@ -1062,7 +1062,7 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
 {
   Goals out = clipGoalsNearGarbage(info);
 
-  // ①/② 插队首；仅 ③ 时插在本轮保留角点之后。不用 goala-goalc 的 t 排序插点。
+  // 插队首；仅时插在本轮保留角点之后。不用 goala-goalc 的 t 排序插点。
   std::size_t insert_idx = 0;
   if (!info.hit_mid_case && info.hit_forward_case && !info.corners_kept_xy.empty()) {
     constexpr double kMatchTol = 0.08;
@@ -1107,28 +1107,6 @@ BT::NodeStatus InsertGarbagePose::tick()
   callback_group_executor_.spin_some();
   checkAndResetOnNewMission();
 
-  // footprint 进入垃圾附近则停止再插入
-  getInput("arrived_radius", arrived_radius_);
-  std::vector<geometry_msgs::msg::Point> footprint_map;
-  if (getRobotFootprintInMap(footprint_map)) {
-    for (auto it = garbage_list_.begin(); it != garbage_list_.end(); ) {
-      if (shouldStopInsertingGarbage(*it, footprint_map, arrived_radius_)) {
-        reached_garbage_xy_.emplace_back(
-          it->pose.pose.position.x, it->pose.pose.position.y);
-        {
-          std::lock_guard<std::mutex> lock(history_mutex_);
-          history_list_.clear();
-        }
-        it = garbage_list_.erase(it);
-        RCLCPP_INFO(
-          node_->get_logger(),
-          "InsertGarbagePose: footprint reached garbage, stop inserting");
-      } else {
-        ++it;
-      }
-    }
-  }
-
   InsertInfo info = gatherInsertInfo();
   if (!info.valid) {
     setOutput("output_goals", info.goals.empty() ? receiveGoals() : info.goals);
@@ -1137,6 +1115,20 @@ BT::NodeStatus InsertGarbagePose::tick()
 
   const Goals updated_goals = insertGarbageIntoGoals(info);
   setOutput("output_goals", updated_goals);
+
+  // 插一次即完成：记入已处理，清空待插与 history，避免后续 tick 再插
+  reached_garbage_xy_.emplace_back(
+    info.garbage.pose.pose.position.x, info.garbage.pose.pose.position.y);
+  {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    history_list_.clear();
+  }
+  garbage_list_.clear();
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "InsertGarbagePose: inserted garbage once at (%.2f, %.2f), will not re-insert",
+    info.garbage.pose.pose.position.x, info.garbage.pose.pose.position.y);
+
   return BT::NodeStatus::SUCCESS;
 }
 
