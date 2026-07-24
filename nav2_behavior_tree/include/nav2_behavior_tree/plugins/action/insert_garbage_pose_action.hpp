@@ -56,7 +56,7 @@ public:
 
     Goals goals;                                          // 完整 {goals}
     geometry_msgs::msg::PoseStamped robot_pose;           // 机器人当前 map 位姿
-    geometry_msgs::msg::PoseStamped goala;                // 投影线起点：机器人当前位置
+    geometry_msgs::msg::PoseStamped goala;                // 投影线起点：goaltotal_range_m 内第一个点(goals[0])
     geometry_msgs::msg::PoseStamped goalc;                // 投影线终点：第一角点；无角点则为前方 range 内末点
     std::size_t goalc_idx{0};                             // goalc 在 goals 中的下标
     Goals goaltotal;                                      // 本轮逻辑判定要删除的 goals最后一块删
@@ -96,6 +96,9 @@ public:
       BT::InputPort<double>(
         "goaltotal_range_m", 10.0,
         "If no corner ahead, use last goal within this path distance as goalc (m)"),
+      BT::InputPort<double>(
+        "head_delete_robot_dist_m", 4.0,
+        "Only delete from goals head forward when robot is within this distance (m) of goals[0]"),
       BT::InputPort<std::string>("global_frame", std::string("map"), "Global frame"),
       BT::InputPort<std::string>("robot_base_frame", std::string("base_link"), "Robot base frame"),
     };
@@ -136,10 +139,10 @@ private:
   /** 获取插入所需的全部信息并返回 */
   InsertInfo gatherInsertInfo();
 
-  /** 按 goala/goalc/goald 收集待删点到 goaltotal，再删除 */
+  /** 按 goala/goalc/goald 收集待删点到 goaltotal，再一块删除 */
   Goals clipGoalsNearGarbage(InsertInfo & info);
 
-  /** 删点后插入真实垃圾并统一时间戳；①/② 插队首，仅 ③ 插在保留角点后 */
+  /** 剔圆内点、插入真实垃圾、统一时间戳 */
   Goals insertGarbageIntoGoals(InsertInfo & info);
 
   /** 把单个垃圾从 base_link 转到 map */
@@ -173,7 +176,7 @@ private:
     double px, double py,
     double ax, double ay,
     double bx, double by);
-  /** true=非角点，false=角点；队首优先用 mission_goals_ 前驱，否则用机器人 */
+  /** true=非角点，false=角点；前驱用上一 goal，队首用机器人 */
   bool isGoalNotCorner(
     const Goals & goals,
     std::size_t idx,
@@ -189,7 +192,7 @@ private:
     std::size_t after_idx,
     double robot_x, double robot_y,
     std::size_t & corner_idx) const;
-  /** 从剩余队列头沿路径量 range_m 内末点；勿用整条折线欧氏最近段起算 */
+  /** 从剩余队列头沿路径量 range_m 内末点 */
   bool findLastGoalWithinPathRange(
     const Goals & goals,
     double robot_x, double robot_y,
@@ -197,11 +200,6 @@ private:
     std::size_t & out_idx,
     std::size_t * nearest_seg_out = nullptr,
     std::size_t * start_idx_out = nullptr) const;
-
-  /** 离轨判定：到剩余路径窗口折线超过该距离则 robot_fwd=0 */
-  static constexpr double kOffPathSnapM = 1.0;
-  /** 在 mission_goals_ 中匹配队首点时的距离阈值（m） */
-  static constexpr double kMissionPrevMatchM = 0.08;
 
   rclcpp::Node::SharedPtr node_;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
@@ -221,6 +219,8 @@ private:
   double clip_extend_m_{1.0};
   double corner_angle_deg_{60.0};
   double goaltotal_range_m_{10.0};
+  /** 离队头超过该距离就不删点，默认 4m */
+  double head_delete_robot_dist_m_{4.0};
 
   std::mutex history_mutex_;
   /** 原始接收缓存 */
@@ -229,8 +229,6 @@ private:
   GarbageList garbage_list_;
   /** 从黑板接收到的完整 goals */
   Goals received_goals_;
-  /** 本任务开始时的路径快照，供队首角点取路径前驱（对齐 demo original_goals） */
-  Goals mission_goals_;
   /** 当前认定的任务时间戳，与 goals 上统一 stamp 对齐 */
   rclcpp::Time mission_stamp_record_{0, 0, RCL_ROS_TIME};
   bool has_mission_stamp_{false};
