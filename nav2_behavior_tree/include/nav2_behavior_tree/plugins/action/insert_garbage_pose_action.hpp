@@ -153,6 +153,8 @@ private:
    * 前方延长线多轮删点后：在剩余路径上重判角点。
    * 不再是角点（或过期队首肘点）→ 取消保护并加入 delete_idx；同步剔除 corners_kept_xy。
    * keep_idx：本轮仍需保留的 goalc；nullptr 表示无。
+   * also_keep_idx：下一轮投影起点 A（上一角点）；进入延长线投影前必须保住，
+   * 否则 A 被当成队首过期肘点删掉后会缩成短边，误判 reverse 而停删。
    */
   void refreshCornersOnRemaining(
     const Goals & goals,
@@ -160,7 +162,8 @@ private:
     std::set<std::size_t> & delete_idx,
     std::set<std::size_t> & protected_corners,
     std::vector<std::pair<double, double>> & corners_kept_xy,
-    const std::size_t * keep_idx) const;
+    const std::size_t * keep_idx,
+    const std::size_t * also_keep_idx = nullptr) const;
 
   /** 把单个垃圾从 base_link 转到 map */
   bool transformGarbageToMap(capella_ros_msg::msg::GarbageDetect & garbage) const;
