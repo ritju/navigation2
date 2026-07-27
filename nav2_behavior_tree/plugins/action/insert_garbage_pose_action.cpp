@@ -30,7 +30,7 @@ InsertGarbagePose::InsertGarbagePose(
   robot_base_frame_("base_link"),
   arrived_radius_(0.5),       // footprint 进入垃圾附近半径，停止再插入
   clip_extend_m_(1.0),        // 从垃圾垂足沿路径再删的距离
-  corner_angle_deg_(45.0),    // 前后两段夹角超过此值视为角点
+  corner_angle_deg_(30.0),    // 前后两段夹角超过此值视为角点
   goaltotal_range_m_(10.0),   // 无角点时，前方该距离内末点当作 goalc
   head_delete_robot_dist_m_(4.0),  // 离队头超过该距离就不删点
   max_garbage_robot_dist_m_(9.0)   // 垃圾离机器人超过该距离则忽略
