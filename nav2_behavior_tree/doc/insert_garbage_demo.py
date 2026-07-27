@@ -273,14 +273,18 @@ def refresh_corners_on_remaining(
   corners_kept: List[Point],
   corner_angle_deg: float,
   keep_idx: Optional[int] = None,
+  also_keep_idx: Optional[int] = None,
 ) -> List[str]:
   """每轮前方延长线删点后：在剩余路径上重判角点。
 
   不再是角点的保护点：取消保护，并加入 delete_idx。
   keep_idx：本轮仍需保留的 goalc（当前 C）；不删它。
+  also_keep_idx：下一轮投影起点 A（上一角点）；进入延长线投影前必须保住，
+  否则 A 被当成“队首过期肘点”删掉后会缩成短边，误判 reverse 而停删。
 
   额外规则：若某保护点已成为剩余路径队首，且 keep_idx 仍指向更前方的角点，
   说明它的原前驱已被删、不再是“中间拐弯肘点”→ 视为过期（典型：L 形第一肘点 g2）。
+  但若该点仍是当前 A（also_keep_idx），本轮先不删。
   """
   notes: List[str] = []
   remaining_idx = [i for i in range(len(goals)) if i not in delete_idx]
@@ -289,13 +293,14 @@ def refresh_corners_on_remaining(
 
   remaining_pts = [goals[i] for i in remaining_idx]
   old_to_new = {old: new for new, old in enumerate(remaining_idx)}
+  keep_set = {i for i in (keep_idx, also_keep_idx) if i is not None}
 
   stale: List[int] = []
   for old_i in list(protected):
     if old_i in delete_idx:
       protected.discard(old_i)
       continue
-    if old_i == keep_idx:
+    if old_i in keep_set:
       continue
     new_i = old_to_new.get(old_i)
     if new_i is None:
@@ -305,6 +310,7 @@ def refresh_corners_on_remaining(
     lost_inbound = (old_i == 0) or ((old_i - 1) in delete_idx)
     became_head = (new_i == 0)
     # 队首 + 原前驱已断 + 后方还有要保留的角点 → 过期肘点
+    # （当前 A/C 已在 keep_set，不会误伤下一轮投影边）
     if became_head and lost_inbound and keep_idx is not None and keep_idx not in delete_idx:
       stale.append(old_i)
       continue
@@ -441,10 +447,11 @@ def clip_and_insert_garbage(
       t_d = line_parameter_t(dx, dy, ax, ay, cx, cy)
 
       # 非首轮进入本轮前：先刷新角点，删掉已过期的上一肘点（如 g2）
+      # 但必须保住当前 A（上一角点）与 C，否则投影边被掐短 → 假 reverse 停删
       if not first_round and t_d > 1.0 + eps:
         for n in refresh_corners_on_remaining(
           goals, robot, delete_idx, protected, corners_kept, corner_angle_deg,
-          keep_idx=c_idx):
+          keep_idx=c_idx, also_keep_idx=a_idx):
           case_detail.append(f'R{round_i}:pre-refresh {n}')
         if a_idx in delete_idx:
           new_a = 0
