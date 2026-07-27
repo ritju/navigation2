@@ -1,0 +1,21 @@
+{
+  "name": "from_zigzag_rviz_log",
+  "note": "WP1-11 + robot TF + garbage(4,2) from run_zigzag_garbage_test.sh / pub_test_garbage",
+  "robot": {"x": -1.997, "y": -1.498, "yaw_deg": 0.1},
+  "goals": [
+    {"x": -0.143, "y": -1.456, "yaw_deg": 1.8},
+    {"x": 0.736, "y": -1.487, "yaw_deg": 2.3},
+    {"x": 1.725, "y": -1.566, "yaw_deg": 0.0},
+    {"x": 2.572, "y": -1.660, "yaw_deg": 2.5},
+    {"x": 3.011, "y": -0.875, "yaw_deg": 88.1},
+    {"x": 3.058, "y": 0.176, "yaw_deg": 86.5},
+    {"x": 3.043, "y": 1.384, "yaw_deg": 88.1},
+    {"x": 2.745, "y": 1.824, "yaw_deg": 177.7},
+    {"x": 1.944, "y": 1.886, "yaw_deg": -177.5},
+    {"x": 1.097, "y": 1.808, "yaw_deg": -177.9},
+    {"x": 0.234, "y": 1.839, "yaw_deg": 178.8}
+  ],
+  "garbage": [
+    {"x": 4.0, "y": 2.0}
+  ]
+}
