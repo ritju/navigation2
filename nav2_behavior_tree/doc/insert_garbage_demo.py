@@ -46,7 +46,7 @@ matplotlib.rcParams['axes.unicode_minus'] = False
 
 # ---------- mirror C++ InsertGarbagePose defaults ----------
 CLIP_EXTEND_M = 1.0
-CORNER_ANGLE_DEG = 45.0
+CORNER_ANGLE_DEG = 30.0
 GOALTOTAL_RANGE_M = 10.0
 HEAD_DELETE_ROBOT_DIST_M = 4.0
 ARRIVED_RADIUS = 0.5
