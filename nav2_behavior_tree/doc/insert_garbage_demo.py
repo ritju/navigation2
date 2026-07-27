@@ -50,6 +50,8 @@ CORNER_ANGLE_DEG = 45.0
 GOALTOTAL_RANGE_M = 10.0
 HEAD_DELETE_ROBOT_DIST_M = 4.0
 ARRIVED_RADIUS = 0.5
+# 垃圾离机器人超过该距离则忽略（对齐 C++ max_garbage_robot_dist_m）
+MAX_GARBAGE_ROBOT_DIST_M = 9.0
 DEDUP_DISTANCE_M = 0.15
 
 # ---------- map / robot / sim ----------
@@ -738,6 +740,15 @@ def maybe_publish_and_insert(state: SimState) -> None:
 
   gx, gy = state.garbage_xy[i]
   hint = state.garbage_items[i][1]
+  dist_robot = dist(state.robot, (gx, gy))
+  if MAX_GARBAGE_ROBOT_DIST_M > 0.0 and dist_robot > MAX_GARBAGE_ROBOT_DIST_M:
+    state.published.add(i)
+    state.finished.add(i)
+    state.log(
+      f'Skip garbage[{i}] ({gx:.2f},{gy:.2f}) dist_robot={dist_robot:.2f}m '
+      f'> {MAX_GARBAGE_ROBOT_DIST_M:.1f}m (too far, ignore)')
+    return
+
   ahead = path_goals_ahead(state.original_goals, state.robot, (gx, gy))
   # RT* = added during run; skip path-ahead gate so it can insert soon
   if not str(hint).startswith('RT') and ahead > GARBAGE_PUBLISH_WITHIN_GOALS:
@@ -748,7 +759,9 @@ def maybe_publish_and_insert(state: SimState) -> None:
       state.published.add(i)
       return
 
-  state.log(f'Publish garbage[{i}] ({gx:.2f},{gy:.2f}) ahead={ahead} | {hint}')
+  state.log(
+    f'Publish garbage[{i}] ({gx:.2f},{gy:.2f}) ahead={ahead} '
+    f'dist_robot={dist_robot:.2f}m | {hint}')
 
   result = clip_and_insert_garbage(state.goals, state.robot, (gx, gy))
   if result is None:

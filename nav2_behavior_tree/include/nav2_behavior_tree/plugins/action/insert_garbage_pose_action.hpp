@@ -100,6 +100,9 @@ public:
       BT::InputPort<double>(
         "head_delete_robot_dist_m", 4.0,
         "Only delete from goals head forward when robot is within this distance (m) of goals[0]"),
+      BT::InputPort<double>(
+        "max_garbage_robot_dist_m", 9.0,
+        "Ignore garbage farther than this distance (m) from robot (anti false-detect)"),
       BT::InputPort<std::string>("global_frame", std::string("map"), "Global frame"),
       BT::InputPort<std::string>("robot_base_frame", std::string("base_link"), "Robot base frame"),
     };
@@ -235,6 +238,8 @@ private:
   double goaltotal_range_m_{10.0};
   /** 离队头超过该距离就不删点，默认 4m */
   double head_delete_robot_dist_m_{4.0};
+  /** 垃圾离机器人超过该距离则忽略，默认 9m（防远处误识别） */
+  double max_garbage_robot_dist_m_{9.0};
 
   std::mutex history_mutex_;
   /** 原始接收缓存 */

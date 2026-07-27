@@ -32,7 +32,8 @@ InsertGarbagePose::InsertGarbagePose(
   clip_extend_m_(1.0),        // 从垃圾垂足沿路径再删的距离
   corner_angle_deg_(45.0),    // 前后两段夹角超过此值视为角点
   goaltotal_range_m_(10.0),   // 无角点时，前方该距离内末点当作 goalc
-  head_delete_robot_dist_m_(4.0)  // 离队头超过该距离就不删点
+  head_delete_robot_dist_m_(4.0),  // 离队头超过该距离就不删点
+  max_garbage_robot_dist_m_(9.0)   // 垃圾离机器人超过该距离则忽略
 {
   getInput("garbage_topic", garbage_topic_);
   getInput("special_terrain_topic", special_terrain_topic_);
@@ -42,6 +43,7 @@ InsertGarbagePose::InsertGarbagePose(
   getInput("corner_angle_deg", corner_angle_deg_);
   getInput("goaltotal_range_m", goaltotal_range_m_);
   getInput("head_delete_robot_dist_m", head_delete_robot_dist_m_);
+  getInput("max_garbage_robot_dist_m", max_garbage_robot_dist_m_);
   getInput("global_frame", global_frame_);
   getInput("robot_base_frame", robot_base_frame_);
 
@@ -308,6 +310,8 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
   const double robot_x = robot_pose.pose.position.x;
   const double robot_y = robot_pose.pose.position.y;
 
+  getInput("max_garbage_robot_dist_m", max_garbage_robot_dist_m_);
+
   auto sameDetect =     // id，stamp，xy 都相同则认为是同一条垃圾
     [](const capella_ros_msg::msg::GarbageDetect & a,
       const capella_ros_msg::msg::GarbageDetect & b) {
@@ -347,6 +351,22 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
         garbage.pose.pose.position.x, garbage.pose.pose.position.y);
       eraseFromHistory(original);
       continue;
+    }
+
+    // 离机器人太远：视为误识别，丢弃（不进 garbage_list_）
+    if (max_garbage_robot_dist_m_ > 0.0) {
+      const double dist_robot = std::sqrt(squaredDistanceXY(
+          garbage.pose.pose.position.x, garbage.pose.pose.position.y,
+          robot_x, robot_y));
+      if (dist_robot > max_garbage_robot_dist_m_) {
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "InsertGarbagePose: drop garbage %.2fm from robot > %.2fm at (%.2f, %.2f)",
+          dist_robot, max_garbage_robot_dist_m_,
+          garbage.pose.pose.position.x, garbage.pose.pose.position.y);
+        eraseFromHistory(original);
+        continue;
+      }
     }
 
     // 已到达过的垃圾不再写入
