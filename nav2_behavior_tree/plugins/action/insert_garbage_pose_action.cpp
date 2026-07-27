@@ -861,9 +861,10 @@ void InsertGarbagePose::refreshCornersOnRemaining(
   std::set<std::size_t> & delete_idx,
   std::set<std::size_t> & protected_corners,
   std::vector<std::pair<double, double>> & corners_kept_xy,
-  const std::size_t * keep_idx) const
+  const std::size_t * keep_idx,
+  const std::size_t * also_keep_idx) const
 {
-  // 对齐 Python refresh_corners_on_remaining
+  // 对齐 Python refresh_corners_on_remaining（keep C + 可选 keep A）
   std::vector<std::size_t> remaining_idx;
   remaining_idx.reserve(goals.size());
   for (std::size_t i = 0; i < goals.size(); ++i) {
@@ -884,6 +885,11 @@ void InsertGarbagePose::refreshCornersOnRemaining(
     old_to_new[old_i] = new_i;
   }
 
+  auto is_kept = [&](std::size_t idx) {
+    return (keep_idx != nullptr && idx == *keep_idx) ||
+           (also_keep_idx != nullptr && idx == *also_keep_idx);
+  };
+
   std::vector<std::size_t> stale;
   for (auto it = protected_corners.begin(); it != protected_corners.end(); ) {
     const std::size_t old_i = *it;
@@ -891,7 +897,7 @@ void InsertGarbagePose::refreshCornersOnRemaining(
       it = protected_corners.erase(it);
       continue;
     }
-    if (keep_idx != nullptr && old_i == *keep_idx) {
+    if (is_kept(old_i)) {
       ++it;
       continue;
     }
@@ -904,6 +910,7 @@ void InsertGarbagePose::refreshCornersOnRemaining(
     const bool lost_inbound = (old_i == 0) || (delete_idx.count(old_i - 1) != 0);
     const bool became_head = (new_i == 0);
     // 队首 + 原前驱已断 + 后方还有要保留的角点 → 过期肘点
+    // （当前 A/C 已在 is_kept，不会误伤下一轮投影边）
     if (became_head && lost_inbound && keep_idx != nullptr &&
       delete_idx.count(*keep_idx) == 0)
     {
@@ -1035,10 +1042,11 @@ InsertGarbagePose::Goals InsertGarbagePose::clipGoalsNearGarbage(InsertInfo & in
     double cy = goals[c_idx].pose.position.y;
     double t_d = lineParameterT(dx, dy, ax, ay, cx, cy);
 
-    // 非首轮且仍是前方延长线：先刷新过期角点；A 被删则 rebase
+    // 非首轮且仍是前方延长线：先刷新过期角点；须同时保住当前 A，避免投影边被掐短后误判 reverse
     if (!first_round && t_d > 1.0 + kEps) {
       refreshCornersOnRemaining(
-        goals, rx, ry, delete_idx, protected_corners, info.corners_kept_xy, &c_idx);
+        goals, rx, ry, delete_idx, protected_corners, info.corners_kept_xy,
+        &c_idx, &a_idx);
       if (delete_idx.count(a_idx) != 0) {
         std::size_t new_a = 0;
         for (std::size_t i = c_idx; i > 0; --i) {
