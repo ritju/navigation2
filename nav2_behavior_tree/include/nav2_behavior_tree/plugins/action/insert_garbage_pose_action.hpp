@@ -93,7 +93,7 @@ public:
       BT::InputPort<double>(
         "clip_extend_m", 1.0, "After garbage foot on path, delete goals for this distance (m)"),
       BT::InputPort<double>(
-        "corner_angle_deg", 45.0, "Goals with turn angle above this are corners (deg)"),
+        "corner_angle_deg", 30.0, "Goals with turn angle above this are corners (deg)"),
       BT::InputPort<double>(
         "goaltotal_range_m", 10.0,
         "If no corner ahead, use last goal within this path distance as goalc (m)"),
@@ -153,7 +153,7 @@ private:
    * 前方延长线多轮删点后：在剩余路径上重判角点。
    * 不再是角点（或过期队首肘点）→ 取消保护并加入 delete_idx；同步剔除 corners_kept_xy。
    * keep_idx：本轮仍需保留的 goalc；nullptr 表示无。
-   * also_keep_idx：下一轮投影起点 A（上一角点）；进入延长线投影前必须保住，
+   * also_keep_idx：下一轮投影起点 A；进入延长线投影前必须保住，
    * 否则 A 被当成队首过期肘点删掉后会缩成短边，误判 reverse 而停删。
    */
   void refreshCornersOnRemaining(
@@ -237,7 +237,7 @@ private:
   double transform_tolerance_{0.1};
   double arrived_radius_{0.5};
   double clip_extend_m_{1.0};
-  double corner_angle_deg_{45.0};
+  double corner_angle_deg_{30.0};
   double goaltotal_range_m_{10.0};
   /** 离队头超过该距离就不删点，默认 4m */
   double head_delete_robot_dist_m_{4.0};
