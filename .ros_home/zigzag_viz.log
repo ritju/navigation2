@@ -1,0 +1,6 @@
+[INFO] [1785135070.614128967] [reset_robot_pose]: Reset robot pose to start (-2.00, -1.50), yaw=0.0deg ...
+[WARN] [1785135075.644706982] [reset_robot_pose]: /set_entity_state unavailable; only resetting AMCL initialpose
+COMMANDED_START map: x=-2.000 y=-1.500 yaw_rad=0.000 yaw_deg=0.0
+TF_POSE map: x=-1.637 y=-1.478 yaw_rad=0.061 yaw_deg=3.5
+RViz: MarkerArray topic → /m  (green=active, black=deleted, red=garbage, cyan=draft wp)
+Listening /waypoints ... Ctrl+C to quit.
