@@ -18,6 +18,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -66,8 +67,8 @@ public:
     double goald_y{0.0};
     double path_yaw{0.0};                                 // goala 到 goalc 方向，插入朝向用
     bool hit_mid_case{false};                             // 垂足落在段中
-    bool hit_forward_case{false};                         // 前方延长线 
-    std::vector<std::pair<double, double>> corners_kept_xy;  // 经过并保留的角点 xy
+    bool hit_forward_case{false};                         // 前方延长线
+    std::vector<std::pair<double, double>> corners_kept_xy;  // 前方延长线保留角点（会随刷新剔除）
   };
 
   InsertGarbagePose(
@@ -92,7 +93,7 @@ public:
       BT::InputPort<double>(
         "clip_extend_m", 1.0, "After garbage foot on path, delete goals for this distance (m)"),
       BT::InputPort<double>(
-        "corner_angle_deg", 60.0, "Goals with turn angle above this are corners (deg)"),
+        "corner_angle_deg", 45.0, "Goals with turn angle above this are corners (deg)"),
       BT::InputPort<double>(
         "goaltotal_range_m", 10.0,
         "If no corner ahead, use last goal within this path distance as goalc (m)"),
@@ -142,8 +143,21 @@ private:
   /** 按 goala/goalc/goald 收集待删点到 goaltotal，再一块删除 */
   Goals clipGoalsNearGarbage(InsertInfo & info);
 
-  /** 剔圆内点、插入真实垃圾、统一时间戳 */
+  /** 插入真实垃圾（队首）、统一时间戳；接回点前残留丢掉，避免扫完折返 */
   Goals insertGarbageIntoGoals(InsertInfo & info);
+
+  /**
+   * 前方延长线多轮删点后：在剩余路径上重判角点。
+   * 不再是角点（或过期队首肘点）→ 取消保护并加入 delete_idx；同步剔除 corners_kept_xy。
+   * keep_idx：本轮仍需保留的 goalc；nullptr 表示无。
+   */
+  void refreshCornersOnRemaining(
+    const Goals & goals,
+    double robot_x, double robot_y,
+    std::set<std::size_t> & delete_idx,
+    std::set<std::size_t> & protected_corners,
+    std::vector<std::pair<double, double>> & corners_kept_xy,
+    const std::size_t * keep_idx) const;
 
   /** 把单个垃圾从 base_link 转到 map */
   bool transformGarbageToMap(capella_ros_msg::msg::GarbageDetect & garbage) const;
@@ -217,7 +231,7 @@ private:
   double transform_tolerance_{0.1};
   double arrived_radius_{0.5};
   double clip_extend_m_{1.0};
-  double corner_angle_deg_{60.0};
+  double corner_angle_deg_{45.0};
   double goaltotal_range_m_{10.0};
   /** 离队头超过该距离就不删点，默认 4m */
   double head_delete_robot_dist_m_{4.0};
