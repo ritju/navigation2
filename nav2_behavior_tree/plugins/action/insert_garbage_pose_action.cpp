@@ -1092,9 +1092,30 @@ InsertGarbagePose::Goals InsertGarbagePose::clipGoalsNearGarbage(InsertInfo & in
 
       std::size_t next_c = 0;
       if (!findNextCornerAfter(goals, c_idx, rx, ry, next_c)) {
-        refreshCornersOnRemaining(
-          goals, rx, ry, delete_idx, protected_corners, info.corners_kept_xy, &c_idx);
-        break;
+        // 无下一角：从当前 C 起沿路 goaltotal_range 内末点兜底再判一轮
+        // （对齐 demo：否则会漏掉「延长线后再落在下一段中部」的删除）
+        std::size_t range_end = c_idx;
+        double accumulated = 0.0;
+        for (std::size_t i = c_idx; i + 1 < goals.size(); ++i) {
+          accumulated += std::sqrt(squaredDistanceXY(
+            goals[i].pose.position.x, goals[i].pose.position.y,
+            goals[i + 1].pose.position.x, goals[i + 1].pose.position.y));
+          if (accumulated > goaltotal_range_m_) {
+            break;
+          }
+          range_end = i + 1;
+        }
+        if (range_end <= c_idx) {
+          refreshCornersOnRemaining(
+            goals, rx, ry, delete_idx, protected_corners, info.corners_kept_xy, &c_idx);
+          break;
+        }
+        next_c = range_end;
+        RCLCPP_DEBUG(
+          node_->get_logger(),
+          "InsertGarbagePose: no next corner, fallback last-in-range idx=%zu (%.2f, %.2f)",
+          next_c,
+          goals[next_c].pose.position.x, goals[next_c].pose.position.y);
       }
 
       if (delete_idx.count(c_idx) == 0) {
@@ -1163,6 +1184,10 @@ InsertGarbagePose::Goals InsertGarbagePose::clipGoalsNearGarbage(InsertInfo & in
       }
       delete_idx.insert(j);
     }
+    // 段中删完也刷新过期角点：上一轮 C（现为 A）在剩余路径上
+    // 往往已不是角点，但仍在 protected，不刷就会漏删（对齐 demo）
+    refreshCornersOnRemaining(
+      goals, rx, ry, delete_idx, protected_corners, info.corners_kept_xy, &c_idx);
     break;
   }
 
