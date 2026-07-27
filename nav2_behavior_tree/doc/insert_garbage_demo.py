@@ -43,14 +43,17 @@ from matplotlib.transforms import Affine2D
 # UI text uses ASCII only (avoid CJK tofu boxes on some fonts)
 matplotlib.rcParams['font.family'] = 'DejaVu Sans'
 matplotlib.rcParams['axes.unicode_minus'] = False
+# Q/q is our "clear canvas"; disable matplotlib's default quit bindings
+matplotlib.rcParams['keymap.quit'] = []
+matplotlib.rcParams['keymap.quit_all'] = []
 
 # ---------- mirror C++ InsertGarbagePose defaults ----------
 CLIP_EXTEND_M = 1.0
-CORNER_ANGLE_DEG = 45.0
+CORNER_ANGLE_DEG = 30.0
 GOALTOTAL_RANGE_M = 10.0
 HEAD_DELETE_ROBOT_DIST_M = 4.0
 ARRIVED_RADIUS = 0.5
-# 垃圾离机器人超过该距离则忽略（对齐 C++ max_garbage_robot_dist_m）
+# 垃圾离机器人超过该距离则本帧跳过，靠近后再插入（对齐 C++ 持续检测语义）
 MAX_GARBAGE_ROBOT_DIST_M = 9.0
 DEDUP_DISTANCE_M = 0.15
 
@@ -508,13 +511,25 @@ def clip_and_insert_garbage(
         next_c = find_next_corner_after(
           goals, c_idx, robot, goaltotal_range_m, corner_angle_deg)
         if next_c is None:
-          # 没有下一角：仍刷新过期点，但保留本轮 C（最后结构角点）
-          for n in refresh_corners_on_remaining(
-            goals, robot, delete_idx, protected, corners_kept, corner_angle_deg,
-            keep_idx=c_idx):
-            case_detail.append(f'R{round_i}:final-refresh {n}')
-          case_detail.append(f'R{round_i}:3 no next corner -> stop')
-          break
+          # 无下一角点：从当前 C 起沿路 goaltotal_range 内末点兜底再判一轮
+          # （否则会漏掉「延长线后再落在下一段中部」的删除，如图二竖列）
+          range_end, accumulated = c_idx, 0.0
+          for i in range(c_idx, len(goals) - 1):
+            accumulated += dist(goals[i], goals[i + 1])
+            if accumulated > goaltotal_range_m:
+              break
+            range_end = i + 1
+          if range_end <= c_idx:
+            for n in refresh_corners_on_remaining(
+              goals, robot, delete_idx, protected, corners_kept, corner_angle_deg,
+              keep_idx=c_idx):
+              case_detail.append(f'R{round_i}:final-refresh {n}')
+            case_detail.append(f'R{round_i}:3 no next corner/range end -> stop')
+            break
+          next_c = range_end
+          case_detail.append(
+            f'R{round_i}:3 no next corner, fallback last-in-range idx={next_c} '
+            f'({goals[next_c][0]:.2f},{goals[next_c][1]:.2f})')
 
         if c_idx not in delete_idx:
           a_idx = c_idx
@@ -583,6 +598,12 @@ def clip_and_insert_garbage(
       rounds.append(RoundEvidence(
         round_i=round_i, tag=tag, a=a_pt, c=c_pt, foot=foot,
         garbage=garbage, t_d=t_d, deleted=newly, note=note))
+      # 段中删完也要刷新过期角点：上一轮 C（现为 A）在剩余路径上
+      # 往往已不是角点，但仍在 protected，不刷就会漏删
+      for n in refresh_corners_on_remaining(
+        goals, robot, delete_idx, protected, corners_kept, corner_angle_deg,
+        keep_idx=c_idx):
+        case_detail.append(f'R{round_i}:mid-refresh {n}')
       break
 
   deleted = [goals[i] for i in sorted(delete_idx)]
@@ -748,12 +769,8 @@ def maybe_publish_and_insert(state: SimState) -> None:
   gx, gy = state.garbage_xy[i]
   hint = state.garbage_items[i][1]
   dist_robot = dist(state.robot, (gx, gy))
+  # 太远则本帧忽略，不标记 finished：机器人靠近后继续判断
   if MAX_GARBAGE_ROBOT_DIST_M > 0.0 and dist_robot > MAX_GARBAGE_ROBOT_DIST_M:
-    state.published.add(i)
-    state.finished.add(i)
-    state.log(
-      f'Skip garbage[{i}] ({gx:.2f},{gy:.2f}) dist_robot={dist_robot:.2f}m '
-      f'> {MAX_GARBAGE_ROBOT_DIST_M:.1f}m (too far, ignore)')
     return
 
   ahead = path_goals_ahead(state.original_goals, state.robot, (gx, gy))
@@ -874,10 +891,13 @@ def scenario_to_edit(data: dict):
   goals = [(float(g['x']), float(g['y'])) for g in data['goals']]
   yaws = [math.radians(float(g.get('yaw_deg', 0.0))) for g in data['goals']]
   garbage = [(float(g['x']), float(g['y'])) for g in data.get('garbage', [])]
+  # 运行中 RMB 加的垃圾：用 RT* 提示，跳过 path-ahead 门槛（对齐日志复刻）
+  runtime_garbage = [
+    (float(g['x']), float(g['y'])) for g in data.get('runtime_garbage', [])]
   robot = data['robot']
   robot_xy = (float(robot['x']), float(robot['y']))
   robot_yaw = math.radians(float(robot.get('yaw_deg', 0.0)))
-  return goals, yaws, garbage, robot_xy, robot_yaw
+  return goals, yaws, garbage, runtime_garbage, robot_xy, robot_yaw
 
 
 def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
@@ -885,6 +905,7 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
   edit_goals: List[Point] = []
   edit_goal_yaws: List[float] = []
   edit_garbage: List[Point] = []
+  edit_runtime_garbage: List[Point] = []
   robot_xy: Optional[Point] = None
   robot_yaw: float = 0.0
   undo_stack: List[str] = []  # 'goal' | 'robot' | 'garbage'
@@ -961,8 +982,12 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
     if not sp:
       sp = str(Path(__file__).resolve().with_name('replay_c_bend.json'))
     data = load_scenario(sp)
-    edit_goals, edit_goal_yaws, edit_garbage, robot_xy, robot_yaw = scenario_to_edit(data)
+    edit_goals, edit_goal_yaws, edit_garbage, edit_runtime_garbage, robot_xy, robot_yaw = (
+      scenario_to_edit(data))
     slog(f'Replay mode: {data.get("name", sp)}')
+    slog(
+      f'Loaded {len(edit_goals)} goals, {len(edit_garbage)} garbage, '
+      f'{len(edit_runtime_garbage)} runtime_garbage')
     slog('No mouse edit. SPACE pause | A/D point | Enter restart | Esc quit')
   else:
     slog('Mode: edit goals. LMB=goal RMB=robot Enter=next Bksp=undo Q=clear')
@@ -1170,6 +1195,8 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
       slog('Need robot pose (RMB)')
       return
     items = [((g[0], g[1]), f'G{i}') for i, g in enumerate(edit_garbage)]
+    for j, g in enumerate(edit_runtime_garbage):
+      items.append(((g[0], g[1]), f'RT{len(items)}'))
     state = new_sim_state(edit_goals, robot_xy, robot_yaw, items)
     checkpoints = [copy.deepcopy(state)]
     checkpoint_idx = 0
@@ -1187,6 +1214,8 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
     if robot_xy is None or len(edit_goals) < 2:
       return
     items = [((g[0], g[1]), f'G{i}') for i, g in enumerate(edit_garbage)]
+    for j, g in enumerate(edit_runtime_garbage):
+      items.append(((g[0], g[1]), f'RT{len(items)}'))
     state = new_sim_state(edit_goals, robot_xy, robot_yaw, items)
     checkpoints = [copy.deepcopy(state)]
     checkpoint_idx = 0
