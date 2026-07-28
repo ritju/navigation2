@@ -1471,11 +1471,11 @@ void InsertGarbagePose::publishVisualization(
   }
 
   if (viz_deleted_goals) {
-    // 空心黑圈，比常见 goals 球略大一点
-    const double ring_r = 0.30;
+    // 空心黑圈，比 goals 球略大一点即可
+    const double ring_r = 0.16;
     for (const auto & g : info.goaltotal) {
       auto m = makeBase("deleted_goals", mid++, visualization_msgs::msg::Marker::LINE_STRIP);
-      m.scale.x = 0.035;
+      m.scale.x = 0.025;
       setColor(m, 0.05f, 0.05f, 0.05f, 0.95f);
       appendRing(m, g.pose.position.x, g.pose.position.y, ring_r);
       arr.markers.push_back(m);
@@ -1491,6 +1491,14 @@ void InsertGarbagePose::publishVisualization(
     const float lg = first ? 0.15f : 0.75f;
     const float lb = first ? 0.10f : 0.80f;
 
+    const double vx = rnd.cx - rnd.ax;
+    const double vy = rnd.cy - rnd.ay;
+    const double L = std::sqrt(vx * vx + vy * vy) + 1e-9;
+    const double ux = vx / L;
+    const double uy = vy / L;
+    // 文字往侧面挪，和 F 一样，别压在点/圈上
+    constexpr double kLabelOff = 0.50;
+
     if (viz_ac_points) {
       auto ma = makeBase("ac_points", mid++, visualization_msgs::msg::Marker::CUBE);
       ma.pose.position.x = rnd.ax;
@@ -1503,10 +1511,10 @@ void InsertGarbagePose::publishVisualization(
       arr.markers.push_back(ma);
 
       auto ta = makeBase("ac_points", mid++, visualization_msgs::msg::Marker::TEXT_VIEW_FACING);
-      ta.pose.position.x = rnd.ax;
-      ta.pose.position.y = rnd.ay;
-      ta.pose.position.z = 0.35;
-      ta.scale.z = 0.20;
+      ta.pose.position.x = rnd.ax - uy * kLabelOff;
+      ta.pose.position.y = rnd.ay + ux * kLabelOff;
+      ta.pose.position.z = 0.45;
+      ta.scale.z = 0.28;
       {
         std::ostringstream oss;
         oss << "A" << rnd.round_i;
@@ -1526,10 +1534,10 @@ void InsertGarbagePose::publishVisualization(
       arr.markers.push_back(mc);
 
       auto tc = makeBase("ac_points", mid++, visualization_msgs::msg::Marker::TEXT_VIEW_FACING);
-      tc.pose.position.x = rnd.cx;
-      tc.pose.position.y = rnd.cy;
-      tc.pose.position.z = 0.38;
-      tc.scale.z = 0.20;
+      tc.pose.position.x = rnd.cx + uy * kLabelOff;
+      tc.pose.position.y = rnd.cy - ux * kLabelOff;
+      tc.pose.position.z = 0.45;
+      tc.scale.z = 0.28;
       {
         std::ostringstream oss;
         oss << "C" << rnd.round_i;
@@ -1548,11 +1556,6 @@ void InsertGarbagePose::publishVisualization(
       pushPoint(solid, rnd.cx, rnd.cy);
       arr.markers.push_back(solid);
 
-      const double vx = rnd.cx - rnd.ax;
-      const double vy = rnd.cy - rnd.ay;
-      const double L = std::sqrt(vx * vx + vy * vy) + 1e-9;
-      const double ux = vx / L;
-      const double uy = vy / L;
       const double ext = std::max(3.0, 0.6 * L);
 
       auto dashed = makeBase("ac_geometry", mid++, visualization_msgs::msg::Marker::LINE_LIST);
@@ -1586,10 +1589,11 @@ void InsertGarbagePose::publishVisualization(
       arr.markers.push_back(mf);
 
       auto tf = makeBase("ac_geometry", mid++, visualization_msgs::msg::Marker::TEXT_VIEW_FACING);
-      tf.pose.position.x = rnd.fx;
-      tf.pose.position.y = rnd.fy;
-      tf.pose.position.z = 0.32;
-      tf.scale.z = 0.18;
+      // F 往垂足侧向挪一点，别压在橙点上
+      tf.pose.position.x = rnd.fx - uy * kLabelOff;
+      tf.pose.position.y = rnd.fy + ux * kLabelOff;
+      tf.pose.position.z = 0.36;
+      tf.scale.z = 0.20;
       {
         std::ostringstream oss;
         oss.setf(std::ios::fixed);
@@ -1620,7 +1624,7 @@ BT::NodeStatus InsertGarbagePose::tick()
   const Goals updated_goals = insertGarbageIntoGoals(info);
   setOutput("output_goals", updated_goals);
 
-  bool enable_viz = false;
+  bool enable_viz = true;
   bool viz_garbage = true;
   bool viz_deleted = true;
   bool viz_ac_pts = true;
