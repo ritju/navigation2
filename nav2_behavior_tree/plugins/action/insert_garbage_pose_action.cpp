@@ -4,14 +4,18 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "geometry_msgs/msg/point.hpp"
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include "nav2_util/geometry_utils.hpp"
 #include "nav2_util/robot_utils.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#include "visualization_msgs/msg/marker.hpp"
+#include "visualization_msgs/msg/marker_array.hpp"
 
 #include "nav2_behavior_tree/plugins/action/insert_garbage_pose_action.hpp"
 
@@ -26,6 +30,7 @@ InsertGarbagePose::InsertGarbagePose(
   garbage_topic_("/garbage_cord"),
   special_terrain_topic_("/cleaning_tool_retraction_areas"),
   footprint_topic_("local_costmap/published_footprint"),
+  visualization_topic_("insert_garbage_pose/markers"),
   global_frame_("map"),
   robot_base_frame_("base_link"),
   arrived_radius_(0.5),       // footprint 进入垃圾附近半径，停止再插入
@@ -38,6 +43,7 @@ InsertGarbagePose::InsertGarbagePose(
   getInput("garbage_topic", garbage_topic_);
   getInput("special_terrain_topic", special_terrain_topic_);
   getInput("footprint_topic", footprint_topic_);
+  getInput("visualization_topic", visualization_topic_);
   getInput("arrived_radius", arrived_radius_);
   getInput("clip_extend_m", clip_extend_m_);
   getInput("corner_angle_deg", corner_angle_deg_);
@@ -65,7 +71,7 @@ InsertGarbagePose::InsertGarbagePose(
     std::bind(&InsertGarbagePose::garbageDetectCallback, this, std::placeholders::_1),
     sub_option);
 
-  // TRANSIENT_LOCAL：晚订阅也能收到最后一条区域消息
+  // TRANSIENT_LOCAL
   rclcpp::QoS special_terrain_qos(rclcpp::KeepLast(1));
   special_terrain_qos.transient_local().reliable();
   special_terrain_sub_ = node_->create_subscription<garage_utils_msgs::msg::Polygons>(
@@ -79,6 +85,10 @@ InsertGarbagePose::InsertGarbagePose(
     rclcpp::SystemDefaultsQoS(),
     std::bind(&InsertGarbagePose::footprintCallback, this, std::placeholders::_1),
     sub_option);
+
+  // RViz Marker，默认 VOLATILE，和 RViz 订阅对齐
+  marker_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
+    visualization_topic_, 10);
 }
 
 // 垃圾检测话题回调，把垃圾放进 history_list_
@@ -353,7 +363,7 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
       continue;
     }
 
-    // 离机器人太远：视为误识别，丢弃（不进 garbage_list_）
+    // 离机器人太远：视为误识别，丢弃
     if (max_garbage_robot_dist_m_ > 0.0) {
       const double dist_robot = std::sqrt(squaredDistanceXY(
           garbage.pose.pose.position.x, garbage.pose.pose.position.y,
@@ -864,7 +874,7 @@ void InsertGarbagePose::refreshCornersOnRemaining(
   const std::size_t * keep_idx,
   const std::size_t * also_keep_idx) const
 {
-  // 对齐 Python refresh_corners_on_remaining（keep C + 可选 keep A）
+
   std::vector<std::size_t> remaining_idx;
   remaining_idx.reserve(goals.size());
   for (std::size_t i = 0; i < goals.size(); ++i) {
@@ -952,6 +962,7 @@ InsertGarbagePose::Goals InsertGarbagePose::clipGoalsNearGarbage(InsertInfo & in
 {
   const Goals & goals = info.goals;
   info.goaltotal.clear();
+  info.clip_rounds.clear();
   if (goals.size() < 2) {
     return goals;
   }
@@ -988,6 +999,19 @@ InsertGarbagePose::Goals InsertGarbagePose::clipGoalsNearGarbage(InsertInfo & in
       node_->get_logger(),
       "InsertGarbagePose: robot %.2fm from goals[0] > %.2fm, skip all deletes",
       dist_to_head, head_delete_robot_dist_m_);
+    // 远队头也记一轮 A-C，方便 RViz 看投影
+    InsertInfo::ClipRound far_round;
+    far_round.round_i = 1;
+    far_round.ax = info.goala.pose.position.x;
+    far_round.ay = info.goala.pose.position.y;
+    far_round.cx = info.goalc.pose.position.x;
+    far_round.cy = info.goalc.pose.position.y;
+    far_round.fx = info.goald_x;
+    far_round.fy = info.goald_y;
+    far_round.t_d = lineParameterT(
+      info.goald_x, info.goald_y,
+      far_round.ax, far_round.ay, far_round.cx, far_round.cy);
+    info.clip_rounds.push_back(far_round);
     return goals;
   }
 
@@ -1035,6 +1059,7 @@ InsertGarbagePose::Goals InsertGarbagePose::clipGoalsNearGarbage(InsertInfo & in
   double ay = info.goala.pose.position.y;
   double dx = info.goald_x;
   double dy = info.goald_y;
+  int round_i = 0;
 
   constexpr double kEps = 1e-6;
   while (true) {
@@ -1068,6 +1093,18 @@ InsertGarbagePose::Goals InsertGarbagePose::clipGoalsNearGarbage(InsertInfo & in
       }
     }
 
+    ++round_i;
+    InsertInfo::ClipRound clip_round;
+    clip_round.round_i = round_i;
+    clip_round.ax = ax;
+    clip_round.ay = ay;
+    clip_round.cx = cx;
+    clip_round.cy = cy;
+    clip_round.fx = dx;
+    clip_round.fy = dy;
+    clip_round.t_d = t_d;
+    info.clip_rounds.push_back(clip_round);
+
     // 反向延长线：不删
     if (t_d < -kEps) {
       break;
@@ -1093,7 +1130,6 @@ InsertGarbagePose::Goals InsertGarbagePose::clipGoalsNearGarbage(InsertInfo & in
       std::size_t next_c = 0;
       if (!findNextCornerAfter(goals, c_idx, rx, ry, next_c)) {
         // 无下一角：从当前 C 起沿路 goaltotal_range 内末点兜底再判一轮
-        // （对齐 demo：否则会漏掉「延长线后再落在下一段中部」的删除）
         std::size_t range_end = c_idx;
         double accumulated = 0.0;
         for (std::size_t i = c_idx; i + 1 < goals.size(); ++i) {
@@ -1184,8 +1220,8 @@ InsertGarbagePose::Goals InsertGarbagePose::clipGoalsNearGarbage(InsertInfo & in
       }
       delete_idx.insert(j);
     }
-    // 段中删完也刷新过期角点：上一轮 C（现为 A）在剩余路径上
-    // 往往已不是角点，但仍在 protected，不刷就会漏删（对齐 demo）
+    // 段中删完也刷新过期角点
+    // 往往已不是角点，但仍在 protected，不刷就会漏删
     refreshCornersOnRemaining(
       goals, rx, ry, delete_idx, protected_corners, info.corners_kept_xy, &c_idx);
     break;
@@ -1312,6 +1348,263 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
   return out;
 }
 
+// 往 RViz 发本次插入的证据 Marker
+void InsertGarbagePose::publishVisualization(
+  const InsertInfo & info,
+  bool enable,
+  bool viz_accepted_garbage,
+  bool viz_deleted_goals,
+  bool viz_ac_points,
+  bool viz_ac_geometry)
+{
+  if (!marker_pub_) {
+    return;
+  }
+
+  visualization_msgs::msg::MarkerArray arr;
+  const rclcpp::Time stamp = node_->now();
+
+  auto makeBase = [&](const std::string & ns, int id, int type) {
+    visualization_msgs::msg::Marker m;
+    m.header.frame_id = global_frame_;
+    m.header.stamp = stamp;
+    m.ns = ns;
+    m.id = id;
+    m.type = type;
+    m.action = visualization_msgs::msg::Marker::ADD;
+    m.pose.orientation.w = 1.0;
+    m.lifetime = rclcpp::Duration::from_seconds(0.0);
+    return m;
+  };
+
+  // 先清旧的，只留这一次插入
+  {
+    visualization_msgs::msg::Marker clear;
+    clear.header.frame_id = global_frame_;
+    clear.header.stamp = stamp;
+    clear.ns = "";
+    clear.id = 0;
+    clear.action = visualization_msgs::msg::Marker::DELETEALL;
+    arr.markers.push_back(clear);
+  }
+
+  if (!enable) {
+    marker_pub_->publish(arr);
+    return;
+  }
+
+  auto setColor = [](visualization_msgs::msg::Marker & m,
+      float r, float g, float b, float a = 1.0f) {
+    m.color.r = r;
+    m.color.g = g;
+    m.color.b = b;
+    m.color.a = a;
+  };
+
+  auto pushPoint = [](visualization_msgs::msg::Marker & m, double x, double y, double z = 0.05) {
+    geometry_msgs::msg::Point p;
+    p.x = x;
+    p.y = y;
+    p.z = z;
+    m.points.push_back(p);
+  };
+
+  // 短线段拼虚线
+  auto appendDashed = [&](
+      visualization_msgs::msg::Marker & m,
+      double x0, double y0, double x1, double y1,
+      double dash = 0.18, double gap = 0.12)
+  {
+    const double dx = x1 - x0;
+    const double dy = y1 - y0;
+    const double len = std::sqrt(dx * dx + dy * dy);
+    if (len < 1e-6) {
+      return;
+    }
+    const double ux = dx / len;
+    const double uy = dy / len;
+    double s = 0.0;
+    bool draw = true;
+    while (s < len - 1e-9) {
+      const double seg = draw ? dash : gap;
+      const double s1 = std::min(len, s + seg);
+      if (draw) {
+        pushPoint(m, x0 + ux * s, y0 + uy * s);
+        pushPoint(m, x0 + ux * s1, y0 + uy * s1);
+      }
+      s = s1;
+      draw = !draw;
+    }
+  };
+
+  auto appendRing = [&](
+      visualization_msgs::msg::Marker & m,
+      double cx, double cy, double radius, int n = 36)
+  {
+    for (int i = 0; i <= n; ++i) {
+      const double ang = 2.0 * M_PI * static_cast<double>(i) / static_cast<double>(n);
+      pushPoint(m, cx + radius * std::cos(ang), cy + radius * std::sin(ang));
+    }
+  };
+
+  int mid = 0;
+
+  if (viz_accepted_garbage) {
+    auto m = makeBase("accepted_garbage", mid++, visualization_msgs::msg::Marker::SPHERE);
+    m.pose.position.x = info.garbage.pose.pose.position.x;
+    m.pose.position.y = info.garbage.pose.pose.position.y;
+    m.pose.position.z = 0.12;
+    m.scale.x = 0.28;
+    m.scale.y = 0.28;
+    m.scale.z = 0.28;
+    setColor(m, 0.85f, 0.12f, 0.12f, 0.95f);
+    arr.markers.push_back(m);
+
+    auto t = makeBase("accepted_garbage", mid++, visualization_msgs::msg::Marker::TEXT_VIEW_FACING);
+    t.pose.position.x = info.garbage.pose.pose.position.x;
+    t.pose.position.y = info.garbage.pose.pose.position.y;
+    t.pose.position.z = 0.40;
+    t.scale.z = 0.22;
+    t.text = "G";
+    setColor(t, 0.85f, 0.12f, 0.12f);
+    arr.markers.push_back(t);
+  }
+
+  if (viz_deleted_goals) {
+    // 空心黑圈，比常见 goals 球略大一点
+    const double ring_r = 0.30;
+    for (const auto & g : info.goaltotal) {
+      auto m = makeBase("deleted_goals", mid++, visualization_msgs::msg::Marker::LINE_STRIP);
+      m.scale.x = 0.035;
+      setColor(m, 0.05f, 0.05f, 0.05f, 0.95f);
+      appendRing(m, g.pose.position.x, g.pose.position.y, ring_r);
+      arr.markers.push_back(m);
+    }
+  }
+
+  const double gx = info.garbage.pose.pose.position.x;
+  const double gy = info.garbage.pose.pose.position.y;
+
+  for (const auto & rnd : info.clip_rounds) {
+    const bool first = (rnd.round_i == 1);
+    const float lr = first ? 0.90f : 0.00f;
+    const float lg = first ? 0.15f : 0.75f;
+    const float lb = first ? 0.10f : 0.80f;
+
+    if (viz_ac_points) {
+      auto ma = makeBase("ac_points", mid++, visualization_msgs::msg::Marker::CUBE);
+      ma.pose.position.x = rnd.ax;
+      ma.pose.position.y = rnd.ay;
+      ma.pose.position.z = 0.08;
+      ma.scale.x = 0.18;
+      ma.scale.y = 0.18;
+      ma.scale.z = 0.08;
+      setColor(ma, lr, lg, lb, 0.95f);
+      arr.markers.push_back(ma);
+
+      auto ta = makeBase("ac_points", mid++, visualization_msgs::msg::Marker::TEXT_VIEW_FACING);
+      ta.pose.position.x = rnd.ax;
+      ta.pose.position.y = rnd.ay;
+      ta.pose.position.z = 0.35;
+      ta.scale.z = 0.20;
+      {
+        std::ostringstream oss;
+        oss << "A" << rnd.round_i;
+        ta.text = oss.str();
+      }
+      setColor(ta, lr, lg, lb);
+      arr.markers.push_back(ta);
+
+      auto mc = makeBase("ac_points", mid++, visualization_msgs::msg::Marker::SPHERE);
+      mc.pose.position.x = rnd.cx;
+      mc.pose.position.y = rnd.cy;
+      mc.pose.position.z = 0.10;
+      mc.scale.x = 0.22;
+      mc.scale.y = 0.22;
+      mc.scale.z = 0.22;
+      setColor(mc, lr, lg, lb, 0.95f);
+      arr.markers.push_back(mc);
+
+      auto tc = makeBase("ac_points", mid++, visualization_msgs::msg::Marker::TEXT_VIEW_FACING);
+      tc.pose.position.x = rnd.cx;
+      tc.pose.position.y = rnd.cy;
+      tc.pose.position.z = 0.38;
+      tc.scale.z = 0.20;
+      {
+        std::ostringstream oss;
+        oss << "C" << rnd.round_i;
+        tc.text = oss.str();
+      }
+      setColor(tc, lr, lg, lb);
+      arr.markers.push_back(tc);
+    }
+
+    if (viz_ac_geometry) {
+      // A→C 实线：首轮红粗，后续青
+      auto solid = makeBase("ac_geometry", mid++, visualization_msgs::msg::Marker::LINE_STRIP);
+      solid.scale.x = first ? 0.070 : 0.055;
+      setColor(solid, lr, lg, lb, 0.95f);
+      pushPoint(solid, rnd.ax, rnd.ay);
+      pushPoint(solid, rnd.cx, rnd.cy);
+      arr.markers.push_back(solid);
+
+      const double vx = rnd.cx - rnd.ax;
+      const double vy = rnd.cy - rnd.ay;
+      const double L = std::sqrt(vx * vx + vy * vy) + 1e-9;
+      const double ux = vx / L;
+      const double uy = vy / L;
+      const double ext = std::max(3.0, 0.6 * L);
+
+      auto dashed = makeBase("ac_geometry", mid++, visualization_msgs::msg::Marker::LINE_LIST);
+      dashed.scale.x = 0.035;
+      setColor(dashed, lr, lg, lb, 0.75f);
+      appendDashed(
+        dashed,
+        rnd.cx, rnd.cy,
+        rnd.cx + ux * ext, rnd.cy + uy * ext);
+      appendDashed(
+        dashed,
+        rnd.ax, rnd.ay,
+        rnd.ax - ux * ext, rnd.ay - uy * ext);
+      arr.markers.push_back(dashed);
+
+      // 垃圾到垂足
+      auto perp = makeBase("ac_geometry", mid++, visualization_msgs::msg::Marker::LINE_LIST);
+      perp.scale.x = 0.040;
+      setColor(perp, 0.83f, 0.00f, 0.98f, 0.90f);
+      appendDashed(perp, gx, gy, rnd.fx, rnd.fy, 0.14, 0.10);
+      arr.markers.push_back(perp);
+
+      auto mf = makeBase("ac_geometry", mid++, visualization_msgs::msg::Marker::SPHERE);
+      mf.pose.position.x = rnd.fx;
+      mf.pose.position.y = rnd.fy;
+      mf.pose.position.z = 0.08;
+      mf.scale.x = 0.14;
+      mf.scale.y = 0.14;
+      mf.scale.z = 0.14;
+      setColor(mf, 1.00f, 0.44f, 0.00f, 0.95f);
+      arr.markers.push_back(mf);
+
+      auto tf = makeBase("ac_geometry", mid++, visualization_msgs::msg::Marker::TEXT_VIEW_FACING);
+      tf.pose.position.x = rnd.fx;
+      tf.pose.position.y = rnd.fy;
+      tf.pose.position.z = 0.32;
+      tf.scale.z = 0.18;
+      {
+        std::ostringstream oss;
+        oss.setf(std::ios::fixed);
+        oss.precision(2);
+        oss << "F" << rnd.round_i << " t=" << rnd.t_d;
+        tf.text = oss.str();
+      }
+      setColor(tf, 1.00f, 0.44f, 0.00f);
+      arr.markers.push_back(tf);
+    }
+  }
+
+  marker_pub_->publish(arr);
+}
+
 // 行为树周期回调
 BT::NodeStatus InsertGarbagePose::tick()
 {
@@ -1326,6 +1619,18 @@ BT::NodeStatus InsertGarbagePose::tick()
 
   const Goals updated_goals = insertGarbageIntoGoals(info);
   setOutput("output_goals", updated_goals);
+
+  bool enable_viz = false;
+  bool viz_garbage = true;
+  bool viz_deleted = true;
+  bool viz_ac_pts = true;
+  bool viz_ac_geom = true;
+  getInput("enable_visualization", enable_viz);
+  getInput("viz_accepted_garbage", viz_garbage);
+  getInput("viz_deleted_goals", viz_deleted);
+  getInput("viz_ac_points", viz_ac_pts);
+  getInput("viz_ac_geometry", viz_ac_geom);
+  publishVisualization(info, enable_viz, viz_garbage, viz_deleted, viz_ac_pts, viz_ac_geom);
 
   // 插一次即完成：记入已处理，清空待插与 history，避免后续 tick 再插
   reached_garbage_xy_.emplace_back(

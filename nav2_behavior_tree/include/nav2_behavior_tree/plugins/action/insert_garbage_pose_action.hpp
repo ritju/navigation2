@@ -33,6 +33,8 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "tf2_ros/buffer.h"
+#include "visualization_msgs/msg/marker.hpp"
+#include "visualization_msgs/msg/marker_array.hpp"
 
 namespace nav2_behavior_tree
 {
@@ -41,6 +43,7 @@ namespace nav2_behavior_tree
 class InsertGarbagePose : public BT::ActionNodeBase
 {
 public:
+  /** 一串带坐标系和时间戳的位姿点 */
   typedef std::vector<geometry_msgs::msg::PoseStamped> Goals;
   /** 后处理结果：每项含 map 位姿、角点、类别 class_id */
   typedef std::vector<capella_ros_msg::msg::GarbageDetect> GarbageList;
@@ -57,7 +60,7 @@ public:
 
     Goals goals;                                          // 完整 {goals}
     geometry_msgs::msg::PoseStamped robot_pose;           // 机器人当前 map 位姿
-    geometry_msgs::msg::PoseStamped goala;                // 投影线起点：goaltotal_range_m 内第一个点(goals[0])
+    geometry_msgs::msg::PoseStamped goala;                // 投影线起点：goaltotal_range_m 内第一个点
     geometry_msgs::msg::PoseStamped goalc;                // 投影线终点：第一角点；无角点则为前方 range 内末点
     std::size_t goalc_idx{0};                             // goalc 在 goals 中的下标
     Goals goaltotal;                                      // 本轮逻辑判定要删除的 goals最后一块删
@@ -68,7 +71,21 @@ public:
     double path_yaw{0.0};                                 // goala 到 goalc 方向，插入朝向用
     bool hit_mid_case{false};                             // 垂足落在段中
     bool hit_forward_case{false};                         // 前方延长线
-    std::vector<std::pair<double, double>> corners_kept_xy;  // 前方延长线保留角点（会随刷新剔除）
+    std::vector<std::pair<double, double>> corners_kept_xy;  // 前方延长线保留角点
+
+    // 每一轮 A-C 投影，给可视化用
+    struct ClipRound
+    {
+      int round_i{0};
+      double ax{0.0};
+      double ay{0.0};
+      double cx{0.0};
+      double cy{0.0};
+      double fx{0.0};
+      double fy{0.0};
+      double t_d{0.0};
+    };
+    std::vector<ClipRound> clip_rounds;
   };
 
   InsertGarbagePose(
@@ -103,6 +120,19 @@ public:
       BT::InputPort<double>(
         "max_garbage_robot_dist_m", 9.0,
         "Ignore garbage farther than this distance (m) from robot (anti false-detect)"),
+      BT::InputPort<bool>(
+        "enable_visualization", true, "Publish insert/clip markers to RViz"),   //总开关
+      BT::InputPort<bool>(
+        "viz_accepted_garbage", true, "Show accepted garbage after filtering"),
+      BT::InputPort<bool>(
+        "viz_deleted_goals", true, "Show deleted goals as hollow black rings"),
+      BT::InputPort<bool>(
+        "viz_ac_points", true, "Show A/C points and labels each clip round"),
+      BT::InputPort<bool>(
+        "viz_ac_geometry", true, "Show A-C lines, extensions, foot and F labels"),
+      BT::InputPort<std::string>(
+        "visualization_topic", std::string("insert_garbage_pose/markers"),
+        "MarkerArray topic for insert visualization"),
       BT::InputPort<std::string>("global_frame", std::string("map"), "Global frame"),
       BT::InputPort<std::string>("robot_base_frame", std::string("base_link"), "Robot base frame"),
     };
@@ -146,16 +176,10 @@ private:
   /** 按 goala/goalc/goald 收集待删点到 goaltotal，再一块删除 */
   Goals clipGoalsNearGarbage(InsertInfo & info);
 
-  /** 插入真实垃圾（队首）、统一时间戳；接回点前残留丢掉，避免扫完折返 */
+  /** 插入真实垃圾、统一时间戳；接回点前残留丢掉，避免扫完折返 */
   Goals insertGarbageIntoGoals(InsertInfo & info);
 
-  /**
-   * 前方延长线多轮删点后：在剩余路径上重判角点。
-   * 不再是角点（或过期队首肘点）→ 取消保护并加入 delete_idx；同步剔除 corners_kept_xy。
-   * keep_idx：本轮仍需保留的 goalc；nullptr 表示无。
-   * also_keep_idx：下一轮投影起点 A（上一角点）；进入延长线投影前必须保住，
-   * 否则 A 被当成队首过期肘点删掉后会缩成短边，误判 reverse 而停删。
-   */
+  /**在触发了延长线删点逻辑和检查当前角点还需不需要保护 */
   void refreshCornersOnRemaining(
     const Goals & goals,
     double robot_x, double robot_y,
@@ -201,12 +225,12 @@ private:
     const Goals & goals,
     std::size_t idx,
     double robot_x, double robot_y) const;
-  /** 从机器人沿路径找第一个角点下标（仅 goaltotal_range_m 内）；找不到返回 false */
+  /** 从机器人沿路径找第一个角点下标；找不到返回 false */
   bool findFirstCornerFromRobot(
     const Goals & goals,
     double robot_x, double robot_y,
     std::size_t & corner_idx) const;
-  /** 从 after_idx 之后找下一个角点（仅再往前 goaltotal_range_m 内）；找不到返回 false */
+  /** 从 after_idx 之后找下一个角点；找不到返回 false */
   bool findNextCornerAfter(
     const Goals & goals,
     std::size_t after_idx,
@@ -221,17 +245,28 @@ private:
     std::size_t * nearest_seg_out = nullptr,
     std::size_t * start_idx_out = nullptr) const;
 
+  /** 按开关往 RViz 发 Marker，一次插入画一轮证据 */
+  void publishVisualization(
+    const InsertInfo & info,
+    bool enable = true,
+    bool viz_accepted_garbage = true,
+    bool viz_deleted_goals = true,
+    bool viz_ac_points = true,
+    bool viz_ac_geometry = true);
+
   rclcpp::Node::SharedPtr node_;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   rclcpp::executors::SingleThreadedExecutor callback_group_executor_;
   rclcpp::Subscription<capella_ros_msg::msg::GarbageDetect>::SharedPtr garbage_sub_;
   rclcpp::Subscription<garage_utils_msgs::msg::Polygons>::SharedPtr special_terrain_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PolygonStamped>::SharedPtr footprint_sub_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
 
   std::string garbage_topic_;
   std::string special_terrain_topic_;
   std::string footprint_topic_;
+  std::string visualization_topic_;
   std::string global_frame_;
   std::string robot_base_frame_;
   double transform_tolerance_{0.1};
@@ -241,7 +276,7 @@ private:
   double goaltotal_range_m_{10.0};
   /** 离队头超过该距离就不删点，默认 4m */
   double head_delete_robot_dist_m_{4.0};
-  /** 垃圾离机器人超过该距离则忽略，默认 9m（防远处误识别） */
+  /** 垃圾离机器人超过该距离则忽略，默认 9m */
   double max_garbage_robot_dist_m_{9.0};
 
   std::mutex history_mutex_;

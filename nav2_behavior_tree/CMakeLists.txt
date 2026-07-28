@@ -19,6 +19,8 @@ find_package(std_srvs REQUIRED)
 find_package(nav2_util REQUIRED)
 find_package(capella_ros_msg REQUIRED)
 find_package(garage_utils_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
+
 
 nav2_package()
 
@@ -45,6 +47,7 @@ set(dependencies
   nav2_util
   capella_ros_msg
   garage_utils_msgs
+  visualization_msgs
 )
 
 add_library(${library_name} SHARED
