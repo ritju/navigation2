@@ -8,12 +8,15 @@ MSG_PREFIX="${CAPELLA_ROS_MSG_PREFIX:-/home/linux/python/capella_clean_garbage/i
 GARAGE_PREFIX="${GARAGE_UTILS_MSGS_PREFIX:-/home/linux/python/capella_clean_garbage/install/garage_utils_msgs}"
 
 set +u
-rm -f /dev/shm/fastrtps_* 2>/dev/null || true
+rm -f /dev/shm/fastrtps_* /dev/shm/sem.fastrtps_* 2>/dev/null || true
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
+# 与本机其它 ROS 图（如 capella_agent / 残留 daemon）隔离，避免 FastDDS SHM 抢 port
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
 if [[ "${KEEP_DISPLAY:-0}" != "1" ]]; then
   export DISPLAY=:0
 fi
 # 注意：不要设 FASTRTPS_DEFAULT_PROFILES_FILE 禁 SHM，会把 component_container 卡死
+echo "[launch] ROS_DOMAIN_ID=${ROS_DOMAIN_ID} RMW=${RMW_IMPLEMENTATION}"
 
 source /opt/ros/humble/setup.bash
 
@@ -62,4 +65,5 @@ exec ros2 launch nav2_bringup tb3_simulation_launch.py \
   robot_name:=turtlebot3_burger \
   x_pose:=-2.00 \
   y_pose:=-1.50 \
-  params_file:="${PARAMS}"
+  params_file:="${PARAMS}" \
+  rviz_config_file:="${ROOT}/scripts/insert_garbage_pose.rviz"

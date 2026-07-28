@@ -1,0 +1,35 @@
+[0] kill old Nav2/Gazebo/RViz (keep unrelated nodes)
+[1] launch TB3+Nav2+RViz (domain=42, rviz=scripts/insert_garbage_pose.rviz)
+robot spawned after 6s
+early initialpose published
+active count=2 after 2s (post-spawn wait)
+[env] ROS_DOMAIN_ID=42
+[2] republish waypoints
+Loaded 11 goals from /home/linux/ws2/ros_ws/navigation2/nav2_behavior_tree/doc/replay_from_rviz_log.json
+  WP[1] x=-0.143 y=-1.456
+  WP[2] x=0.736 y=-1.487
+  WP[3] x=1.725 y=-1.566
+  WP[4] x=2.572 y=-1.660
+  WP[5] x=3.011 y=-0.875
+  WP[6] x=3.058 y=0.176
+  WP[7] x=3.043 y=1.384
+  WP[8] x=2.745 y=1.824
+  WP[9] x=1.944 y=1.886
+  WP[10] x=1.097 y=1.808
+  WP[11] x=0.234 y=1.839
+Published /waypoints batch[1] n=11
+Published /waypoints batch[2] n=11
+Published /waypoints batch[3] n=11
+[3] reset+nav+garbage
+WARN: set_entity_state unavailable
+initialpose published
+send nav attempt 1
+nav accepted
+wait 6s before garbage...
+garbage[1] (4.0, 2.0)
+INSERT DETECTED in log
+DONE inserted=True
+[4] done
+437:[component_container_isolated-6] [INFO] [1785223255.735201968] [bt_navigator_navigate_through_poses_rclcpp_node]: InsertGarbagePose: head-insert resume_from=0 remain=6 (mid=0 forward=1 far=0)
+438:[component_container_isolated-6] [INFO] [1785223255.735562167] [bt_navigator_navigate_through_poses_rclcpp_node]: InsertGarbagePose: inserted garbage once at (4.00, 2.00), will not re-insert
+EXIT:0
