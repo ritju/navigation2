@@ -913,7 +913,7 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
   runtime_garbage_stack: List[int] = []  # indices of garbage added during run
 
   mode = 'edit_goals'  # edit_goals | edit_garbage | running
-  # pan while running
+  # pan: middle mouse (any mode); LMB also pans while running
   pan_btn = False
   pan_xy0 = (0.0, 0.0)
   pan_xlim0 = (0.0, 0.0)
@@ -930,7 +930,7 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
   fig = plt.figure(figsize=(12, 7))
   fig.canvas.manager.set_window_title(
     'InsertGarbagePose Demo | REPLAY' if replay_mode else
-    'InsertGarbagePose Demo | LMB goals  RMB robot  Enter next  Bksp undo  Q clear')
+    'InsertGarbagePose Demo | LMB goals  RMB robot  MMB pan  Enter next  Bksp undo  Q clear')
   gs = GridSpec(1, 2, width_ratios=[3.2, 1.3], wspace=0.25)
   ax = fig.add_subplot(gs[0, 0])
   ax_info = fig.add_subplot(gs[0, 1])
@@ -990,7 +990,7 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
       f'{len(edit_runtime_garbage)} runtime_garbage')
     slog('No mouse edit. SPACE pause | A/D point | Enter restart | Esc quit')
   else:
-    slog('Mode: edit goals. LMB=goal RMB=robot Enter=next Bksp=undo Q=clear')
+    slog('Mode: edit goals. LMB=goal RMB=robot MMB=pan Enter=next Bksp=undo Q=clear')
 
   def in_axes(event) -> bool:
     return event.inaxes is ax and event.xdata is not None and event.ydata is not None
@@ -1143,7 +1143,7 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
         pass
       robot_arrow = None
     robot_pt.set_data([], [])
-    slog('Cleared all. Mode: edit goals. LMB=goal RMB=robot Enter=next Q=clear')
+    slog('Cleared all. Mode: edit goals. LMB=goal RMB=robot MMB=pan Enter=next Q=clear')
 
 
   def add_runtime_garbage(xy: Point) -> None:
@@ -1207,7 +1207,7 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
     draft_path.set_data([], [])
     draft_sc.set_offsets(np.empty((0, 2)))
     clear_list_artists(goal_arrow_arts)
-    slog('Running. LMB pan | RMB add garbage | Bksp undo | SPACE/A/D')
+    slog('Running. LMB/MMB pan | RMB add garbage | Bksp undo | SPACE/A/D')
 
   def restart_run() -> None:
     nonlocal state, checkpoints, checkpoint_idx, paused
@@ -1224,18 +1224,25 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
     clear_evidence()
     slog('Restart run')
 
+  def begin_pan(event) -> None:
+    nonlocal pan_btn, pan_xy0, pan_xlim0, pan_ylim0
+    pan_btn = True
+    pan_xy0 = (float(event.x), float(event.y))
+    pan_xlim0 = ax.get_xlim()
+    pan_ylim0 = ax.get_ylim()
+
   def on_press(event) -> None:
     nonlocal drag_btn, drag_origin, drag_tip
-    nonlocal pan_btn, pan_xy0, pan_xlim0, pan_ylim0
     if not in_axes(event):
+      return
+    # Middle mouse: pan view in any mode (handy while placing goals)
+    if event.button == 2:
+      begin_pan(event)
       return
     # running: LMB pan map, RMB add temporary garbage
     if mode == 'running' and state is not None:
       if event.button == 1:
-        pan_btn = True
-        pan_xy0 = (float(event.x), float(event.y))
-        pan_xlim0 = ax.get_xlim()
-        pan_ylim0 = ax.get_ylim()
+        begin_pan(event)
       elif event.button == 3:
         add_runtime_garbage((float(event.xdata), float(event.ydata)))
         fig.canvas.draw_idle()
@@ -1258,7 +1265,7 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
 
   def on_motion(event) -> None:
     nonlocal drag_tip
-    if mode == 'running' and pan_btn:
+    if pan_btn:
       if event.x is None or event.y is None:
         return
       bbox = ax.get_window_extent()
@@ -1283,7 +1290,7 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
 
   def on_release(event) -> None:
     nonlocal drag_btn, drag_origin, drag_tip, robot_xy, robot_yaw, pan_btn
-    if pan_btn and event.button == 1:
+    if pan_btn and event.button in (1, 2):
       pan_btn = False
       return
     if drag_btn is None or drag_origin is None:
@@ -1526,9 +1533,9 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
   def update(_frame: int):
     nonlocal robot_arrow, robot_body
     title = {
-      'edit_goals': 'EDIT GOALS: LMB=goal+dir  RMB=robot  Enter=garbage  Bksp=undo  Q=clear',
-      'edit_garbage': 'EDIT GARBAGE: LMB=add  Enter=start  Bksp=undo  Q=clear',
-      'running': 'RUN: LMB pan  RMB add garbage  Bksp undo | SPACE/A/D | cyan=A-C+ext  orangeD=CORNER',
+      'edit_goals': 'EDIT GOALS: LMB=goal+dir  RMB=robot  MMB=pan  Enter=garbage  Bksp=undo  Q=clear',
+      'edit_garbage': 'EDIT GARBAGE: LMB=add  MMB=pan  Enter=start  Bksp=undo  Q=clear',
+      'running': 'RUN: LMB/MMB pan  RMB add garbage  Bksp undo | SPACE/A/D | cyan=A-C+ext  orangeD=CORNER',
     }[mode]
     ax.set_title(title, fontsize=9)
 
@@ -1542,6 +1549,7 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
         '=== edit keys ===',
         'LMB drag = goal + yaw',
         'RMB drag = robot pose',
+        'MMB drag = pan view',
         'Bksp     = undo',
         'Enter    = next stage',
         'Q        = clear all',
@@ -1610,6 +1618,7 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
     lines = [
       '=== keys ===',
       'LMB   = pan map',
+      'MMB   = pan map',
       'RMB   = add garbage',
       'Bksp  = undo garbage',
       'SPACE = pause/play',
