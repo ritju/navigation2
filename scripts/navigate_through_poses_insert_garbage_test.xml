@@ -7,7 +7,14 @@
     <RecoveryNode number_of_retries="6" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
         <RateController hz="2.0">
-          <InsertGarbagePose input_goals="{goals}" output_goals="{goals}"/>
+          <InsertGarbagePose
+            input_goals="{goals}"
+            output_goals="{goals}"
+            enable_visualization="true"
+            viz_accepted_garbage="true"
+            viz_deleted_goals="true"
+            viz_ac_points="true"
+            viz_ac_geometry="true"/>
         </RateController>
         <RateController hz="0.333">
           <RecoveryNode number_of_retries="1" name="ComputePathThroughPoses">
