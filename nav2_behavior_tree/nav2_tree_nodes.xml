@@ -114,6 +114,13 @@
       <output_port name="output_gpp_goals">GPP window; between full emits, pruned so any point not still present in mission goals (pose match) is removed</output_port>
     </Action>
 
+    <Action ID="ConvertGoalsToPath">
+      <input_port name="input_goals">Goals to convert into a path (transformed to map, z set to 0)</input_port>
+      <input_port name="interval_length" default="0.5">Spacing (m) between inserted poses on each goals segment; &lt;=0 disables insertion</input_port>
+      <input_port name="robot_base_frame" default="base_footprint">Robot base frame used as path start</input_port>
+      <output_port name="path">Path from current base_footprint through input_goals in map frame; also published on convert_goals_path</output_port>
+    </Action>
+
     <Action ID="SmoothPath">
       <input_port name="smoother_id" default="SmoothPath"/>
       <input_port name="unsmoothed_path">Path to be smoothed</input_port>

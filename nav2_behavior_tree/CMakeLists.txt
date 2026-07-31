@@ -173,6 +173,9 @@ list(APPEND plugin_libs nav2_speed_controller_bt_node)
 add_library(nav2_truncate_path_action_bt_node SHARED plugins/action/truncate_path_action.cpp)
 list(APPEND plugin_libs nav2_truncate_path_action_bt_node)
 
+add_library(nav2_convert_goals_to_path_action_bt_node SHARED plugins/action/convert_goals_to_path_action.cpp)
+list(APPEND plugin_libs nav2_convert_goals_to_path_action_bt_node)
+
 add_library(nav2_truncate_path_local_action_bt_node SHARED plugins/action/truncate_path_local_action.cpp)
 list(APPEND plugin_libs nav2_truncate_path_local_action_bt_node)
 
