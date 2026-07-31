@@ -864,7 +864,7 @@ InsertGarbagePose::InsertInfo InsertGarbagePose::gatherInsertInfo()
   info.valid = true;
   return info;
 }
-
+//  重新检查被保护的角点还是不是角点
 void InsertGarbagePose::refreshCornersOnRemaining(
   const Goals & goals,
   double robot_x, double robot_y,
@@ -877,6 +877,7 @@ void InsertGarbagePose::refreshCornersOnRemaining(
 
   std::vector<std::size_t> remaining_idx;
   remaining_idx.reserve(goals.size());
+  //先收集还没删除的点
   for (std::size_t i = 0; i < goals.size(); ++i) {
     if (delete_idx.count(i) == 0) {
       remaining_idx.push_back(i);
@@ -892,14 +893,14 @@ void InsertGarbagePose::refreshCornersOnRemaining(
   for (std::size_t new_i = 0; new_i < remaining_idx.size(); ++new_i) {
     const std::size_t old_i = remaining_idx[new_i];
     remaining_pts.push_back(goals[old_i]);
-    old_to_new[old_i] = new_i;
+    old_to_new[old_i] = new_i;     // 删点后路径变短，角点判定要用新序列里的下标
   }
 
   auto is_kept = [&](std::size_t idx) {
     return (keep_idx != nullptr && idx == *keep_idx) ||
            (also_keep_idx != nullptr && idx == *also_keep_idx);
   };
-
+  // 边遍历边删的 iterator 写法
   std::vector<std::size_t> stale;
   for (auto it = protected_corners.begin(); it != protected_corners.end(); ) {
     const std::size_t old_i = *it;
@@ -916,11 +917,12 @@ void InsertGarbagePose::refreshCornersOnRemaining(
       it = protected_corners.erase(it);
       continue;
     }
+    // 判定“过期角点”
     const std::size_t new_i = map_it->second;
     const bool lost_inbound = (old_i == 0) || (delete_idx.count(old_i - 1) != 0);
     const bool became_head = (new_i == 0);
     // 队首 + 原前驱已断 + 后方还有要保留的角点 → 过期肘点
-    // （当前 A/C 已在 is_kept，不会误伤下一轮投影边）
+    // 当前 A/C 已在 is_kept，不会误伤下一轮投影边
     if (became_head && lost_inbound && keep_idx != nullptr &&
       delete_idx.count(*keep_idx) == 0)
     {
@@ -936,6 +938,7 @@ void InsertGarbagePose::refreshCornersOnRemaining(
 
   constexpr double kMatchTol = 0.08;
   constexpr double kMatchTol2 = kMatchTol * kMatchTol;
+  //  真正删 + 擦可视化坐标
   for (const std::size_t old_i : stale) {
     protected_corners.erase(old_i);
     delete_idx.insert(old_i);
@@ -972,7 +975,7 @@ InsertGarbagePose::Goals InsertGarbagePose::clipGoalsNearGarbage(InsertInfo & in
   const double gx = info.garbage.pose.pose.position.x;
   const double gy = info.garbage.pose.pose.position.y;
 
-  // 各 goal 折线弧长（从队头 goals[0] 起有序累加）
+  // 各 goal 折线弧长
   std::vector<double> arc_s(goals.size(), 0.0);
   for (std::size_t i = 0; i + 1 < goals.size(); ++i) {
     arc_s[i + 1] = arc_s[i] + std::sqrt(squaredDistanceXY(
