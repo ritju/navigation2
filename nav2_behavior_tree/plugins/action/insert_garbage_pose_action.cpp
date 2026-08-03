@@ -27,7 +27,7 @@ InsertGarbagePose::InsertGarbagePose(
   const std::string & name,
   const BT::NodeConfiguration & conf)
 : BT::ActionNodeBase(name, conf),
-  garbage_topic_("/garbage_cord"),
+  garbage_topic_("/garbage_cord1"),
   special_terrain_topic_("/cleaning_tool_retraction_areas"),
   footprint_topic_("local_costmap/published_footprint"),
   visualization_topic_("insert_garbage_pose/markers"),

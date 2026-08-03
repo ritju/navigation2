@@ -98,7 +98,7 @@ public:
       BT::InputPort<Goals>("input_goals", "Input goals list (e.g. {goals})"),
       BT::OutputPort<Goals>("output_goals", "Goals after inserting garbage poses"),
       BT::InputPort<std::string>(
-        "garbage_topic", std::string("/garbage_cord"), "Garbage detection topic"),
+        "garbage_topic", std::string("/garbage_cord1"), "Garbage detection topic"),
       BT::InputPort<std::string>(
         "special_terrain_topic", std::string("/cleaning_tool_retraction_areas"),
         "Special / retraction area polygons topic"),
