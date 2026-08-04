@@ -214,119 +214,6 @@ def find_all_corners(
   return out
 
 
-def compute_sweep_order(
-  robot: Point,
-  robot_yaw: float,
-  points: Sequence[Point],
-) -> List[int]:
-  """多堆垃圾清扫顺序：贪心最小旋转角。
-
-  首堆 = 离机器人欧氏距离最近的堆；
-  之后每一步：枚举所有未扫堆，取"当前朝向 → 目标方向"最小旋转角者；
-  角度相同 → 距离近的优先。
-  模拟到达后：位姿=该堆坐标，朝向=上一段行进方向。
-  robot_yaw 为机器人当前朝向（rad）。
-  返回按清扫先后排列的下标列表（与 points 一一对应）。
-  """
-  n = len(points)
-  if n <= 1:
-    return list(range(n))
-
-  remaining = set(range(n))
-  order: List[int] = []
-
-  # 首堆：离机器人最近
-  first = min(remaining, key=lambda i: dist2(robot, points[i]))
-  order.append(first)
-  remaining.discard(first)
-
-  cur_pos = points[first]
-  cur_yaw = math.atan2(
-    cur_pos[1] - robot[1], cur_pos[0] - robot[0])
-
-  while remaining:
-    best_i = -1
-    best_angle = float('inf')
-    best_d2 = float('inf')
-    for i in remaining:
-      q = points[i]
-      target_yaw = math.atan2(q[1] - cur_pos[1], q[0] - cur_pos[0])
-      d = target_yaw - cur_yaw
-      d = math.atan2(math.sin(d), math.cos(d))  # wrap to [-pi, pi]
-      angle = abs(d)
-      d2 = dist2(cur_pos, q)
-      # 角度小的优先；角度相同 → 距离近的优先
-      if (angle < best_angle - 1e-6) or \
-         (abs(angle - best_angle) < 1e-6 and d2 < best_d2):
-        best_angle = angle
-        best_d2 = d2
-        best_i = i
-    order.append(best_i)
-    remaining.discard(best_i)
-    # 模拟新位姿：位置=该堆，朝向=上一段行进方向
-    cur_yaw = math.atan2(
-      points[best_i][1] - cur_pos[1], points[best_i][0] - cur_pos[0])
-    cur_pos = points[best_i]
-
-  return order
-
-
-def plan_order_with_new_garbage(
-  robot: Point,
-  robot_yaw: float,
-  cands: Sequence[int],
-  new_idx: int,
-  pts: Sequence[Point],
-  prev_order: Optional[Sequence[int]] = None,
-) -> Tuple[List[int], float]:
-  """运行中新增垃圾时的重排（设计文档 4-1/4-2）。
-
-  cands 为实际垃圾下标列表，pts 与 cands 一一对齐（均含新垃圾）。
-  以 机器人位姿 -> 最近垃圾 为直线，算新垃圾投影参数 t：
-  4-1  0<=t<=1（投影落在线段内）：新垃圾排第一（先生成 新垃圾->第一堆 路径），
-       其余保持原计划顺序（prev_order，过滤已失效）；
-  4-2  其余情况：排除当时判断的最近垃圾，其它点（含新垃圾）进入贪心最小转角
-       重算角度、重算路径，最近垃圾仍留在队首。
-  返回 (清扫顺序下标列表, 投影参数 t)。
-  """
-  n = len(cands)
-  if n <= 1 or new_idx not in cands:
-    sub = [pts[i] for i in range(n)]
-    return [cands[k] for k in compute_sweep_order(robot, robot_yaw, sub)], 0.0
-
-  # 在 cands 内部用位置下标运算，最后映射回实际垃圾下标
-  new_pos = list(cands).index(new_idx)
-  others_pos = [i for i in range(n) if i != new_pos]
-  nearest_pos = min(others_pos, key=lambda i: dist2(robot, pts[i]))
-
-  np_pt = pts[new_pos]
-  nr_pt = pts[nearest_pos]
-  foot = project_point_to_infinite_line(
-    np_pt[0], np_pt[1], robot[0], robot[1], nr_pt[0], nr_pt[1])
-  t = line_parameter_t(
-    foot[0], foot[1], robot[0], robot[1], nr_pt[0], nr_pt[1])
-
-  def greedy_pos(pos_list: Sequence[int]) -> List[int]:
-    sub = [pts[i] for i in pos_list]
-    return [pos_list[k] for k in compute_sweep_order(robot, robot_yaw, sub)]
-
-  if 0.0 <= t <= 1.0:
-    # 4-1: 新垃圾 -> 第一堆；其余保持原顺序（prev_order 过滤到候选）
-    rest_pos: List[int] = []
-    if prev_order:
-      others_set = {cands[i] for i in others_pos}
-      rest_pos = [
-        list(cands).index(v) for v in prev_order if v in others_set]
-    have = set(rest_pos)
-    missing = [i for i in others_pos if i not in have]
-    rest_pos += greedy_pos(missing)
-    return [cands[p] for p in ([new_pos] + rest_pos)], t
-
-  # 4-2: 排除最近垃圾，其余(含新垃圾)贪心重算，最近垃圾留队首
-  rest_pos = [i for i in others_pos if i != nearest_pos] + [new_pos]
-  return [cands[p] for p in ([nearest_pos] + greedy_pos(rest_pos))], t
-
-
 @dataclass
 class RoundEvidence:
   """单轮 A–C 判定凭证（供 GUI 画线/标点）。"""
@@ -820,9 +707,6 @@ class SimState:
   inserted_xy: List[Point] = field(default_factory=list)
   cases_hit: set = field(default_factory=set)
   last_evidence: Optional[ClipEvidence] = None
-  last_sweep_order: List[int] = field(default_factory=list)
-  # 最近一次运行中新增的垃圾下标：走 4-1/4-2 投影重排，发布/完成后清除
-  priority_new_idx: Optional[int] = None
   robot: Point = (0.0, 0.0)
   yaw: float = 0.0
   done: bool = False
@@ -871,70 +755,28 @@ def pending_inserted_garbage(state: SimState) -> bool:
 
 
 def maybe_publish_and_insert(state: SimState) -> None:
-  # 候选：未发布、未完成、且通过距离/路径门槛的垃圾（每帧动态过滤）
-  cands: List[int] = []
-  for i, (gxy, hint) in enumerate(state.garbage_items):
-    if i in state.published or i in state.finished:
-      continue
-    gx, gy = gxy
-    # 太远则本帧忽略，不标记 finished：机器人靠近后继续判断
-    if MAX_GARBAGE_ROBOT_DIST_M > 0.0 and \
-       dist(state.robot, (gx, gy)) > MAX_GARBAGE_ROBOT_DIST_M:
-      continue
-    ahead = path_goals_ahead(state.original_goals, state.robot, (gx, gy))
-    # RT* = added during run; skip path-ahead gate so it can insert soon
-    if not str(hint).startswith('RT') and ahead > GARBAGE_PUBLISH_WITHIN_GOALS:
-      continue
-    cands.append(i)
-
-  if not cands:
+  i = 0
+  n = len(state.garbage_items)
+  while i < n and i in state.published:
+    i += 1
+  if i >= n:
     return
-
-  # 优先级：最近一次运行中新增的垃圾，用于 4-1/4-2 投影重排；已发布/完成则清除
-  priority = state.priority_new_idx
-  if priority is not None and priority not in cands:
-    state.priority_new_idx = None
-    priority = None
-
-  cand_pts = [state.garbage_xy[i] for i in cands]
-
-  # 4-1 时允许越过"待扫的第一堆"直接插队首（生成 新垃圾->第一堆 的路径）
-  bypass_pending = False
-  if priority is not None and len(cands) > 1:
-    # 新垃圾：先投影判断 4-1/4-2，再决定清扫顺序
-    sweep, t_proj = plan_order_with_new_garbage(
-      state.robot, state.yaw, cands, priority, cand_pts,
-      prev_order=state.last_sweep_order)
-    state.last_sweep_order = list(sweep)
-    if sweep[0] == priority:
-      # 4-1：新垃圾排第一 → 插到队首，第一堆仍留在 goals 排在新垃圾之后
-      bypass_pending = True
-      state.log(
-        f'  new-garbage[{priority}] re-plan 4-1 t={t_proj:.2f} -> '
-        f'{state.last_sweep_order} (head insert, before first pile)')
-    else:
-      # 4-2：最近垃圾仍排第一 → 等它扫完再按重排结果插入
-      state.log(
-        f'  new-garbage[{priority}] re-plan 4-2 t={t_proj:.2f} -> '
-        f'{state.last_sweep_order}')
-    i = sweep[0]
-  elif len(cands) > 1:
-    # 多堆清扫顺序：从当前机器人位姿动态重算（最近优先 → 贪心最小旋转角）
-    sweep = compute_sweep_order(state.robot, state.yaw, cand_pts)
-    state.last_sweep_order = [cands[k] for k in sweep]
-    i = cands[sweep[0]]
-  else:
-    i = cands[0]
-    state.last_sweep_order = [i]
-
-  # 已有垃圾在待扫队列里：普通插入等它扫完；4-1 新垃圾插队首除外
-  if not bypass_pending and pending_inserted_garbage(state):
+  if i > 0 and (i - 1) not in state.finished:
+    return
+  if pending_inserted_garbage(state):
     return
 
   gx, gy = state.garbage_xy[i]
   hint = state.garbage_items[i][1]
   dist_robot = dist(state.robot, (gx, gy))
+  # 太远则本帧忽略，不标记 finished：机器人靠近后继续判断
+  if MAX_GARBAGE_ROBOT_DIST_M > 0.0 and dist_robot > MAX_GARBAGE_ROBOT_DIST_M:
+    return
+
   ahead = path_goals_ahead(state.original_goals, state.robot, (gx, gy))
+  # RT* = added during run; skip path-ahead gate so it can insert soon
+  if not str(hint).startswith('RT') and ahead > GARBAGE_PUBLISH_WITHIN_GOALS:
+    return
 
   for ix, iy in state.inserted_xy:
     if dist((gx, gy), (ix, iy)) < DEDUP_DISTANCE_M:
@@ -944,7 +786,6 @@ def maybe_publish_and_insert(state: SimState) -> None:
   state.log(
     f'Publish garbage[{i}] ({gx:.2f},{gy:.2f}) ahead={ahead} '
     f'dist_robot={dist_robot:.2f}m | {hint}')
-  state.log(f'  sweep_order={state.last_sweep_order}')
 
   result = clip_and_insert_garbage(state.goals, state.robot, (gx, gy))
   if result is None:
@@ -1072,7 +913,7 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
   runtime_garbage_stack: List[int] = []  # indices of garbage added during run
 
   mode = 'edit_goals'  # edit_goals | edit_garbage | running
-  # pan: middle mouse (any mode); running mode LMB/RMB add temporary garbage
+  # pan: middle mouse (any mode); LMB also pans while running
   pan_btn = False
   pan_xy0 = (0.0, 0.0)
   pan_xlim0 = (0.0, 0.0)
@@ -1313,8 +1154,6 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
     state.garbage_items.append((xy, f'RT{idx}'))
     runtime_garbage_stack.append(idx)
     slog(f'Add runtime garbage[{idx}] ({xy[0]:.2f},{xy[1]:.2f})')
-    # 新垃圾：置优先级，走 4-1/4-2 投影重排再插入
-    state.priority_new_idx = idx
     maybe_publish_and_insert(state)
     push_checkpoint()
 
@@ -1337,8 +1176,6 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
     state.goals = [g for g in state.goals if dist(g, gxy) >= DEDUP_DISTANCE_M]
     state.published.discard(idx)
     state.inserted_xy = [p for p in state.inserted_xy if dist(p, gxy) >= DEDUP_DISTANCE_M]
-    if state.priority_new_idx == idx:
-      state.priority_new_idx = None
     if idx == len(state.garbage_items) - 1:
       state.garbage_items.pop()
     else:
@@ -1370,7 +1207,7 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
     draft_path.set_data([], [])
     draft_sc.set_offsets(np.empty((0, 2)))
     clear_list_artists(goal_arrow_arts)
-    slog('Running. MMB pan | LMB/RMB add garbage | Bksp undo | SPACE/A/D')
+    slog('Running. LMB/MMB pan | RMB add garbage | Bksp undo | SPACE/A/D')
 
   def restart_run() -> None:
     nonlocal state, checkpoints, checkpoint_idx, paused
@@ -1402,9 +1239,11 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
     if event.button == 2:
       begin_pan(event)
       return
-    # running: MMB pan; LMB/RMB add temporary garbage (即时重排路径)
+    # running: LMB pan map, RMB add temporary garbage
     if mode == 'running' and state is not None:
-      if event.button == 1 or event.button == 3:
+      if event.button == 1:
+        begin_pan(event)
+      elif event.button == 3:
         add_runtime_garbage((float(event.xdata), float(event.ydata)))
         fig.canvas.draw_idle()
       return
@@ -1696,7 +1535,7 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
     title = {
       'edit_goals': 'EDIT GOALS: LMB=goal+dir  RMB=robot  MMB=pan  Enter=garbage  Bksp=undo  Q=clear',
       'edit_garbage': 'EDIT GARBAGE: LMB=add  MMB=pan  Enter=start  Bksp=undo  Q=clear',
-      'running': 'RUN: MMB pan  LMB/RMB add garbage  Bksp undo | SPACE/A/D | cyan=A-C+ext  orangeD=CORNER',
+      'running': 'RUN: LMB/MMB pan  RMB add garbage  Bksp undo | SPACE/A/D | cyan=A-C+ext  orangeD=CORNER',
     }[mode]
     ax.set_title(title, fontsize=9)
 
@@ -1778,8 +1617,9 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
 
     lines = [
       '=== keys ===',
+      'LMB   = pan map',
       'MMB   = pan map',
-      'LMB/RMB = add garbage',
+      'RMB   = add garbage',
       'Bksp  = undo garbage',
       'SPACE = pause/play',
       'A/D   = prev/next point',
@@ -1812,7 +1652,6 @@ def run_gui(replay: bool = False, scenario_path: Optional[str] = None) -> None:
       '',
       f'hit so far: [{hit}]',
       f'garbage fin={sorted(state.finished)}/{len(state.garbage_items)}',
-      f'sweep={state.last_sweep_order}',
       f'goals={len(state.goals)} del={len(state.deleted)}',
       f'robot=({state.robot[0]:.2f},{state.robot[1]:.2f})',
       '',
