@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import itertools
 import json
 import math
 import os
@@ -66,7 +67,6 @@ ROBOT_LENGTH_M = 2.0   # along yaw
 ROBOT_WIDTH_M = 1.0
 MIN_DRAG_M = 0.15      # below this -> default yaw 0
 
-GARBAGE_PUBLISH_WITHIN_GOALS = 5
 GARBAGE_FINISH_RADIUS_M = 0.6
 ROBOT_SPEED = 1.0
 REACH_GOAL_RADIUS = 0.25
@@ -214,36 +214,60 @@ def find_all_corners(
   return out
 
 
+# 参与排序点数 <= 该值时用暴力枚举求"总转角最小"的全局最优；更大则退回贪心
+SWEEP_BRUTE_MAX_N = 7
+
+
 def compute_sweep_order(
   robot: Point,
   robot_yaw: float,
   points: Sequence[Point],
 ) -> List[int]:
-  """多堆垃圾清扫顺序：贪心最小旋转角。
+  """多堆垃圾清扫顺序：总转角最小的全局最优（点数 <= SWEEP_BRUTE_MAX_N 时）。
 
-  首堆 = 离机器人欧氏距离最近的堆；
-  之后每一步：枚举所有未扫堆，取"当前朝向 → 目标方向"最小旋转角者；
-  角度相同 → 距离近的优先。
-  模拟到达后：位姿=该堆坐标，朝向=上一段行进方向。
-  robot_yaw 为机器人当前朝向（rad）。
+  角度模型：
+  - 起点朝向 = 机器人当前朝向 robot_yaw（首段 R->第一堆 计入总角）；
+  - 每段转向 = 当前朝向转到指向下一堆方向的"最小旋转角"
+    （wrap 到 [-pi,pi] 取绝对值）；
+  - 遍历所有排列，取"各段转向角总和"最小的那条作为清扫顺序。
+  点数超过上限时退回贪心（首堆最近 + 每步最小转角）。
   返回按清扫先后排列的下标列表（与 points 一一对应）。
   """
   n = len(points)
   if n <= 1:
     return list(range(n))
 
+  def route_total(perm: Sequence[int]) -> float:
+    heading = robot_yaw
+    pos = robot
+    total = 0.0
+    for idx in perm:
+      q = points[idx]
+      d = math.atan2(q[1] - pos[1], q[0] - pos[0]) - heading
+      d = math.atan2(math.sin(d), math.cos(d))  # wrap to [-pi, pi]
+      total += abs(d)
+      heading = math.atan2(q[1] - pos[1], q[0] - pos[0])
+      pos = q
+    return total
+
+  if n <= SWEEP_BRUTE_MAX_N:
+    best_perm: Optional[Tuple[int, ...]] = None
+    best_total = float('inf')
+    for perm in itertools.permutations(range(n)):
+      t = route_total(perm)
+      if t < best_total - 1e-9:
+        best_total = t
+        best_perm = perm
+    return list(best_perm or tuple(range(n)))
+
+  # 退回贪心：n 大时 n! 算不动（首堆最近 + 每步最小转角）
   remaining = set(range(n))
   order: List[int] = []
-
-  # 首堆：离机器人最近
   first = min(remaining, key=lambda i: dist2(robot, points[i]))
   order.append(first)
   remaining.discard(first)
-
   cur_pos = points[first]
-  cur_yaw = math.atan2(
-    cur_pos[1] - robot[1], cur_pos[0] - robot[0])
-
+  cur_yaw = math.atan2(cur_pos[1] - robot[1], cur_pos[0] - robot[0])
   while remaining:
     best_i = -1
     best_angle = float('inf')
@@ -252,10 +276,9 @@ def compute_sweep_order(
       q = points[i]
       target_yaw = math.atan2(q[1] - cur_pos[1], q[0] - cur_pos[0])
       d = target_yaw - cur_yaw
-      d = math.atan2(math.sin(d), math.cos(d))  # wrap to [-pi, pi]
+      d = math.atan2(math.sin(d), math.cos(d))
       angle = abs(d)
       d2 = dist2(cur_pos, q)
-      # 角度小的优先；角度相同 → 距离近的优先
       if (angle < best_angle - 1e-6) or \
          (abs(angle - best_angle) < 1e-6 and d2 < best_d2):
         best_angle = angle
@@ -263,11 +286,9 @@ def compute_sweep_order(
         best_i = i
     order.append(best_i)
     remaining.discard(best_i)
-    # 模拟新位姿：位置=该堆，朝向=上一段行进方向
     cur_yaw = math.atan2(
       points[best_i][1] - cur_pos[1], points[best_i][0] - cur_pos[0])
     cur_pos = points[best_i]
-
   return order
 
 
@@ -325,6 +346,90 @@ def plan_order_with_new_garbage(
   # 4-2: 排除最近垃圾，其余(含新垃圾)贪心重算，最近垃圾留队首
   rest_pos = [i for i in others_pos if i != nearest_pos] + [new_pos]
   return [cands[p] for p in ([nearest_pos] + greedy_pos(rest_pos))], t
+
+
+# 调试：参与排序的点数 <=4 时打印所有排列的角度。
+# 只在「新增了垃圾」或「最优顺序真的变了」时打印，避免刷屏。
+_last_debug_cands_key: Optional[Tuple[int, ...]] = None  # 上次打印时的候选集合
+_last_debug_order: Optional[Tuple[int, ...]] = None      # 上次打印时的清扫顺序
+
+
+def debug_dump_sweep_orders(
+  robot: Point,
+  robot_yaw: float,
+  cands: Sequence[int],
+  pts: Sequence[Point],
+  greedy_order: Optional[Sequence[int]] = None,
+) -> None:
+  """调试：把参与排序的点（<=4）所有访问顺序的转向角都打出来。
+
+  角度模型与 compute_sweep_order 一致：
+  - 起点朝向 = 机器人当前朝向 robot_yaw；首段 R->g0 计入总角；
+  - 每段转向 = 当前朝向转到指向下一堆方向的"最小旋转角"
+    （wrap 到 [-pi,pi] 取绝对值，单位度）。
+  格式：perm g0->g1->g2 : R->g0=xx.x° g0->g1=xx.x°  total=xx.x°
+  打印时按 total 从低到高排序，最上面就是全局最优；末尾附当前实际选中的路线。
+  """
+  n = len(cands)
+  if n <= 1 or n > 4:
+    return
+
+  def wrap_angle(a: float) -> float:
+    return math.atan2(math.sin(a), math.cos(a))
+
+  def turn_deg(heading: float, to_pt: Point, from_pt: Point) -> float:
+    d = math.atan2(to_pt[1] - from_pt[1], to_pt[0] - from_pt[0])
+    return math.degrees(abs(wrap_angle(d - heading)))
+
+  print(
+    f'[sweep-debug] {n} piles cands={list(cands)} '
+    f'robot=({robot[0]:.2f},{robot[1]:.2f}) '
+    f'yaw={math.degrees(robot_yaw):.0f}deg')
+  entries: List[Tuple[float, str]] = []
+  for perm in itertools.permutations(range(n)):
+    idx = [cands[i] for i in perm]
+    ord_pts = [pts[i] for i in perm]
+    heading = robot_yaw
+    pos = robot
+    steps: List[str] = []
+    total = 0.0
+    for k in range(n):
+      a = turn_deg(heading, ord_pts[k], pos)
+      label = f'R->g{idx[0]}={a:.1f}' if k == 0 else f'g{idx[k - 1]}->g{idx[k]}={a:.1f}'
+      steps.append(label)
+      total += a
+      heading = math.atan2(
+        ord_pts[k][1] - pos[1], ord_pts[k][0] - pos[0])
+      pos = ord_pts[k]
+    line = (
+      'perm ' + '->'.join(f'g{i}' for i in idx) + ' : ' +
+      '  '.join(steps) + f'  total={total:.1f}')
+    entries.append((total, line))
+  # 按总角从低到高排序打印：最小排最前，对比最直观
+  entries.sort(key=lambda e: e[0])
+  for _, line in entries:
+    print(line)
+  best = entries[0][0]
+  best_lines = [line for t, line in entries if abs(t - best) < 1e-9]
+  print(
+    f'[sweep-debug] min total={best:.1f} deg -> '
+    + ' | '.join(best_lines))
+
+  if greedy_order:
+    gi = [cands.index(v) for v in greedy_order if v in cands]
+    if len(gi) >= 1:
+      ord_pts = [pts[i] for i in gi]
+      heading = robot_yaw
+      pos = robot
+      gt = 0.0
+      for k in range(len(gi)):
+        gt += turn_deg(heading, ord_pts[k], pos)
+        heading = math.atan2(
+          ord_pts[k][1] - pos[1], ord_pts[k][0] - pos[0])
+        pos = ord_pts[k]
+      print(
+        f'[sweep-debug] selected total={gt:.1f} deg '
+        f'(order={list(greedy_order)})')
 
 
 @dataclass
@@ -840,25 +945,6 @@ class SimState:
       self.log_lines = self.log_lines[-12:]
 
 
-def nearest_goal_index(goals: Sequence[Point], p: Point) -> int:
-  best_i, best = 0, float('inf')
-  for i, g in enumerate(goals):
-    d = dist2(p, g)
-    if d < best:
-      best, best_i = d, i
-  return best_i
-
-
-def path_goals_ahead(original: Sequence[Point], robot: Point, garbage: Point) -> int:
-  if not original:
-    return 10**9
-  ri = nearest_goal_index(original, robot)
-  gi = nearest_goal_index(original, garbage)
-  if gi < ri:
-    return 10**9
-  return gi - ri
-
-
 def pending_inserted_garbage(state: SimState) -> bool:
   for i in state.published:
     if i in state.finished:
@@ -871,7 +957,10 @@ def pending_inserted_garbage(state: SimState) -> bool:
 
 
 def maybe_publish_and_insert(state: SimState) -> None:
-  # 候选：未发布、未完成、且通过距离/路径门槛的垃圾（每帧动态过滤）
+  global _last_debug_cands_key, _last_debug_order
+  # 候选：未发布、未完成、且在距离范围内的垃圾（每帧动态过滤）。
+  # 不再用 path-ahead 路径超前门槛：多堆排序应纳入 9m 内所有堆，
+  # 否则几何上近、但对应路径靠后的垃圾会被漏扫（与 C++ 语义不一致）。
   cands: List[int] = []
   for i, (gxy, hint) in enumerate(state.garbage_items):
     if i in state.published or i in state.finished:
@@ -880,10 +969,6 @@ def maybe_publish_and_insert(state: SimState) -> None:
     # 太远则本帧忽略，不标记 finished：机器人靠近后继续判断
     if MAX_GARBAGE_ROBOT_DIST_M > 0.0 and \
        dist(state.robot, (gx, gy)) > MAX_GARBAGE_ROBOT_DIST_M:
-      continue
-    ahead = path_goals_ahead(state.original_goals, state.robot, (gx, gy))
-    # RT* = added during run; skip path-ahead gate so it can insert soon
-    if not str(hint).startswith('RT') and ahead > GARBAGE_PUBLISH_WITHIN_GOALS:
       continue
     cands.append(i)
 
@@ -919,13 +1004,32 @@ def maybe_publish_and_insert(state: SimState) -> None:
         f'{state.last_sweep_order}')
     i = sweep[0]
   elif len(cands) > 1:
-    # 多堆清扫顺序：从当前机器人位姿动态重算（最近优先 → 贪心最小旋转角）
+    # 多堆清扫顺序：从当前机器人位姿动态重算（总转角最小，全局最优）
     sweep = compute_sweep_order(state.robot, state.yaw, cand_pts)
     state.last_sweep_order = [cands[k] for k in sweep]
     i = cands[sweep[0]]
   else:
     i = cands[0]
     state.last_sweep_order = [i]
+
+  # 调试：参与排序点数<=4。只在「新增了垃圾」或「最优顺序真的变了」时打印，避免刷屏
+  if 1 < len(cands) <= 4:
+    cur_order = tuple(state.last_sweep_order)
+    # 候选里出现了上次打印时没有的下标 → 新增了垃圾
+    added_new = (_last_debug_cands_key is None) or \
+      bool(set(cands) - set(_last_debug_cands_key))
+    changed = False
+    if not added_new and _last_debug_order is not None:
+      # 与上次打印时的顺序比较（都过滤到当前候选集合）
+      prev_rel = tuple(v for v in _last_debug_order if v in cands)
+      cur_rel = tuple(v for v in cur_order if v in cands)
+      changed = (prev_rel != cur_rel)
+    if added_new or changed:
+      _last_debug_cands_key = tuple(sorted(cands))
+      _last_debug_order = cur_order
+      debug_dump_sweep_orders(
+        state.robot, state.yaw, cands, cand_pts,
+        greedy_order=state.last_sweep_order)
 
   # 已有垃圾在待扫队列里：普通插入等它扫完；4-1 新垃圾插队首除外
   if not bypass_pending and pending_inserted_garbage(state):
@@ -934,7 +1038,6 @@ def maybe_publish_and_insert(state: SimState) -> None:
   gx, gy = state.garbage_xy[i]
   hint = state.garbage_items[i][1]
   dist_robot = dist(state.robot, (gx, gy))
-  ahead = path_goals_ahead(state.original_goals, state.robot, (gx, gy))
 
   for ix, iy in state.inserted_xy:
     if dist((gx, gy), (ix, iy)) < DEDUP_DISTANCE_M:
@@ -942,7 +1045,7 @@ def maybe_publish_and_insert(state: SimState) -> None:
       return
 
   state.log(
-    f'Publish garbage[{i}] ({gx:.2f},{gy:.2f}) ahead={ahead} '
+    f'Publish garbage[{i}] ({gx:.2f},{gy:.2f}) '
     f'dist_robot={dist_robot:.2f}m | {hint}')
   state.log(f'  sweep_order={state.last_sweep_order}')
 
@@ -1050,7 +1153,7 @@ def scenario_to_edit(data: dict):
   goals = [(float(g['x']), float(g['y'])) for g in data['goals']]
   yaws = [math.radians(float(g.get('yaw_deg', 0.0))) for g in data['goals']]
   garbage = [(float(g['x']), float(g['y'])) for g in data.get('garbage', [])]
-  # 运行中 RMB 加的垃圾：用 RT* 提示，跳过 path-ahead 门槛（对齐日志复刻）
+  # 运行中 RMB 加的垃圾：用 RT* 提示（对齐日志复刻）
   runtime_garbage = [
     (float(g['x']), float(g['y'])) for g in data.get('runtime_garbage', [])]
   robot = data['robot']

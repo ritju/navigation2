@@ -307,6 +307,7 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
     return garbage_list_;
   }
 
+  // base_link到map
   geometry_msgs::msg::PoseStamped robot_pose;
   if (!nav2_util::getCurrentPose(
       robot_pose, *tf_, global_frame_, robot_base_frame_, transform_tolerance_))
@@ -321,6 +322,7 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
   const double robot_y = robot_pose.pose.position.y;
 
   getInput("max_garbage_robot_dist_m", max_garbage_robot_dist_m_);
+
 
   auto sameDetect =     // id，stamp，xy 都相同则认为是同一条垃圾
     [](const capella_ros_msg::msg::GarbageDetect & a,
