@@ -31,6 +31,7 @@
 #include "geometry_msgs/msg/polygon.hpp"
 #include "geometry_msgs/msg/polygon_stamped.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "nav_msgs/msg/occupancy_grid.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "tf2_ros/buffer.h"
 #include "visualization_msgs/msg/marker.hpp"
@@ -47,8 +48,12 @@ public:
   typedef std::vector<geometry_msgs::msg::PoseStamped> Goals;
   /** 后处理结果：每项含 map 位姿、角点、类别 class_id */
   typedef std::vector<capella_ros_msg::msg::GarbageDetect> GarbageList;
-  /** 历史垃圾队列最大长度 */
-  static constexpr std::size_t kMaxHistorySize = 1;
+  /** history_list_ 最大长度 */
+  static constexpr std::size_t kMaxHistorySize = 10;
+  /** garbage_list_ 最大长度 */
+  static constexpr std::size_t kMaxGarbageSize = 7;
+  /** 清扫顺序全排列上限，超过则贪心 */
+  static constexpr std::size_t kSweepBruteMaxN = 7;
   /** map 下去重距离阈值米，后到且更近于此的删掉 */
   static constexpr double kDedupDistanceM = 0.15;
 
@@ -120,6 +125,12 @@ public:
       BT::InputPort<double>(
         "max_garbage_robot_dist_m", 9.0,
         "Ignore garbage farther than this distance (m) from robot (anti false-detect)"),
+      BT::InputPort<double>(
+        "garbage_merge_radius_m", 0.8,
+        "Merge detections within this radius (m) of the nearest seed into one pile"),
+      BT::InputPort<std::string>(
+        "local_costmap_topic", std::string("local_costmap/costmap"),
+        "Local costmap OccupancyGrid topic for obstacle-info readability check"),
       BT::InputPort<bool>(
         "enable_visualization", true, "Publish insert/clip markers to RViz"),   //总开关
       BT::InputPort<bool>(
@@ -151,6 +162,15 @@ private:
 
   /** footprint 话题回调 */
   void footprintCallback(const geometry_msgs::msg::PolygonStamped::SharedPtr msg);
+
+  /** 局部代价图话题回调 */
+  void localCostmapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
+
+  /**
+   * 障碍物情况可读：点落在局部代价图内，且格子不是 unknown。
+   * 失败时 reason 写入原因（可为 nullptr）。
+   */
+  bool isObstacleInfoReadable(double x, double y, std::string * reason) const;
 
   /** 接收到垃圾后的后处理函数，返回处理后的 garbage_list */
   GarbageList postProcessHistory();
@@ -202,6 +222,10 @@ private:
     const GarbageList & kept);
   /** 是否落在已到达过、不再插入的垃圾附近 */
   bool isNearReachedGarbage(double x, double y) const;
+
+  /** 上一堆插入点是否仍在 goals 中（未经过则先不插下一堆） */
+  bool isPendingGarbageInGoals(const Goals & goals) const;
+
   /** 平面距离平方 */
   static double squaredDistanceXY(
     double x1, double y1, double x2, double y2);
@@ -209,6 +233,44 @@ private:
   bool tryInsertPreferCloserToRobot(
     capella_ros_msg::msg::GarbageDetect garbage,
     double robot_x, double robot_y);
+
+  /** 合堆：距机器人最近的点当种子，到种子小于半径的并入，返回各堆代表点 */
+  static GarbageList mergeGarbagePiles(
+    const GarbageList & candidates,
+    double robot_x, double robot_y,
+    double merge_radius_m);
+
+  /**
+   * 多堆清扫顺序（只读 garbage_list，不拷贝内容）。
+   * 按机器人当前朝向累加各段最小转角，取 total 最小的访问下标；
+   * 点数 <= kSweepBruteMaxN 全排列，否则贪心。
+   */
+  static std::vector<std::size_t> computeSweepOrder(
+    const GarbageList & garbage_list,
+    double robot_x, double robot_y,
+    double robot_yaw);
+
+  /** 按 computeSweepOrder 重排成员 garbage_list_，使 [0] 为下一堆 */
+  void reorderGarbageListBySweep(
+    double robot_x, double robot_y, double robot_yaw);
+
+  /**
+   * 导航中新堆：4-1/4-2 重排 garbage_list_。
+   * 返回 true 表示 4-1（新堆在队首，可破 pending）。
+   */
+  bool reorderGarbageListWithNewPile(
+    double robot_x, double robot_y, double robot_yaw,
+    std::size_t new_idx);
+
+  /** 相对 before，找出本轮新入队的堆下标（多个时取离机器人最近） */
+  bool findNewGarbageIndex(
+    const GarbageList & before,
+    double robot_x, double robot_y,
+    std::size_t & new_idx) const;
+
+  /** 把当前 garbage_list_ 顺序记入 last_sweep_xy_ */
+  void syncLastSweepXyFromList();
+
   /** 点到无限直线 AB 的垂足 */
   static void projectPointToInfiniteLine(
     double px, double py,
@@ -260,12 +322,14 @@ private:
   rclcpp::Subscription<capella_ros_msg::msg::GarbageDetect>::SharedPtr garbage_sub_;
   rclcpp::Subscription<garage_utils_msgs::msg::Polygons>::SharedPtr special_terrain_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PolygonStamped>::SharedPtr footprint_sub_;
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr local_costmap_sub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
 
   std::string garbage_topic_;
   std::string special_terrain_topic_;
   std::string footprint_topic_;
+  std::string local_costmap_topic_;
   std::string visualization_topic_;
   std::string global_frame_;
   std::string robot_base_frame_;
@@ -278,6 +342,8 @@ private:
   double head_delete_robot_dist_m_{4.0};
   /** 垃圾离机器人超过该距离则忽略，默认 9m */
   double max_garbage_robot_dist_m_{9.0};
+  /** 合堆半径：到种子小于该值并为一堆，默认 0.8m */
+  double garbage_merge_radius_m_{0.8};
 
   std::mutex history_mutex_;
   /** 原始接收缓存 */
@@ -289,8 +355,15 @@ private:
   /** 当前认定的任务时间戳，与 goals 上统一 stamp 对齐 */
   rclcpp::Time mission_stamp_record_{0, 0, RCL_ROS_TIME};
   bool has_mission_stamp_{false};
-  /** 本任务内已到达过、不再插入的垃圾 map 坐标 */
+  /** 本任务内已插入过、不再作为新候选的垃圾 map 坐标 */
   std::vector<std::pair<double, double>> reached_garbage_xy_;
+  /** 已插入且 goals 里尚未去掉的当前堆 */
+  bool has_pending_garbage_{false};
+  std::pair<double, double> pending_garbage_xy_{0.0, 0.0};
+  /** 本周期 4-1：允许在 pending 未结束时插入新堆 */
+  bool bypass_pending_insert_{false};
+  /** 上次清扫顺序（map xy），供 4-1 保留其余相对次序 */
+  std::vector<std::pair<double, double>> last_sweep_xy_;
 
   mutable std::mutex special_terrain_mutex_;
   /** 禁扫区多边形 */
@@ -298,6 +371,9 @@ private:
 
   mutable std::mutex footprint_mutex_;
   geometry_msgs::msg::PolygonStamped::SharedPtr latest_footprint_;
+
+  mutable std::mutex local_costmap_mutex_;
+  nav_msgs::msg::OccupancyGrid::SharedPtr latest_local_costmap_;
 };
 
 }  // namespace nav2_behavior_tree
