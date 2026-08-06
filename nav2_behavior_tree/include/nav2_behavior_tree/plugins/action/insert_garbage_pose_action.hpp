@@ -191,7 +191,10 @@ private:
     double arrived_radius) const;
 
   /** 获取插入所需的全部信息并返回 */
-  InsertInfo gatherInsertInfo();
+  InsertInfo gatherInsertInfo(
+    const Goals & goals,
+    const geometry_msgs::msg::PoseStamped & robot_pose,
+    double garbage_x, double garbage_y);
 
   /** 按 goala/goalc/goald 收集待删点到 goaltotal，再一块删除 */
   Goals clipGoalsNearGarbage(InsertInfo & info);
@@ -222,6 +225,9 @@ private:
     const GarbageList & kept);
   /** 是否落在已到达过、不再插入的垃圾附近 */
   bool isNearReachedGarbage(double x, double y) const;
+  bool isProtectedGarbageXy(double x, double y) const;
+  void addProtectedGarbageXy(double x, double y);
+  void pruneProtectedGarbageNotInGoals(const Goals & goals);
 
   /** 上一堆插入点是否仍在 goals 中（未经过则先不插下一堆） */
   bool isPendingGarbageInGoals(const Goals & goals) const;

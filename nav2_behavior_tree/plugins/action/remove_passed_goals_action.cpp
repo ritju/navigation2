@@ -403,6 +403,8 @@ BT::NodeStatus RemovePassedGoals::tick()
       static_cast<unsigned long>(fingerprint_incoming_blackboard_tail_stamp),
       incoming_goal_queue_from_blackboard.size());
     fingerprint_accepted_blackboard_input_goals_tail_stamp_ = fingerprint_incoming_blackboard_tail_stamp;
+    // 保存重载前未走过的点，供重载后恢复进度时保护
+    const Goals old_internal_goals_before_reload = mission_goal_queue_internal_;
     mission_goal_queue_internal_ = incoming_goal_queue_from_blackboard;
     vector_passed_goal_indexes_recorded_.clear();
     batch_window_initialized_ = false;
@@ -417,6 +419,85 @@ BT::NodeStatus RemovePassedGoals::tick()
     output_gpp_goals_snapshot_.clear();
     emitted_gpp_goal_stamp_by_mission_index_z_.clear();
     last_emitted_gpp_front_stamp_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+
+    // 按机器人当前位置，把已走过的点从队列移除并记入已走过列表
+    if (!mission_goal_queue_internal_.empty()) {
+      geometry_msgs::msg::PoseStamped robot_pose_recovery;
+      if (nav2_util::getCurrentPose(
+          robot_pose_recovery, *tf_, global_frame_, robot_base_frame_,
+          transform_tolerance_))
+      {
+        constexpr double kBehindXThresholdM = -0.2;
+        constexpr double kMatchTolM = 0.15;
+        Goals recovered_queue;
+        recovered_queue.reserve(mission_goal_queue_internal_.size());
+        for (const auto & pose_goal : mission_goal_queue_internal_) {
+          // 与重载前未走过的点匹配则保留，避免把前方未走的点误删
+          bool matches_unpassed = false;
+          for (const auto & old_pose : old_internal_goals_before_reload) {
+            if (nav2_util::geometry_utils::euclidean_distance(
+                pose_goal.pose, old_pose.pose) < kMatchTolM) {
+              matches_unpassed = true;
+              break;
+            }
+          }
+          if (matches_unpassed) {
+            recovered_queue.push_back(pose_goal);
+            continue;
+          }
+          geometry_msgs::msg::PoseStamped pose_goal_in_robot;
+          bool transform_ok = false;
+          try {
+            if (pose_goal.header.frame_id == robot_base_frame_) {
+              pose_goal_in_robot = pose_goal;
+              pose_goal_in_robot.header.frame_id = robot_base_frame_;
+              transform_ok = true;
+            } else {
+              const geometry_msgs::msg::TransformStamped tf_global_to_robot =
+                tf_->lookupTransform(
+                robot_base_frame_, pose_goal.header.frame_id,
+                tf2::TimePointZero, tf2::durationFromSec(transform_tolerance_));
+              tf2::doTransform(pose_goal, pose_goal_in_robot, tf_global_to_robot);
+              transform_ok = true;
+            }
+          } catch (const tf2::TransformException &) {
+            transform_ok = false;
+          }
+
+          if (transform_ok && pose_goal_in_robot.pose.position.x < kBehindXThresholdM) {
+            const uint32_t passed_z = missionPoseGoalIndexFromPoseZ(pose_goal);
+            if (std::find(
+                vector_passed_goal_indexes_recorded_.begin(),
+                vector_passed_goal_indexes_recorded_.end(),
+                passed_z) == vector_passed_goal_indexes_recorded_.end()) {
+              vector_passed_goal_indexes_recorded_.push_back(passed_z);
+            }
+            RCLCPP_INFO(
+              node->get_logger(),
+              "[RemovePassedGoals] reload restore progress: drop passed goal z=%u (robot behind)",
+              static_cast<unsigned int>(passed_z));
+            continue;
+          }
+          recovered_queue.push_back(pose_goal);
+        }
+        if (recovered_queue.size() != mission_goal_queue_internal_.size()) {
+          mission_goal_queue_internal_ = std::move(recovered_queue);
+          RCLCPP_INFO(
+            node->get_logger(),
+            "[RemovePassedGoals] reload restore progress: queue size=%zu",
+            mission_goal_queue_internal_.size());
+        } else {
+          RCLCPP_WARN(
+            node->get_logger(),
+            "[RemovePassedGoals] reload restore progress: no passed goal removed, kept=%zu",
+            recovered_queue.size());
+        }
+      } else {
+        RCLCPP_WARN(
+          node->get_logger(),
+          "[RemovePassedGoals] reload restore progress skipped: getCurrentPose failed");
+      }
+    }
   }
 
   bool enable_backward_mode = false;
