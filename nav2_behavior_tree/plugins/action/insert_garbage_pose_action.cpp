@@ -159,7 +159,7 @@ void InsertGarbagePose::localCostmapCallback(
   latest_local_costmap_ = msg;
 }
 
-// 障碍物情况可读：落在局部代价图内且格子非 unknown
+// 有没有图    点在图内吗    格子可读吗，是否是栅格值 < 0
 bool InsertGarbagePose::isObstacleInfoReadable(
   double x, double y, std::string * reason) const
 {
@@ -214,7 +214,7 @@ bool InsertGarbagePose::isObstacleInfoReadable(
   const double yaw = tf2::getYaw(info.origin.orientation);
   const double cos_yaw = std::cos(yaw);
   const double sin_yaw = std::sin(yaw);
-  // 转到代价图栅格坐标系（含 origin 朝向）
+  // 转到代价图栅格坐标系  含 origin 朝向
   const double local_x = cos_yaw * dx + sin_yaw * dy;
   const double local_y = -sin_yaw * dx + cos_yaw * dy;
 
@@ -250,7 +250,7 @@ bool InsertGarbagePose::isObstacleInfoReadable(
   return true;
 }
 
-// 判断点是否在多边形内
+// 判断 看垃圾点是否在禁行区里面的函数
 bool InsertGarbagePose::isPointInPolygon(
   double x, double y, const geometry_msgs::msg::Polygon & polygon)
 {
@@ -485,20 +485,20 @@ double routeTotalTurnRad(
   double robot_x, double robot_y,
   double robot_yaw)
 {
-  double heading = robot_yaw;
+  double heading = robot_yaw;   //当前朝向取机器人的初始朝向 和位置
   double px = robot_x;
   double py = robot_y;
   double total = 0.0;
-  for (const std::size_t idx : order) {
+  for (const std::size_t idx : order) {      // 按照order顺序走
     const double qx = garbage_list[idx].pose.pose.position.x;
     const double qy = garbage_list[idx].pose.pose.position.y;
     const double target_yaw = std::atan2(qy - py, qx - px);
-    total += std::fabs(wrapAngleRad(target_yaw - heading));
-    heading = target_yaw;
+    total += std::fabs(wrapAngleRad(target_yaw - heading));   // 要转的角度
+    heading = target_yaw;    //走到这里以后朝向和位置更新
     px = qx;
     py = qy;
   }
-  return total;
+  return total;     // 总角度
 }
 
 }  // namespace
@@ -511,13 +511,13 @@ std::vector<std::size_t> InsertGarbagePose::computeSweepOrder(
 {
   const std::size_t n = garbage_list.size();
   std::vector<std::size_t> order(n);
-  for (std::size_t i = 0; i < n; ++i) {
+  for (std::size_t i = 0; i < n; ++i) {   // order = [0, 1, 2, 3] 
     order[i] = i;
   }
   if (n <= 1) {
     return order;
   }
-
+  // 把能走的顺序全试一遍
   if (n <= kSweepBruteMaxN) {
     std::vector<std::size_t> best = order;
     double best_total = std::numeric_limits<double>::infinity();
@@ -537,7 +537,7 @@ std::vector<std::size_t> InsertGarbagePose::computeSweepOrder(
   std::vector<std::size_t> remaining = order;
   std::vector<std::size_t> greedy;
   greedy.reserve(n);
-
+  // 挑离机器人最近的，作为第一个去扫的
   std::size_t first_pos = 0;
   double nearest_d2 = std::numeric_limits<double>::infinity();
   for (std::size_t p = 0; p < remaining.size(); ++p) {
@@ -2393,6 +2393,7 @@ BT::NodeStatus InsertGarbagePose::tick()
 
   // 批量插入所有堆，顺序由清扫顺序决定
   std::size_t inserted_count = 0;
+  std::ostringstream inserted_xy;
   while (!garbage_list_.empty()) {
     const double gx = garbage_list_.front().pose.pose.position.x;
     const double gy = garbage_list_.front().pose.pose.position.y;
@@ -2410,6 +2411,7 @@ BT::NodeStatus InsertGarbagePose::tick()
     addProtectedGarbageXy(gx, gy);
     garbage_list_.erase(garbage_list_.begin());
     ++inserted_count;
+    inserted_xy << "(" << gx << ", " << gy << ") ";
   }
 
   // 垃圾点 z 沿用检测消息里的 0，会与导航起点 z=0 冲突，被 RemovePassedGoals 误判成已走过
@@ -2424,8 +2426,8 @@ BT::NodeStatus InsertGarbagePose::tick()
 
   RCLCPP_INFO(
     node_->get_logger(),
-    "InsertGarbagePose: batch inserted %zu pile(s), output goals %zu",
-    inserted_count, goals_now.size());
+    "InsertGarbagePose: batch inserted %zu pile(s): %s, output goals %zu",
+    inserted_count, inserted_xy.str().c_str(), goals_now.size());
 
   setOutput("output_goals", goals_now);
   return BT::NodeStatus::SUCCESS;
