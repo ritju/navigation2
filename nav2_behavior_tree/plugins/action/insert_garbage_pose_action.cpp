@@ -575,7 +575,7 @@ std::vector<std::size_t> InsertGarbagePose::computeSweepOrder(
         best_pos = p;
       }
     }
-    const std::size_t chosen = remaining[best_pos];
+    const std::size_t chosen = remaining[best_pos];  
     greedy.push_back(chosen);
     remaining.erase(remaining.begin() + static_cast<std::ptrdiff_t>(best_pos));
     const double nx = garbage_list[chosen].pose.pose.position.x;
@@ -594,7 +594,7 @@ void InsertGarbagePose::reorderGarbageListBySweep(
   if (garbage_list_.size() <= 1) {
     return;
   }
-
+  // 这个函数会根据机器人位置、朝向，以及所有垃圾堆的坐标，计算出使总转向角度尽可能小的清扫顺序
   const std::vector<std::size_t> order = computeSweepOrder(
     garbage_list_, robot_x, robot_y, robot_yaw);
   if (order.size() != garbage_list_.size()) {
@@ -620,7 +620,7 @@ void InsertGarbagePose::reorderGarbageListBySweep(
   syncLastSweepXyFromList();
 }
 
-void InsertGarbagePose::syncLastSweepXyFromList()
+void InsertGarbagePose::syncLastSweepXyFromList() // 把排好的顺序保存下来
 {
   last_sweep_xy_.clear();
   last_sweep_xy_.reserve(garbage_list_.size());
@@ -630,7 +630,7 @@ void InsertGarbagePose::syncLastSweepXyFromList()
   }
 }
 
-bool InsertGarbagePose::findNewGarbageIndex(
+bool InsertGarbagePose::findNewGarbageIndex(   //找新垃圾的
   const GarbageList & before,
   double robot_x, double robot_y,
   std::size_t & new_idx) const
@@ -677,7 +677,7 @@ bool InsertGarbagePose::findNewGarbageIndex(
   return true;
 }
 
-bool InsertGarbagePose::reorderGarbageListWithNewPile(
+bool InsertGarbagePose::reorderGarbageListWithNewPile(   // 新来的那一个新垃圾插到一个合理的位置
   double robot_x, double robot_y, double robot_yaw,
   std::size_t new_idx)
 {
@@ -723,7 +723,7 @@ bool InsertGarbagePose::reorderGarbageListWithNewPile(
   reordered.reserve(n);
 
   if (t >= 0.0 && t <= 1.0) {
-    // 4-1：新堆先行，其余尽量保持上次顺序
+    // 新垃圾插进去，其余尽量保持上次顺序
     reordered.push_back(garbage_list_[new_idx]);
     std::vector<bool> used(n, false);
     used[new_idx] = true;
@@ -771,7 +771,7 @@ bool InsertGarbagePose::reorderGarbageListWithNewPile(
     return true;
   }
 
-  // 4-2：最近堆仍第一，其余(含新堆)按最小转角重排
+  // 最近堆仍第一，其余按最小转角重排
   reordered.push_back(garbage_list_[nearest_idx]);
   GarbageList rest;
   rest.reserve(n - 1);
