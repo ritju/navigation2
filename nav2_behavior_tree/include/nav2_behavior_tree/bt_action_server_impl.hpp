@@ -24,6 +24,7 @@
 
 #include "nav2_msgs/action/navigate_to_pose.hpp"
 #include "nav2_behavior_tree/bt_action_server.hpp"
+#include "nav2_behavior_tree/mission_path_sync.hpp"
 #include "ament_index_cpp/get_package_share_directory.hpp"
 
 namespace nav2_behavior_tree
@@ -213,8 +214,48 @@ void BtActionServer<ActionT>::executeCallback()
       on_loop_callback_();
     };
 
-  // Execute the BT that was previously created in the configure step
-  nav2_behavior_tree::BtStatus rc = bt_->run(&tree_, on_loop, is_canceling, bt_loop_duration_);
+  // Execute the BT. If the tree reports SUCCESS while a preempt is still pending
+  // (or a preempt was accepted after the SUCCESS tick and cleared the path), keep
+  // navigating instead of succeeding the action early.
+  nav2_behavior_tree::BtStatus rc;
+  while (true) {
+    rc = bt_->run(&tree_, on_loop, is_canceling, bt_loop_duration_);
+
+    if (rc == nav2_behavior_tree::BtStatus::SUCCEEDED &&
+      action_server_->is_preempt_requested() && on_preempt_callback_)
+    {
+      RCLCPP_INFO(
+        logger_,
+        "BT succeeded but a preempt is pending; accepting preempt and continuing navigation");
+      on_preempt_callback_(action_server_->get_pending_goal());
+      bt_->haltAllActions(tree_.rootNode());
+      continue;
+    }
+
+    if (rc == nav2_behavior_tree::BtStatus::SUCCEEDED &&
+      !isPathReadyForCurrentMission(blackboard_))
+    {
+      std::vector<geometry_msgs::msg::PoseStamped> remaining_goals;
+      bool has_remaining_goals = false;
+      try {
+        blackboard_->get("goals", remaining_goals);
+        has_remaining_goals = !remaining_goals.empty();
+      } catch (...) {
+      }
+
+      if (!has_remaining_goals) {
+        break;
+      }
+
+      RCLCPP_INFO(
+        logger_,
+        "BT succeeded but mission path is not synced; continuing navigation for new mission");
+      bt_->haltAllActions(tree_.rootNode());
+      continue;
+    }
+
+    break;
+  }
 
   // Make sure that the Bt is not in a running state from a previous execution
   // note: if all the ControlNodes are implemented correctly, this is not needed.
