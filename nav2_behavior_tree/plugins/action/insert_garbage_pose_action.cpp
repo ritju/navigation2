@@ -856,10 +856,30 @@ InsertGarbagePose::InsertInfo InsertGarbagePose::gatherInsertInfo()
     info.goalc.pose.position.x, info.goalc.pose.position.y,
     info.goald_x, info.goald_y);
 
-  // 插入朝向取 goala → goalc
-  info.path_yaw = std::atan2(
-    info.goalc.pose.position.y - info.goala.pose.position.y,
-    info.goalc.pose.position.x - info.goala.pose.position.x);
+  // 插入朝向（map）：首堆 机器人→本堆；其后 上一堆→本堆。退化时回退 A→C
+  constexpr double kYawDegenerateDist2 = 1e-6;  // ~1mm
+  double from_x = rx;
+  double from_y = ry;
+  const char * yaw_src = "robot->G";
+  if (!reached_garbage_xy_.empty()) {
+    from_x = reached_garbage_xy_.back().first;
+    from_y = reached_garbage_xy_.back().second;
+    yaw_src = "G_prev->G";
+  }
+  const double dx_yaw = gx - from_x;
+  const double dy_yaw = gy - from_y;
+  if (dx_yaw * dx_yaw + dy_yaw * dy_yaw < kYawDegenerateDist2) {
+    info.path_yaw = std::atan2(
+      info.goalc.pose.position.y - info.goala.pose.position.y,
+      info.goalc.pose.position.x - info.goala.pose.position.x);
+    yaw_src = "A->C(fallback)";
+  } else {
+    info.path_yaw = std::atan2(dy_yaw, dx_yaw);
+  }
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "InsertGarbagePose: path_yaw=%.3f rad (%s) garbage=(%.2f, %.2f)",
+    info.path_yaw, yaw_src, gx, gy);
 
   info.valid = true;
   return info;
@@ -1639,18 +1659,19 @@ BT::NodeStatus InsertGarbagePose::tick()
   getInput("viz_ac_geometry", viz_ac_geom);
   publishVisualization(info, enable_viz, viz_garbage, viz_deleted, viz_ac_pts, viz_ac_geom);
 
-  // 插一次即完成：记入已处理，清空待插与 history，避免后续 tick 再插
-  reached_garbage_xy_.emplace_back(
-    info.garbage.pose.pose.position.x, info.garbage.pose.pose.position.y);
-  {
-    std::lock_guard<std::mutex> lock(history_mutex_);
-    history_list_.clear();
+  // 只记入并去掉刚插的这一堆；其余候选留在队列里下拍继续插
+  const double gx = info.garbage.pose.pose.position.x;
+  const double gy = info.garbage.pose.pose.position.y;
+  reached_garbage_xy_.emplace_back(gx, gy);
+  if (!garbage_list_.empty()) {
+    garbage_list_.erase(garbage_list_.begin());
   }
-  garbage_list_.clear();
+  // history 里同一堆的持续重发：下拍 postProcessHistory 会因
+  // isNearReachedGarbage 自动 eraseFromHistory，这里不必整表清空
   RCLCPP_INFO(
     node_->get_logger(),
-    "InsertGarbagePose: inserted garbage once at (%.2f, %.2f), will not re-insert",
-    info.garbage.pose.pose.position.x, info.garbage.pose.pose.position.y);
+    "InsertGarbagePose: inserted pile at (%.2f, %.2f), remain %zu in garbage_list_",
+    gx, gy, garbage_list_.size());
 
   return BT::NodeStatus::SUCCESS;
 }

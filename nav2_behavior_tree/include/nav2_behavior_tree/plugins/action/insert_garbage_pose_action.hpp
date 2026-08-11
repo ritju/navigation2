@@ -68,7 +68,7 @@ public:
     double radius_m{0.0};                                 // R = 机器人到垃圾距离
     double goald_x{0.0};                                  // 垃圾向 goala-goalc 无限直线的垂足
     double goald_y{0.0};
-    double path_yaw{0.0};                                 // goala 到 goalc 方向，插入朝向用
+    double path_yaw{0.0};                                 // 插入朝向：首堆 robot→G，其后 G_prev→G
     bool hit_mid_case{false};                             // 垂足落在段中
     bool hit_forward_case{false};                         // 前方延长线
     std::vector<std::pair<double, double>> corners_kept_xy;  // 前方延长线保留角点
