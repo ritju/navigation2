@@ -270,6 +270,163 @@ bool InsertGarbagePose::isObstacleInfoReadable(
   return true;
 }
 
+bool InsertGarbagePose::isMapPointPassableOnLocalCostmap(double x, double y) const
+{
+  // 取最新局部代价图
+  nav_msgs::msg::OccupancyGrid::SharedPtr costmap;
+  {
+    std::lock_guard<std::mutex> lock(local_costmap_mutex_);
+    costmap = latest_local_costmap_;
+  }
+
+  if (!costmap || costmap->info.width == 0 || costmap->info.height == 0 ||
+    costmap->data.empty())
+  {
+    return false;
+  }
+
+  // map 点转到代价图坐标系
+  double px = x;
+  double py = y;
+  const std::string & costmap_frame = costmap->header.frame_id;
+  if (!costmap_frame.empty() && costmap_frame != global_frame_) {
+    geometry_msgs::msg::PointStamped in;
+    geometry_msgs::msg::PointStamped out;
+    in.header.frame_id = global_frame_;
+    in.header.stamp = rclcpp::Time(0, 0, RCL_ROS_TIME);
+    in.point.x = x;
+    in.point.y = y;
+    in.point.z = 0.0;
+    try {
+      tf_->transform(in, out, costmap_frame, tf2::durationFromSec(transform_tolerance_));
+      px = out.point.x;
+      py = out.point.y;
+    } catch (const tf2::TransformException &) {
+      return false;
+    }
+  }
+
+  const auto & info = costmap->info;
+  if (info.resolution <= 0.0) {
+    return false;
+  }
+
+  // 相对 origin 的偏移，再按 origin 朝向转到栅格局部坐标
+  const double dx = px - info.origin.position.x;
+  const double dy = py - info.origin.position.y;
+  const double yaw = tf2::getYaw(info.origin.orientation);
+  const double cos_yaw = std::cos(yaw);
+  const double sin_yaw = std::sin(yaw);
+  const double local_x = cos_yaw * dx + sin_yaw * dy;
+  const double local_y = -sin_yaw * dx + cos_yaw * dy;
+
+  // 栅格下标，越界不可过
+  const int mx = static_cast<int>(std::floor(local_x / info.resolution));
+  const int my = static_cast<int>(std::floor(local_y / info.resolution));
+  if (mx < 0 || my < 0 ||
+    mx >= static_cast<int>(info.width) || my >= static_cast<int>(info.height))
+  {
+    return false;
+  }
+
+  const std::size_t idx =
+    static_cast<std::size_t>(my) * static_cast<std::size_t>(info.width) +
+    static_cast<std::size_t>(mx);
+  if (idx >= costmap->data.size()) {
+    return false;
+  }
+
+  // OccupancyGrid 发布后：-1 对应 255，>=100 对应 254；99 对应 253 可通过
+  const int8_t cell = costmap->data[idx];
+  if (cell < 0 || cell >= 100) {
+    return false;
+  }
+  return true;
+}
+
+bool InsertGarbagePose::isStraightCorridorClear(
+  double robot_x, double robot_y,
+  double garbage_x, double garbage_y,
+  std::string * reason) const
+{
+  // 无局部代价图则不可判定
+  {
+    std::lock_guard<std::mutex> lock(local_costmap_mutex_);
+    if (!latest_local_costmap_ || latest_local_costmap_->data.empty()) {
+      if (reason) {
+        *reason = "no local costmap";
+      }
+      return false;
+    }
+  }
+
+  // 取 map 下 footprint，用来定走廊半宽
+  std::vector<geometry_msgs::msg::Point> footprint_map;
+  if (!getRobotFootprintInMap(footprint_map) || footprint_map.empty()) {
+    if (reason) {
+      *reason = "no footprint";
+    }
+    return false;
+  }
+
+  // 机器人到垃圾的直线长度；过近只查机器人位置
+  const double dx = garbage_x - robot_x;
+  const double dy = garbage_y - robot_y;
+  const double len = std::sqrt(dx * dx + dy * dy);
+  if (len < 1e-6) {
+    if (!isMapPointPassableOnLocalCostmap(robot_x, robot_y)) {
+      if (reason) {
+        *reason = "lethal at robot";
+      }
+      return false;
+    }
+    return true;
+  }
+
+  // 路径单位向量 ux,uy；横向单位法向 nx,ny
+  const double ux = dx / len;
+  const double uy = dy / len;
+  const double nx = -uy;
+  const double ny = ux;
+
+  // footprint 在法向上的最大投影作为半宽
+  double half_w = 0.0;
+  for (const auto & pt : footprint_map) {
+    const double lat = (pt.x - robot_x) * nx + (pt.y - robot_y) * ny;
+    half_w = std::max(half_w, std::fabs(lat));
+  }
+  if (half_w < 1e-3) {
+    half_w = 0.2;
+  }
+
+  // 沿路径与横向按 0.1m 抽样，遇 lethal 则不通
+  constexpr double kStep = 0.1;
+  for (double s = 0.0; s <= len + 1e-9; s += kStep) {
+    const double cx = robot_x + ux * std::min(s, len);
+    const double cy = robot_y + uy * std::min(s, len);
+    for (double t = -half_w; t <= half_w + 1e-9; t += kStep) {
+      const double qx = cx + nx * t;
+      const double qy = cy + ny * t;
+      if (!isMapPointPassableOnLocalCostmap(qx, qy)) {
+        if (reason) {
+          *reason = "lethal on corridor";
+        }
+        return false;
+      }
+    }
+  }
+
+  // 再确认垃圾点本身
+  if (!isMapPointPassableOnLocalCostmap(garbage_x, garbage_y)) {
+    if (reason) {
+      *reason = "lethal at garbage";
+    }
+    return false;
+  }
+
+  return true;
+}
+
 // 判断 看垃圾点是否在禁行区里面的函数
 bool InsertGarbagePose::isPointInPolygon(
   double x, double y, const geometry_msgs::msg::Polygon & polygon)
@@ -951,6 +1108,24 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
       }
     }
 
+    // 机器人到垃圾直线走廊有 lethal 则丢弃
+    {
+      std::string corridor_reason;
+      if (!isStraightCorridorClear(
+          robot_x, robot_y,
+          garbage.pose.pose.position.x, garbage.pose.pose.position.y,
+          &corridor_reason))
+      {
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "InsertGarbagePose: drop garbage, corridor blocked (%s) at (%.2f, %.2f)",
+          corridor_reason.c_str(),
+          garbage.pose.pose.position.x, garbage.pose.pose.position.y);
+        eraseFromHistory(original);
+        continue;
+      }
+    }
+
     candidates.push_back(std::move(garbage));
     candidate_originals.push_back(original);
   }
@@ -1063,7 +1238,7 @@ void InsertGarbagePose::checkAndResetOnNewMission()
 
 // 获取机器人当前 footprint，并转到 map
 bool InsertGarbagePose::getRobotFootprintInMap(
-  std::vector<geometry_msgs::msg::Point> & footprint_map)
+  std::vector<geometry_msgs::msg::Point> & footprint_map) const
 {
   footprint_map.clear();
   if (!tf_) {
@@ -2087,16 +2262,66 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
   }
   garbage_pose.pose.orientation = nav2_util::geometry_utils::orientationAroundZAxis(info.path_yaw);
 
-  // 沿 path_yaw 相对垃圾再插延伸点 E  GARBAGE_EXTEND_M；|d|~0 则只插 G
-  const double extend_m = garbage_extend_m_;
-  const bool add_extend = std::fabs(extend_m) >= 1e-9;
+  // 沿 path_yaw 插 E：extend<0 不查；>0 查 G→E，失败且 >=2m 时折半再试
+  const double extend_param = garbage_extend_m_;
+  double extend_m = 0.0;
+  bool add_extend = false;
   geometry_msgs::msg::PoseStamped extend_pose = garbage_pose;
-  if (add_extend) {
+
+  auto setExtendPose = [&](double d) {
     extend_pose.pose.position.x =
-      garbage_pose.pose.position.x + extend_m * std::cos(info.path_yaw);
+      garbage_pose.pose.position.x + d * std::cos(info.path_yaw);
     extend_pose.pose.position.y =
-      garbage_pose.pose.position.y + extend_m * std::sin(info.path_yaw);
+      garbage_pose.pose.position.y + d * std::sin(info.path_yaw);
+  };
+
+  if (extend_param < -1e-9) {
+    // 来向一侧已在 robot→G 走廊里判过，直接插
+    extend_m = extend_param;
+    setExtendPose(extend_m);
+    add_extend = true;
+  } else if (extend_param > 1e-9) {
+    extend_m = extend_param;
+    setExtendPose(extend_m);
+    std::string extend_reason;
+    if (isStraightCorridorClear(
+        garbage_pose.pose.position.x, garbage_pose.pose.position.y,
+        extend_pose.pose.position.x, extend_pose.pose.position.y,
+        &extend_reason))
+    {
+      add_extend = true;
+    } else if (extend_param >= 2.0) {
+      const double half_m = extend_param * 0.5;
+      setExtendPose(half_m);
+      std::string half_reason;
+      if (isStraightCorridorClear(
+          garbage_pose.pose.position.x, garbage_pose.pose.position.y,
+          extend_pose.pose.position.x, extend_pose.pose.position.y,
+          &half_reason))
+      {
+        extend_m = half_m;
+        add_extend = true;
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "InsertGarbagePose: extend halved %.2f->%.2f m after G->E blocked (%s)",
+          extend_param, half_m, extend_reason.c_str());
+      } else {
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "InsertGarbagePose: skip extend, G->E blocked at %.2f and %.2f m (%s / %s)",
+          extend_param, half_m, extend_reason.c_str(), half_reason.c_str());
+      }
+    } else {
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "InsertGarbagePose: skip extend point, G->E blocked (%s) at E(%.2f, %.2f)",
+        extend_reason.c_str(),
+        extend_pose.pose.position.x, extend_pose.pose.position.y);
+    }
   }
+
+  info.extend_inserted = add_extend;
+  info.extend_used_m = add_extend ? extend_m : 0.0;
 
   // 往 rebuilt 写入 G 与可选 E：d>0 为 G→E，d<0 为 E→G
   auto push_garbage_and_extend = [&](Goals & rebuilt) {
@@ -2331,10 +2556,10 @@ void InsertGarbagePose::publishVisualization(
     setColor(arrow, 1.00f, 0.35f, 0.05f, 0.95f);
     arr.markers.push_back(arrow);
 
-    // 延伸点 E：与 G 同朝向；|GARBAGE_EXTEND_M|~0 时不画
-    if (std::fabs(garbage_extend_m_) >= 1e-9) {
-      const double ex = gx + garbage_extend_m_ * std::cos(info.path_yaw);
-      const double ey = gy + garbage_extend_m_ * std::sin(info.path_yaw);
+    // 延伸点 E：与 G 同朝向；仅本堆实际插入了 E 时才画
+    if (info.extend_inserted) {
+      const double ex = gx + info.extend_used_m * std::cos(info.path_yaw);
+      const double ey = gy + info.extend_used_m * std::sin(info.path_yaw);
 
       auto me = makeBase("accepted_garbage", base + 3, visualization_msgs::msg::Marker::SPHERE);
       me.pose.position.x = ex;
@@ -2594,11 +2819,11 @@ BT::NodeStatus InsertGarbagePose::tick()
     }
     goals_now = insertGarbageIntoGoals(info);
     publishVisualization(info, enable_viz, viz_garbage, viz_deleted, viz_ac_pts, viz_ac_geom);
-    // 保护 G；有延伸点时一并保护 E，避免下一堆 clip 刚插上的延伸点
+    // 保护 G；实际插入了 E 时一并保护
     addProtectedGarbageXy(gx, gy);
-    if (std::fabs(garbage_extend_m_) >= 1e-9) {
-      const double ex = gx + garbage_extend_m_ * std::cos(info.path_yaw);
-      const double ey = gy + garbage_extend_m_ * std::sin(info.path_yaw);
+    if (info.extend_inserted) {
+      const double ex = gx + info.extend_used_m * std::cos(info.path_yaw);
+      const double ey = gy + info.extend_used_m * std::sin(info.path_yaw);
       addProtectedGarbageXy(ex, ey);
     }
     garbage_list_.erase(garbage_list_.begin());

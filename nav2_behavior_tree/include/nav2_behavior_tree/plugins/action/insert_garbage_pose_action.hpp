@@ -74,6 +74,8 @@ public:
     double goald_x{0.0};                                  // 垃圾向 goala-goalc 无限直线的垂足
     double goald_y{0.0};
     double path_yaw{0.0};                                 // 插入朝向：首堆 robot→G，其后 G_prev→G
+    bool extend_inserted{false};                          // 本堆是否实际插入了延伸点 E
+    double extend_used_m{0.0};                            // 实际采用的延伸距离，可与参数不同
     bool hit_mid_case{false};                             // 垂足落在段中
     bool hit_forward_case{false};                         // 前方延长线
     std::vector<std::pair<double, double>> corners_kept_xy;  // 前方延长线保留角点
@@ -172,6 +174,15 @@ private:
    */
   bool isObstacleInfoReadable(double x, double y, std::string * reason) const;
 
+  /** 局部代价图该点可通行：仅 254/255 不可过，253 可通过 */
+  bool isMapPointPassableOnLocalCostmap(double x, double y) const;
+
+  /** 机器人到垃圾直线走廊无 lethal，按 footprint 半宽、步长 0.1m 抽样 */
+  bool isStraightCorridorClear(
+    double robot_x, double robot_y,
+    double garbage_x, double garbage_y,
+    std::string * reason) const;
+
   /** 接收到垃圾后的后处理函数，返回处理后的 garbage_list */
   GarbageList postProcessHistory();
 
@@ -182,7 +193,8 @@ private:
   void checkAndResetOnNewMission();
 
   /** 获取机器人当前 footprint，并转到 map */
-  bool getRobotFootprintInMap(std::vector<geometry_msgs::msg::Point> & footprint_map);
+  bool getRobotFootprintInMap(
+    std::vector<geometry_msgs::msg::Point> & footprint_map) const;
 
   /** 判断 footprint 是否已进入垃圾附近 */
   bool shouldStopInsertingGarbage(
