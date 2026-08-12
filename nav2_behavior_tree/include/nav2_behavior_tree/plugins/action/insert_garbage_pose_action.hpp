@@ -353,6 +353,11 @@ private:
   double max_garbage_robot_dist_m_{9.0};
   /** 合堆半径：到种子小于该值并为一堆，默认 0.8m */
   double garbage_merge_radius_m_{0.8};
+  /**
+   * 沿 path_yaw 相对垃圾再插一点的距离（米），环境变量 GARBAGE_EXTEND_M。
+   * 默认 0.5；设为 0=不加；>0 过垃圾再往前(G→E)；<0 来向一侧先到延伸点(E→G)。
+   */
+  double garbage_extend_m_{0.5};
 
   std::mutex history_mutex_;
   /** 原始接收缓存 */

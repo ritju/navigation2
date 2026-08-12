@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <map>
 #include <memory>
@@ -42,7 +43,8 @@ InsertGarbagePose::InsertGarbagePose(
   goaltotal_range_m_(10.0),   // 无角点时，前方该距离内末点当作 goalc
   head_delete_robot_dist_m_(4.0),  // 离队头超过该距离就不删点
   max_garbage_robot_dist_m_(9.0),  // 垃圾离机器人超过该距离则忽略
-  garbage_merge_radius_m_(0.8)     // 到种子小于该距离合为一堆
+  garbage_merge_radius_m_(0.8),    // 到种子小于该距离合为一堆
+  garbage_extend_m_(0.5)           // 沿扫向相对垃圾再插一点，默认 0.5m；见 GARBAGE_EXTEND_M
 {
   getInput("garbage_topic", garbage_topic_);
   getInput("special_terrain_topic", special_terrain_topic_);
@@ -62,6 +64,24 @@ InsertGarbagePose::InsertGarbagePose(
   node_ = config().blackboard->get<rclcpp::Node::SharedPtr>("node");
   tf_ = config().blackboard->get<std::shared_ptr<tf2_ros::Buffer>>("tf_buffer");
   node_->get_parameter("transform_tolerance", transform_tolerance_);
+
+  // 环境变量 GARBAGE_EXTEND_M：沿 path_yaw 相对垃圾再插一点
+  if (const char * extend_env = std::getenv("GARBAGE_EXTEND_M")) {
+    char * end = nullptr;
+    const double parsed = std::strtod(extend_env, &end);
+    if (end != extend_env && std::isfinite(parsed)) {
+      garbage_extend_m_ = parsed;
+    } else {
+      RCLCPP_WARN(
+        node_->get_logger(),
+        "InsertGarbagePose: invalid GARBAGE_EXTEND_M='%s', keep %.2f m",
+        extend_env, garbage_extend_m_);
+    }
+  }
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "InsertGarbagePose: garbage_extend_m: %.2f m",
+    garbage_extend_m_);
 
   callback_group_ = node_->create_callback_group(
     rclcpp::CallbackGroupType::MutuallyExclusive, false);
@@ -2067,6 +2087,30 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
   }
   garbage_pose.pose.orientation = nav2_util::geometry_utils::orientationAroundZAxis(info.path_yaw);
 
+  // 沿 path_yaw 相对垃圾再插延伸点 E  GARBAGE_EXTEND_M；|d|~0 则只插 G
+  const double extend_m = garbage_extend_m_;
+  const bool add_extend = std::fabs(extend_m) >= 1e-9;
+  geometry_msgs::msg::PoseStamped extend_pose = garbage_pose;
+  if (add_extend) {
+    extend_pose.pose.position.x =
+      garbage_pose.pose.position.x + extend_m * std::cos(info.path_yaw);
+    extend_pose.pose.position.y =
+      garbage_pose.pose.position.y + extend_m * std::sin(info.path_yaw);
+  }
+
+  // 往 rebuilt 写入 G 与可选 E：d>0 为 G→E，d<0 为 E→G
+  auto push_garbage_and_extend = [&](Goals & rebuilt) {
+    if (!add_extend) {
+      rebuilt.push_back(garbage_pose);
+    } else if (extend_m > 0.0) {
+      rebuilt.push_back(garbage_pose);
+      rebuilt.push_back(extend_pose);
+    } else {
+      rebuilt.push_back(extend_pose);
+      rebuilt.push_back(garbage_pose);
+    }
+  };
+
   Goals rebuilt;
   // 新垃圾点插到已有垃圾点之后，保持清扫顺序
   int last_garbage = -1;
@@ -2076,18 +2120,19 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
       last_garbage = static_cast<int>(i);
     }
   }
+  const std::size_t extra = add_extend ? 2u : 1u;
   if (last_garbage >= 0) {
-    rebuilt.reserve(out.size() + 1);
+    rebuilt.reserve(out.size() + extra);
     for (std::size_t i = 0; i <= static_cast<std::size_t>(last_garbage); ++i) {
       rebuilt.push_back(out[i]);
     }
-    rebuilt.push_back(garbage_pose);
+    push_garbage_and_extend(rebuilt);
     for (std::size_t i = static_cast<std::size_t>(last_garbage) + 1; i < out.size(); ++i) {
       rebuilt.push_back(out[i]);
     }
   } else {
-    rebuilt.reserve(1 + (out.size() - resume_from));
-    rebuilt.push_back(garbage_pose);
+    rebuilt.reserve(extra + (out.size() - resume_from));
+    push_garbage_and_extend(rebuilt);
     for (std::size_t i = resume_from; i < out.size(); ++i) {
       rebuilt.push_back(out[i]);
     }
@@ -2246,9 +2291,10 @@ void InsertGarbagePose::publishVisualization(
   const double gx = info.garbage.pose.pose.position.x;
   const double gy = info.garbage.pose.pose.position.y;
 
-  // —— 累加层：球 + 文字 + 朝向箭头 ——
+
   if (viz_accepted_garbage) {
-    const int base = pile_idx * 3;
+    // 每堆预留 6 个 id：G 三个 + E 三个，避免后一堆盖掉前一堆
+    const int base = pile_idx * 6;
     auto m = makeBase("accepted_garbage", base, visualization_msgs::msg::Marker::SPHERE);
     m.pose.position.x = gx;
     m.pose.position.y = gy;
@@ -2284,6 +2330,47 @@ void InsertGarbagePose::publishVisualization(
     arrow.scale.z = 0.07;   // 箭头粗
     setColor(arrow, 1.00f, 0.35f, 0.05f, 0.95f);
     arr.markers.push_back(arrow);
+
+    // 延伸点 E：与 G 同朝向；|GARBAGE_EXTEND_M|~0 时不画
+    if (std::fabs(garbage_extend_m_) >= 1e-9) {
+      const double ex = gx + garbage_extend_m_ * std::cos(info.path_yaw);
+      const double ey = gy + garbage_extend_m_ * std::sin(info.path_yaw);
+
+      auto me = makeBase("accepted_garbage", base + 3, visualization_msgs::msg::Marker::SPHERE);
+      me.pose.position.x = ex;
+      me.pose.position.y = ey;
+      me.pose.position.z = 0.12;
+      me.scale.x = 0.28;
+      me.scale.y = 0.28;
+      me.scale.z = 0.28;
+      setColor(me, 0.85f, 0.12f, 0.12f, 0.95f);
+      arr.markers.push_back(me);
+
+      auto te = makeBase("accepted_garbage", base + 4, visualization_msgs::msg::Marker::TEXT_VIEW_FACING);
+      te.pose.position.x = ex;
+      te.pose.position.y = ey;
+      te.pose.position.z = 0.40;
+      te.scale.z = 0.22;
+      {
+        std::ostringstream oss;
+        oss << "E" << pile_num;
+        te.text = oss.str();
+      }
+      setColor(te, 0.85f, 0.12f, 0.12f);
+      arr.markers.push_back(te);
+
+      auto arrown = makeBase("accepted_garbage", base + 5, visualization_msgs::msg::Marker::ARROW);
+      arrown.pose.position.x = ex;
+      arrown.pose.position.y = ey;
+      arrown.pose.position.z = 0.12;
+      arrown.pose.orientation =
+        nav2_util::geometry_utils::orientationAroundZAxis(info.path_yaw);
+      arrown.scale.x = 0.45;
+      arrown.scale.y = 0.07;
+      arrown.scale.z = 0.07;
+      setColor(arrown, 1.00f, 0.35f, 0.05f, 0.95f);
+      arr.markers.push_back(arrown);
+    }
   }
 
   if (viz_deleted_goals) {
@@ -2507,7 +2594,13 @@ BT::NodeStatus InsertGarbagePose::tick()
     }
     goals_now = insertGarbageIntoGoals(info);
     publishVisualization(info, enable_viz, viz_garbage, viz_deleted, viz_ac_pts, viz_ac_geom);
+    // 保护 G；有延伸点时一并保护 E，避免下一堆 clip 刚插上的延伸点
     addProtectedGarbageXy(gx, gy);
+    if (std::fabs(garbage_extend_m_) >= 1e-9) {
+      const double ex = gx + garbage_extend_m_ * std::cos(info.path_yaw);
+      const double ey = gy + garbage_extend_m_ * std::sin(info.path_yaw);
+      addProtectedGarbageXy(ex, ey);
+    }
     garbage_list_.erase(garbage_list_.begin());
     ++inserted_count;
     inserted_xy << "(" << gx << ", " << gy << ") ";
