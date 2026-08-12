@@ -73,7 +73,7 @@ public:
     double radius_m{0.0};                                 // R = 机器人到垃圾距离
     double goald_x{0.0};                                  // 垃圾向 goala-goalc 无限直线的垂足
     double goald_y{0.0};
-    double path_yaw{0.0};                                 // goala 到 goalc 方向，插入朝向用
+    double path_yaw{0.0};                                 // 插入朝向：首堆 robot→G，其后 G_prev→G
     bool hit_mid_case{false};                             // 垂足落在段中
     bool hit_forward_case{false};                         // 前方延长线
     std::vector<std::pair<double, double>> corners_kept_xy;  // 前方延长线保留角点
@@ -313,7 +313,7 @@ private:
     std::size_t * nearest_seg_out = nullptr,
     std::size_t * start_idx_out = nullptr) const;
 
-  /** 按开关往 RViz 发 Marker，一次插入画一轮证据 */
+  /** 按开关往 RViz 发 Marker；同一任务内累加，新任务再清 */
   void publishVisualization(
     const InsertInfo & info,
     bool enable = true,
@@ -321,6 +321,9 @@ private:
     bool viz_deleted_goals = true,
     bool viz_ac_points = true,
     bool viz_ac_geometry = true);
+
+  /** 新导航任务时清空本话题上全部 Marker */
+  void clearMissionVisualization();
 
   rclcpp::Node::SharedPtr node_;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
@@ -363,6 +366,8 @@ private:
   bool has_mission_stamp_{false};
   /** 本任务内已插入过、不再作为新候选的垃圾 map 坐标 */
   std::vector<std::pair<double, double>> reached_garbage_xy_;
+  /** 本任务内已发布可视化的堆数 */
+  int viz_pile_count_{0};
   /** 已插入且 goals 里尚未去掉的当前堆 */
   bool has_pending_garbage_{false};
   std::pair<double, double> pending_garbage_xy_{0.0, 0.0};
