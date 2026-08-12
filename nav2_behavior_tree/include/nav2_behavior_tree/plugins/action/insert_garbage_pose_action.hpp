@@ -47,8 +47,8 @@ public:
   typedef std::vector<geometry_msgs::msg::PoseStamped> Goals;
   /** 后处理结果：每项含 map 位姿、角点、类别 class_id */
   typedef std::vector<capella_ros_msg::msg::GarbageDetect> GarbageList;
-  /** 历史垃圾队列最大长度 */
-  static constexpr std::size_t kMaxHistorySize = 1;
+  /** 历史垃圾队列 / garbage_list_ 最大长度 */
+  static constexpr std::size_t kMaxHistorySize = 7;
   /** map 下去重距离阈值米，后到且更近于此的删掉 */
   static constexpr double kDedupDistanceM = 0.15;
 
@@ -202,6 +202,11 @@ private:
     const GarbageList & kept);
   /** 是否落在已到达过、不再插入的垃圾附近 */
   bool isNearReachedGarbage(double x, double y) const;
+  /** 是否已插入垃圾（删点/插点时保护，勿当普通航点删掉） */
+  bool isProtectedGarbageXy(double x, double y) const;
+  void addProtectedGarbageXy(double x, double y);
+  /** goals 里已不存在的保护点从记录中清掉 */
+  void pruneProtectedGarbageNotInGoals(const Goals & goals);
   /** 平面距离平方 */
   static double squaredDistanceXY(
     double x1, double y1, double x2, double y2);
@@ -245,7 +250,7 @@ private:
     std::size_t * nearest_seg_out = nullptr,
     std::size_t * start_idx_out = nullptr) const;
 
-  /** 按开关往 RViz 发 Marker，一次插入画一轮证据 */
+  /** 按开关往 RViz 发 Marker；同一任务内累加，新任务再清 */
   void publishVisualization(
     const InsertInfo & info,
     bool enable = true,
@@ -253,6 +258,9 @@ private:
     bool viz_deleted_goals = true,
     bool viz_ac_points = true,
     bool viz_ac_geometry = true);
+
+  /** 新导航任务时清空本话题上全部 Marker */
+  void clearMissionVisualization();
 
   rclcpp::Node::SharedPtr node_;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
@@ -291,6 +299,8 @@ private:
   bool has_mission_stamp_{false};
   /** 本任务内已到达过、不再插入的垃圾 map 坐标 */
   std::vector<std::pair<double, double>> reached_garbage_xy_;
+  /** 本任务内已发布可视化的堆数 */
+  int viz_pile_count_{0};
 
   mutable std::mutex special_terrain_mutex_;
   /** 禁扫区多边形 */
