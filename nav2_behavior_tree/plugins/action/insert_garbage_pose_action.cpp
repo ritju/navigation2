@@ -44,7 +44,7 @@ InsertGarbagePose::InsertGarbagePose(
   head_delete_robot_dist_m_(4.0),  // 离队头超过该距离就不删点
   max_garbage_robot_dist_m_(9.0),  // 垃圾离机器人超过该距离则忽略
   garbage_merge_radius_m_(0.8),    // 到种子小于该距离合为一堆
-  garbage_extend_m_(0.5)           // 沿扫向相对垃圾再插一点，默认 0.5m；见 GARBAGE_EXTEND_M
+  garbage_extend_m_(2.0)           // 沿扫向相对垃圾再插一点，默认 2.0m；见 GARBAGE_EXTEND_M
 {
   getInput("garbage_topic", garbage_topic_);
   getInput("special_terrain_topic", special_terrain_topic_);
@@ -1228,6 +1228,7 @@ void InsertGarbagePose::checkAndResetOnNewMission()
   bypass_pending_insert_ = false;
   last_sweep_xy_.clear();
   viz_pile_count_ = 0;
+  has_last_viz_time_ = false;
   mission_stamp_record_ = current_stamp;
   clearMissionVisualization();
 
@@ -2497,18 +2498,13 @@ void InsertGarbagePose::publishVisualization(
     }
   };
 
-  // 覆盖写前：删掉上一轮的线/删点圈
+  // 几何线固定槽，覆盖写前先删上一轮
   constexpr int kGeomIdBase = 5000;
   constexpr int kGeomIdSpan = 64;
   constexpr int kDeletedIdBase = 6000;
   constexpr int kDeletedIdSpan = 64;
   for (int id = kGeomIdBase; id < kGeomIdBase + kGeomIdSpan; ++id) {
     auto d = makeBase("ac_geometry", id, visualization_msgs::msg::Marker::SPHERE);
-    d.action = visualization_msgs::msg::Marker::DELETE;
-    arr.markers.push_back(d);
-  }
-  for (int id = kDeletedIdBase; id < kDeletedIdBase + kDeletedIdSpan; ++id) {
-    auto d = makeBase("deleted_goals", id, visualization_msgs::msg::Marker::LINE_STRIP);
     d.action = visualization_msgs::msg::Marker::DELETE;
     arr.markers.push_back(d);
   }
@@ -2599,6 +2595,7 @@ void InsertGarbagePose::publishVisualization(
   }
 
   if (viz_deleted_goals) {
+    // 黑圈按堆累加 id，同一可视化任务内保留，新任务 DELETEALL 再清
     const double ring_r = 0.16;
     int di = 0;
     for (const auto & g : info.goaltotal) {
@@ -2606,7 +2603,7 @@ void InsertGarbagePose::publishVisualization(
         break;
       }
       auto m = makeBase(
-        "deleted_goals", kDeletedIdBase + di,
+        "deleted_goals", kDeletedIdBase + pile_idx * kDeletedIdSpan + di,
         visualization_msgs::msg::Marker::LINE_STRIP);
       m.scale.x = 0.025;
       setColor(m, 0.05f, 0.05f, 0.05f, 0.95f);
@@ -2818,7 +2815,17 @@ BT::NodeStatus InsertGarbagePose::tick()
       continue;
     }
     goals_now = insertGarbageIntoGoals(info);
+    // 超过阈值则开启新可视化任务，清空旧任务
+    const rclcpp::Time viz_now = node_->now();
+    if (has_last_viz_time_ &&
+      (viz_now - last_viz_time_).seconds() > kVizTaskWindowSec)
+    {
+      clearMissionVisualization();
+      viz_pile_count_ = 0;
+    }
     publishVisualization(info, enable_viz, viz_garbage, viz_deleted, viz_ac_pts, viz_ac_geom);
+    last_viz_time_ = viz_now;
+    has_last_viz_time_ = true;
     // 保护 G；实际插入了 E 时一并保护
     addProtectedGarbageXy(gx, gy);
     if (info.extend_inserted) {
@@ -2839,6 +2846,9 @@ BT::NodeStatus InsertGarbagePose::tick()
       goals_now[i].pose.position.z = static_cast<double>(i);
       goals_now[i].header.stamp = now_stamp;
     }
+    // 与输出 goals 的 stamp 对齐，避免下一拍误判新任务清掉保护点
+    mission_stamp_record_ = now_stamp;
+    has_mission_stamp_ = true;
   }
 
   RCLCPP_INFO(

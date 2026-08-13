@@ -56,6 +56,8 @@ public:
   static constexpr std::size_t kSweepBruteMaxN = 7;
   /** map 下去重距离阈值米，后到且更近于此的删掉 */
   static constexpr double kDedupDistanceM = 0.15;
+  /** 连续可视化归入同一任务的间隔阈值秒 */
+  static constexpr double kVizTaskWindowSec = 2.0;
 
   // 插入前采集到的全部信息，valid 为 false 时不做删点插点
   struct InsertInfo
@@ -367,9 +369,9 @@ private:
   double garbage_merge_radius_m_{0.8};
   /**
    * 沿 path_yaw 相对垃圾再插一点的距离（米），环境变量 GARBAGE_EXTEND_M。
-   * 默认 0.5；设为 0=不加；>0 过垃圾再往前(G→E)；<0 来向一侧先到延伸点(E→G)。
+   * 默认 2.0；设为 0=不加；>0 过垃圾再往前(G→E)；<0 来向一侧先到延伸点(E→G)。
    */
-  double garbage_extend_m_{0.5};
+  double garbage_extend_m_{2.0};
 
   std::mutex history_mutex_;
   /** 原始接收缓存 */
@@ -385,6 +387,10 @@ private:
   std::vector<std::pair<double, double>> reached_garbage_xy_;
   /** 本任务内已发布可视化的堆数 */
   int viz_pile_count_{0};
+  /** 上一次发布可视化的时刻 */
+  rclcpp::Time last_viz_time_{0, 0, RCL_ROS_TIME};
+  /** 是否已发布过可视化 */
+  bool has_last_viz_time_{false};
   /** 已插入且 goals 里尚未去掉的当前堆 */
   bool has_pending_garbage_{false};
   std::pair<double, double> pending_garbage_xy_{0.0, 0.0};
