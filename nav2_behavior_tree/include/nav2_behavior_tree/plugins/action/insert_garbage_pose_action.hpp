@@ -179,7 +179,7 @@ private:
   /** 局部代价图该点可通行：仅 254/255 不可过，253 可通过 */
   bool isMapPointPassableOnLocalCostmap(double x, double y) const;
 
-  /** 机器人到垃圾直线走廊无 lethal，按 footprint 半宽、步长 0.1m 抽样 */
+  /** 机器人到目标直线走廊无 lethal：半宽 0.1m 抽样，并强制检查 footprint 各顶点 */
   bool isStraightCorridorClear(
     double robot_x, double robot_y,
     double garbage_x, double garbage_y,
