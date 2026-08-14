@@ -29,6 +29,7 @@
 #include <pluginlib/class_loader.hpp>
 #include "nav_2d_utils/path_ops.hpp"
 #include "tf2/utils.h"
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 using namespace std::chrono_literals;
 using rcl_interfaces::msg::ParameterType;
@@ -94,7 +95,9 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
   lp_loader_("nav2_core", "nav2_core::Controller"),
   default_ids_{"FollowPath"},
   default_types_{"dwb_core::DWBLocalPlanner"},
-  prune_dist_behind_robot_(1.5)
+  prune_dist_behind_robot_(1.5),
+  prune_max_accum_dist_(8.0),
+  prune_angle_threshold_(1.57079632679)
 {
   RCLCPP_INFO(get_logger(), "Creating controller server");
 
@@ -111,6 +114,8 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
 
   declare_parameter("failure_tolerance", rclcpp::ParameterValue(0.0));
   declare_parameter("prune_dist_behind_robot", rclcpp::ParameterValue(1.5));
+  declare_parameter("prune_max_accum_dist", rclcpp::ParameterValue(8.0));
+  declare_parameter("prune_angle_threshold", rclcpp::ParameterValue(1.57079632679));
   declare_parameter("remaining_path_length_threshold", rclcpp::ParameterValue(4.0));
   declare_parameter("teb_global_plan_topic", rclcpp::ParameterValue("teb_global_plan"));
   declare_parameter("teb_remaining_path_length_threshold", rclcpp::ParameterValue(4.0));
@@ -179,6 +184,8 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   get_parameter("speed_limit_topic", speed_limit_topic);
   get_parameter("failure_tolerance", failure_tolerance_);
   get_parameter("prune_dist_behind_robot", prune_dist_behind_robot_);
+  get_parameter("prune_max_accum_dist", prune_max_accum_dist_);
+  get_parameter("prune_angle_threshold", prune_angle_threshold_);
   get_parameter("remaining_path_length_threshold", remaining_path_length_threshold_);
   get_parameter("teb_global_plan_topic", teb_global_plan_topic_);
   get_parameter("teb_remaining_path_length_threshold", teb_remaining_path_length_threshold_);
@@ -645,89 +652,109 @@ void ControllerServer::setPlannerPath(const nav_msgs::msg::Path & path)
   current_path_ = path;
 }
 
-bool ControllerServer::pruneGlobalPlan(const geometry_msgs::msg::PoseStamped& global_pose, std::vector<geometry_msgs::msg::PoseStamped>& global_plan, double dist_behind_robot)
+bool ControllerServer::pruneGlobalPlan(
+  const geometry_msgs::msg::PoseStamped & global_pose,
+  std::vector<geometry_msgs::msg::PoseStamped> & global_plan,
+  double dist_behind_robot,
+  double max_prune_dist)
 {
-  if (global_plan.empty())
+  if (global_plan.empty()) {
     return true;
-  
+  }
+
   try
   {
     // transform robot pose into the plan frame (we do not wait here, since pruning not crucial, if missed a few times)
-    //geometry_msgs::msg::TransformStamped global_to_plan_transform = tf_->lookupTransform(global_plan.front().header.frame_id, global_pose.header.frame_id, tf2::timeFromSec(0));
-    geometry_msgs::msg::PoseStamped robot = costmap_ros_->getTfBuffer()->transform(
-              global_pose,
-              global_plan.front().header.frame_id);
+    // Use TimePointZero to get the latest available transform to avoid extrapolation errors
+    // when global_pose.header.stamp is in the future (especially important for low-frequency transforms like map->odom at 10Hz)
+    geometry_msgs::msg::PoseStamped robot;
+    try {
+      geometry_msgs::msg::TransformStamped global_to_plan_transform =
+        costmap_ros_->getTfBuffer()->lookupTransform(
+          global_plan.front().header.frame_id,
+          global_pose.header.frame_id,
+          tf2::TimePointZero,
+          tf2::durationFromSec(0.5));
 
-    //robot.setData( global_to_plan_transform * global_pose );
-    
-    double dist_thresh_sq = dist_behind_robot*dist_behind_robot;
-    
+      tf2::doTransform(global_pose, robot, global_to_plan_transform);
+    } catch (const tf2::ExtrapolationException & ex) {
+      RCLCPP_WARN(
+        get_logger(),
+        "pruneGlobalPlan: ExtrapolationException in transform: %s, skipping pruning this cycle",
+        ex.what());
+      return true;
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN(
+        get_logger(),
+        "pruneGlobalPlan: TransformException: %s, skipping pruning this cycle",
+        ex.what());
+      return true;
+    }
+
+    double dist_thresh_sq = dist_behind_robot * dist_behind_robot;
     // iterate plan until a pose close the robot is found
     std::vector<geometry_msgs::msg::PoseStamped>::iterator it = global_plan.begin();
     std::vector<geometry_msgs::msg::PoseStamped>::iterator erase_end = it;
-    // int count_it = 0, count_high_precision = 0;
-    while (it != global_plan.end())
+    double accum_dist = 0;
+    double min_dist_threshold = std::numeric_limits<double>::max();
+    const bool limit_prune_search = (max_prune_dist > 0.0);
+    while (it != global_plan.end() && (!limit_prune_search || accum_dist < max_prune_dist))
     {
       double dx = robot.pose.position.x - it->pose.position.x;
       double dy = robot.pose.position.y - it->pose.position.y;
       double dist_sq = dx * dx + dy * dy;
-      if (dist_sq < dist_thresh_sq)
+      if (it != global_plan.begin())
       {
-         erase_end = it;
-         break;
+        double ddx = it->pose.position.x - (it - 1)->pose.position.x;
+        double ddy = it->pose.position.y - (it - 1)->pose.position.y;
+        accum_dist += std::sqrt(ddx * ddx + ddy * ddy);
+      }
+      if (dist_sq < min_dist_threshold)
+      {
+        min_dist_threshold = dist_sq;
+        erase_end = it;
+        if (dist_sq < dist_thresh_sq)
+        {
+          break;
+        }
+      }
+      if (dist_sq < min_dist_threshold)
+      {
+        // If close enough, additionally require plan pose orientation to align with robot orientation
+        // If yaw misalignment is too large, keep searching forward until we find a close pose with aligned yaw
+        double robot_yaw = tf2::getYaw(robot.pose.orientation);
+        double pose_yaw = tf2::getYaw(it->pose.orientation);
+        double yaw_diff = pose_yaw - robot_yaw;
+        while (yaw_diff > M_PI) {
+          yaw_diff -= 2.0 * M_PI;
+        }
+        while (yaw_diff < -M_PI) {
+          yaw_diff += 2.0 * M_PI;
+        }
+
+        if (std::fabs(yaw_diff) <= prune_angle_threshold_)
+        {
+          erase_end = it;
+          break;
+        }
+        // else: do not break, continue searching forward
       }
       ++it;
-      // ++count_it;
     }
 
-    // std::vector<geometry_msgs::msg::PoseStamped>::iterator high_precision_it = global_plan.begin();
-    // std::vector<geometry_msgs::msg::PoseStamped>::iterator high_precision_erase_end = high_precision_it;
-    // double closest_distance = dist_thresh_sq;
-    // while (high_precision_it != (global_plan.begin() + 40))
-    // {
-    //   double dx = robot.pose.position.x - it->pose.position.x;
-    //   double dy = robot.pose.position.y - it->pose.position.y;
-    //   double dist_sq = dx * dx + dy * dy;
-    //   if (dist_sq < 0.25)
-    //   {
-    //     high_precision_erase_end = high_precision_it;
-    //     closest_distance = dist_sq;
-    //     break;
-    //   }
-    //   ++high_precision_it;
-    //   ++count_high_precision;
-    // }
-    // if (closest_distance > 0.25)
-    // {
-    //   high_precision_it = global_plan.end();
-    // }
-
-    // // RCLCPP_INFO(get_logger(), "Closet distance: %f, high_precision_erase_end: %d, it: %d", closest_distance, count_high_precision, count_it);
-    // if (closest_distance < 0.25 && count_high_precision >= count_it)
-    // {
-    //   erase_end = high_precision_erase_end;
-    // }
-
-    if (erase_end == global_plan.end())
+    if (erase_end == global_plan.end()) {
       return false;
-    
-    if (erase_end != global_plan.begin())
+    }
+
+    if (erase_end != global_plan.begin()) {
       global_plan.erase(global_plan.begin(), erase_end);
-    // else if (high_precision_it == global_plan.begin())
-    // {
-    //   global_plan.erase(global_plan.begin());
-    // }
+    }
     nav_msgs::msg::Path prune_path;
     prune_path.header = global_pose.header;
     prune_path.poses = global_plan;
     prune_path_pub_->publish(prune_path);
   }
-  catch (const tf2::TransformException& ex)
-  {
-    RCLCPP_DEBUG(get_logger(), "Cannot prune path since no transform is available: %s\n", ex.what());
-    return false;
-  }
-  catch (const std::runtime_error& ex)
+  catch (const tf2::TransformException & ex)
   {
     RCLCPP_DEBUG(get_logger(), "Cannot prune path since no transform is available: %s\n", ex.what());
     return false;
@@ -925,7 +952,9 @@ void ControllerServer::updateGlobalPath()
   {
     geometry_msgs::msg::PoseStamped robot_pose_for_prune;
     getRobotPose(robot_pose_for_prune);
-    pruneGlobalPlan(robot_pose_for_prune, current_path_.poses, prune_dist_behind_robot_);
+    pruneGlobalPlan(
+      robot_pose_for_prune, current_path_.poses,
+      prune_dist_behind_robot_, prune_max_accum_dist_);
     // setPlannerPath(current_path_);
   }
 }
@@ -1081,6 +1110,12 @@ ControllerServer::dynamicParametersCallback(std::vector<rclcpp::Parameter> param
         min_theta_velocity_threshold_ = parameter.as_double();
       } else if (name == "failure_tolerance") {
         failure_tolerance_ = parameter.as_double();
+      } else if (name == "prune_dist_behind_robot") {
+        prune_dist_behind_robot_ = parameter.as_double();
+      } else if (name == "prune_max_accum_dist") {
+        prune_max_accum_dist_ = parameter.as_double();
+      } else if (name == "prune_angle_threshold") {
+        prune_angle_threshold_ = parameter.as_double();
       } else if (name == "remaining_path_length_threshold") {
         remaining_path_length_threshold_ = parameter.as_double();
       } else if (name == "teb_remaining_path_length_threshold") {
