@@ -179,10 +179,10 @@ private:
   /** 局部代价图该点可通行：仅 254/255 不可过，253 可通过 */
   bool isMapPointPassableOnLocalCostmap(double x, double y) const;
 
-  /** 机器人到目标直线走廊无 lethal：半宽 0.1m 抽样，并强制检查 footprint 各顶点 */
+  /** 直线走廊无 lethal：footprint 转到行驶朝向后，半宽 0.1m 抽样并检查各顶点 */
   bool isStraightCorridorClear(
-    double robot_x, double robot_y,
-    double garbage_x, double garbage_y,
+    double start_x, double start_y,
+    double end_x, double end_y,
     std::string * reason) const;
 
   /** 接收到垃圾后的后处理函数，返回处理后的 garbage_list */
@@ -197,6 +197,10 @@ private:
   /** 获取机器人当前 footprint，并转到 map */
   bool getRobotFootprintInMap(
     std::vector<geometry_msgs::msg::Point> & footprint_map) const;
+
+  /** 获取 footprint 在 base_link 下的顶点，供走廊按行驶朝向旋转 */
+  bool getRobotFootprintInBase(
+    std::vector<std::pair<double, double>> & local_xy) const;
 
   /** 判断 footprint 是否已进入垃圾附近 */
   bool shouldStopInsertingGarbage(
@@ -368,8 +372,8 @@ private:
   /** 合堆半径：到种子小于该值并为一堆，默认 0.8m */
   double garbage_merge_radius_m_{0.8};
   /**
-   * 沿 path_yaw 相对垃圾再插一点的距离（米），环境变量 GARBAGE_EXTEND_M。
-   * 默认 2.0；设为 0=不加；>0 过垃圾再往前(G→E)；<0 来向一侧先到延伸点(E→G)。
+   * 沿 path_yaw 相对垃圾再插一点的距离，环境变量 GARBAGE_EXTEND_M。
+   * 默认 2.0；
    */
   double garbage_extend_m_{2.0};
 

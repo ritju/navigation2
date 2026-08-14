@@ -345,11 +345,10 @@ bool InsertGarbagePose::isMapPointPassableOnLocalCostmap(double x, double y) con
 }
 
 bool InsertGarbagePose::isStraightCorridorClear(
-  double robot_x, double robot_y,
-  double garbage_x, double garbage_y,
+  double start_x, double start_y,
+  double end_x, double end_y,
   std::string * reason) const
 {
-  // 无局部代价图则不可判定
   {
     std::lock_guard<std::mutex> lock(local_costmap_mutex_);
     if (!latest_local_costmap_ || latest_local_costmap_->data.empty()) {
@@ -360,24 +359,31 @@ bool InsertGarbagePose::isStraightCorridorClear(
     }
   }
 
-  // 取 map 下 footprint：定走廊半宽，并沿路径平移检查各顶点
-  std::vector<geometry_msgs::msg::Point> footprint_map;
-  if (!getRobotFootprintInMap(footprint_map) || footprint_map.empty()) {
+  std::vector<std::pair<double, double>> local_xy;
+  if (!getRobotFootprintInBase(local_xy) || local_xy.empty()) {
     if (reason) {
       *reason = "no footprint";
     }
     return false;
   }
 
-  std::vector<std::pair<double, double>> footprint_offsets;
-  footprint_offsets.reserve(footprint_map.size());
-  for (const auto & pt : footprint_map) {
-    footprint_offsets.emplace_back(pt.x - robot_x, pt.y - robot_y);
-  }
+  const double dx = end_x - start_x;
+  const double dy = end_y - start_y;
+  const double len = std::sqrt(dx * dx + dy * dy);
+  const double travel_yaw = (len < 1e-6) ? 0.0 : std::atan2(dy, dx);
+  const double c_yaw = std::cos(travel_yaw);
+  const double s_yaw = std::sin(travel_yaw);
+
+  auto cornerWorld = [&](double cx, double cy, double lx, double ly) {
+    return std::pair<double, double>{
+      cx + lx * c_yaw - ly * s_yaw,
+      cy + lx * s_yaw + ly * c_yaw};
+  };
 
   auto cornersClearAt = [&](double cx, double cy, const char * fail_reason) -> bool {
-    for (const auto & off : footprint_offsets) {
-      if (!isMapPointPassableOnLocalCostmap(cx + off.first, cy + off.second)) {
+    for (const auto & off : local_xy) {
+      const auto q = cornerWorld(cx, cy, off.first, off.second);
+      if (!isMapPointPassableOnLocalCostmap(q.first, q.second)) {
         if (reason) {
           *reason = fail_reason;
         }
@@ -387,41 +393,33 @@ bool InsertGarbagePose::isStraightCorridorClear(
     return true;
   };
 
-  // 机器人到垃圾的直线长度；过近查中心与 footprint 顶点
-  const double dx = garbage_x - robot_x;
-  const double dy = garbage_y - robot_y;
-  const double len = std::sqrt(dx * dx + dy * dy);
   if (len < 1e-6) {
-    if (!isMapPointPassableOnLocalCostmap(robot_x, robot_y)) {
+    if (!isMapPointPassableOnLocalCostmap(start_x, start_y)) {
       if (reason) {
         *reason = "lethal at robot";
       }
       return false;
     }
-    return cornersClearAt(robot_x, robot_y, "lethal at footprint corner");
+    return cornersClearAt(start_x, start_y, "lethal at footprint corner");
   }
 
-  // 路径单位向量 ux,uy；横向单位法向 nx,ny
   const double ux = dx / len;
   const double uy = dy / len;
   const double nx = -uy;
   const double ny = ux;
 
-  // footprint 在法向上的最大投影作为半宽
   double half_w = 0.0;
-  for (const auto & off : footprint_offsets) {
-    const double lat = off.first * nx + off.second * ny;
-    half_w = std::max(half_w, std::fabs(lat));
+  for (const auto & off : local_xy) {
+    half_w = std::max(half_w, std::fabs(off.second));
   }
   if (half_w < 1e-3) {
     half_w = 0.2;
   }
 
-  // 沿路径与横向按 0.1m 抽样，并强制检查 footprint 各顶点
   constexpr double kStep = 0.1;
   for (double s = 0.0; s <= len + 1e-9; s += kStep) {
-    const double cx = robot_x + ux * std::min(s, len);
-    const double cy = robot_y + uy * std::min(s, len);
+    const double cx = start_x + ux * std::min(s, len);
+    const double cy = start_y + uy * std::min(s, len);
     for (double t = -half_w; t <= half_w + 1e-9; t += kStep) {
       const double qx = cx + nx * t;
       const double qy = cy + ny * t;
@@ -437,8 +435,7 @@ bool InsertGarbagePose::isStraightCorridorClear(
     }
   }
 
-  // 再确认垃圾点本身
-  if (!isMapPointPassableOnLocalCostmap(garbage_x, garbage_y)) {
+  if (!isMapPointPassableOnLocalCostmap(end_x, end_y)) {
     if (reason) {
       *reason = "lethal at garbage";
     }
@@ -1303,6 +1300,55 @@ bool InsertGarbagePose::getRobotFootprintInMap(
   return !footprint_map.empty();
 }
 
+bool InsertGarbagePose::getRobotFootprintInBase(
+  std::vector<std::pair<double, double>> & local_xy) const
+{
+  local_xy.clear();
+  if (!tf_) {
+    return false;
+  }
+
+  geometry_msgs::msg::PolygonStamped::SharedPtr footprint_msg;
+  {
+    std::lock_guard<std::mutex> lock(footprint_mutex_);
+    footprint_msg = latest_footprint_;
+  }
+  if (!footprint_msg || footprint_msg->polygon.points.empty()) {
+    return false;
+  }
+
+  std::string source_frame = footprint_msg->header.frame_id;
+  if (source_frame.empty()) {
+    source_frame = robot_base_frame_;
+  }
+
+  const bool already_base = (source_frame == robot_base_frame_);
+  for (const auto & pt32 : footprint_msg->polygon.points) {
+    if (already_base) {
+      local_xy.emplace_back(static_cast<double>(pt32.x), static_cast<double>(pt32.y));
+      continue;
+    }
+    geometry_msgs::msg::PointStamped pin;
+    pin.header.frame_id = source_frame;
+    pin.header.stamp = footprint_msg->header.stamp;
+    pin.point.x = pt32.x;
+    pin.point.y = pt32.y;
+    pin.point.z = pt32.z;
+    try {
+      geometry_msgs::msg::PointStamped pout = tf_->transform(
+        pin, robot_base_frame_, tf2::durationFromSec(transform_tolerance_));
+      local_xy.emplace_back(pout.point.x, pout.point.y);
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN(
+        node_->get_logger(),
+        "InsertGarbagePose: failed to transform footprint to base: %s", ex.what());
+      local_xy.clear();
+      return false;
+    }
+  }
+  return !local_xy.empty();
+}
+
 // 判断 footprint 是否已进入垃圾附近
 bool InsertGarbagePose::shouldStopInsertingGarbage(
   const capella_ros_msg::msg::GarbageDetect & garbage,
@@ -1533,16 +1579,25 @@ bool InsertGarbagePose::findFirstCornerFromRobot(
     return false;
   }
 
-  // 从离机器人最近的路径点的后一个点开始找角点
+  // 从离机器人最近的原路径点的后一个点开始找角点
   std::size_t goala_idx = 0;
   double best_d2 = std::numeric_limits<double>::infinity();
+  bool have_path_goal = false;
   for (std::size_t i = 0; i < goals.size(); ++i) {
-    const double d2 = squaredDistanceXY(
-      goals[i].pose.position.x, goals[i].pose.position.y, robot_x, robot_y);
+    const double px = goals[i].pose.position.x;
+    const double py = goals[i].pose.position.y;
+    if (isProtectedGarbageXy(px, py)) {
+      continue;
+    }
+    const double d2 = squaredDistanceXY(px, py, robot_x, robot_y);
     if (d2 < best_d2) {
       best_d2 = d2;
       goala_idx = i;
+      have_path_goal = true;
     }
+  }
+  if (!have_path_goal) {
+    return false;
   }
 
   const std::size_t start_idx = goala_idx + 1;
@@ -1563,6 +1618,9 @@ bool InsertGarbagePose::findFirstCornerFromRobot(
   }
 
   for (std::size_t i = start_idx; i <= range_end && i < goals.size(); ++i) {
+    if (isProtectedGarbageXy(goals[i].pose.position.x, goals[i].pose.position.y)) {
+      continue;
+    }
     if (!isGoalNotCorner(goals, i, robot_x, robot_y)) {
       corner_idx = i;
       return true;
@@ -1599,6 +1657,9 @@ bool InsertGarbagePose::findNextCornerAfter(
   }
 
   for (std::size_t i = after_idx + 1; i <= range_end; ++i) {
+    if (isProtectedGarbageXy(goals[i].pose.position.x, goals[i].pose.position.y)) {
+      continue;
+    }
     if (!isGoalNotCorner(goals, i, robot_x, robot_y)) {
       corner_idx = i;
       return true;
@@ -1683,16 +1744,31 @@ InsertGarbagePose::InsertInfo InsertGarbagePose::gatherInsertInfo(
   const double rx = robot_pose.pose.position.x;
   const double ry = robot_pose.pose.position.y;
 
-  // 投影线起点取机器人前方的路径点
+  // 投影线起点取机器人前方的原路径点，已插入的 G/E 不参与
   std::size_t nearest_idx = 0;
   double best_d2 = std::numeric_limits<double>::infinity();
+  bool have_path_goal = false;
   for (std::size_t i = 0; i < info.goals.size(); ++i) {
-    const double d2 = squaredDistanceXY(
-      info.goals[i].pose.position.x, info.goals[i].pose.position.y, rx, ry);
+    const double px = info.goals[i].pose.position.x;
+    const double py = info.goals[i].pose.position.y;
+    if (isProtectedGarbageXy(px, py)) {
+      continue;
+    }
+    const double d2 = squaredDistanceXY(px, py, rx, ry);
     if (d2 < best_d2) {
       best_d2 = d2;
       nearest_idx = i;
+      have_path_goal = true;
     }
+  }
+  if (!have_path_goal) {
+    info.invalid_reason = "no original path goal for A-C";
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: gather invalid (%s) for garbage at (%.2f, %.2f)",
+      info.invalid_reason.c_str(),
+      info.garbage.pose.pose.position.x, info.garbage.pose.pose.position.y);
+    return info;
   }
   info.goala = info.goals[nearest_idx];
  // 给垃圾点和机器人点各起一对短名字，写起来方便
@@ -2054,6 +2130,10 @@ InsertGarbagePose::Goals InsertGarbagePose::clipGoalsNearGarbage(InsertInfo & in
 
     // 反向延长线：不删
     if (t_d < -kEps) {
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "InsertGarbagePose: clip reverse t=%.3f, skip deletes A=(%.2f, %.2f) C=(%.2f, %.2f) F=(%.2f, %.2f)",
+        t_d, ax, ay, cx, cy, dx, dy);
       break;
     }
 
@@ -2211,7 +2291,59 @@ InsertGarbagePose::Goals InsertGarbagePose::clipGoalsNearGarbage(InsertInfo & in
 // 插入真实垃圾、统一时间戳；
 InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & info)
 {
-  Goals out = clipGoalsNearGarbage(info);
+  Goals prefix;
+  Goals path;
+  int last_protected = -1;
+  for (std::size_t i = 0; i < info.goals.size(); ++i) {
+    if (isProtectedGarbageXy(
+        info.goals[i].pose.position.x, info.goals[i].pose.position.y))
+    {
+      last_protected = static_cast<int>(i);
+    }
+  }
+  if (last_protected >= 0) {
+    prefix.assign(
+      info.goals.begin(),
+      info.goals.begin() + static_cast<std::ptrdiff_t>(last_protected) + 1);
+    path.assign(
+      info.goals.begin() + static_cast<std::ptrdiff_t>(last_protected) + 1,
+      info.goals.end());
+  } else {
+    path = info.goals;
+  }
+
+  const double saved_yaw = info.path_yaw;
+  const auto saved_garbage = info.garbage;
+  Goals out;
+  if (!prefix.empty() && path.size() >= 2) {
+    InsertInfo path_info = gatherInsertInfo(
+      path, info.robot_pose,
+      saved_garbage.pose.pose.position.x,
+      saved_garbage.pose.pose.position.y);
+    if (path_info.valid) {
+      path_info.path_yaw = saved_yaw;
+      path_info.garbage = saved_garbage;
+      out = clipGoalsNearGarbage(path_info);
+      info.goala = path_info.goala;
+      info.goalc = path_info.goalc;
+      info.goalc_idx = path_info.goalc_idx;
+      info.goald_x = path_info.goald_x;
+      info.goald_y = path_info.goald_y;
+      info.hit_mid_case = path_info.hit_mid_case;
+      info.hit_forward_case = path_info.hit_forward_case;
+      info.corners_kept_xy = std::move(path_info.corners_kept_xy);
+      info.clip_rounds = std::move(path_info.clip_rounds);
+      info.goaltotal = std::move(path_info.goaltotal);
+    } else {
+      out = std::move(path);
+    }
+  } else if (path.size() >= 2) {
+    out = clipGoalsNearGarbage(info);
+  } else {
+    out = std::move(path);
+  }
+  info.path_yaw = saved_yaw;
+  info.garbage = saved_garbage;
 
   getInput("head_delete_robot_dist_m", head_delete_robot_dist_m_);
   double ac_foot_x = 0.0;
@@ -2345,23 +2477,9 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
   info.extend_inserted = add_extend;
   info.extend_used_m = add_extend ? extend_m : 0.0;
 
-  // 新垃圾点插到已有垃圾点之后，保持清扫顺序
-  int last_garbage = -1;
-  for (std::size_t i = 0; i < out.size(); ++i) {
-    if (isProtectedGarbageXy(
-        out[i].pose.position.x, out[i].pose.position.y)) {
-      last_garbage = static_cast<int>(i);
-    }
-  }
-
   Goals suffix;
-  if (last_garbage >= 0) {
-    suffix.assign(
-      out.begin() + static_cast<std::ptrdiff_t>(last_garbage) + 1, out.end());
-  } else {
-    suffix.assign(
-      out.begin() + static_cast<std::ptrdiff_t>(resume_from), out.end());
-  }
+  suffix.assign(
+    out.begin() + static_cast<std::ptrdiff_t>(resume_from), out.end());
 
   // 已生成 E：用 E 再剔接回段；先保护本堆 G
   if (add_extend && !far_from_head) {
@@ -2378,10 +2496,18 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
           info.goaltotal.end(), e_info.goaltotal.begin(), e_info.goaltotal.end());
         info.clip_rounds.insert(
           info.clip_rounds.end(), e_info.clip_rounds.begin(), e_info.clip_rounds.end());
+        double e_t = 0.0;
+        if (!e_info.clip_rounds.empty()) {
+          e_t = e_info.clip_rounds.front().t_d;
+        }
         RCLCPP_INFO(
           node_->get_logger(),
-          "InsertGarbagePose: E-clip extra delete %zu, suffix %zu -> %zu",
-          before - suffix.size(), before, suffix.size());
+          "InsertGarbagePose: E-clip extra delete %zu, suffix %zu -> %zu "
+          "t=%.3f mid=%d forward=%d E=(%.2f, %.2f) F=(%.2f, %.2f)",
+          before - suffix.size(), before, suffix.size(),
+          e_t, e_info.hit_mid_case ? 1 : 0, e_info.hit_forward_case ? 1 : 0,
+          extend_pose.pose.position.x, extend_pose.pose.position.y,
+          e_info.goald_x, e_info.goald_y);
       }
     } else if (suffix.size() == 1) {
       const double px = suffix.front().pose.position.x;
@@ -2413,18 +2539,10 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
 
   Goals rebuilt;
   const std::size_t extra = add_extend ? 2u : 1u;
-  if (last_garbage >= 0) {
-    rebuilt.reserve(static_cast<std::size_t>(last_garbage) + 1 + extra + suffix.size());
-    for (std::size_t i = 0; i <= static_cast<std::size_t>(last_garbage); ++i) {
-      rebuilt.push_back(out[i]);
-    }
-    push_garbage_and_extend(rebuilt);
-    rebuilt.insert(rebuilt.end(), suffix.begin(), suffix.end());
-  } else {
-    rebuilt.reserve(extra + suffix.size());
-    push_garbage_and_extend(rebuilt);
-    rebuilt.insert(rebuilt.end(), suffix.begin(), suffix.end());
-  }
+  rebuilt.reserve(prefix.size() + extra + suffix.size());
+  rebuilt.insert(rebuilt.end(), prefix.begin(), prefix.end());
+  push_garbage_and_extend(rebuilt);
+  rebuilt.insert(rebuilt.end(), suffix.begin(), suffix.end());
   out = std::move(rebuilt);
 
   const rclcpp::Time stamp_now = node_->now();
