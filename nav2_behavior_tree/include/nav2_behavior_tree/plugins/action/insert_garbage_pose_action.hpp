@@ -58,6 +58,8 @@ public:
   static constexpr double kDedupDistanceM = 0.15;
   /** 连续可视化归入同一任务的间隔阈值秒 */
   static constexpr double kVizTaskWindowSec = 2.0;
+  /** base_link 下距原点小于此值的检测视为无效 */
+  static constexpr double kInvalidGarbageOriginRadiusM = 0.1;
 
   // 插入前采集到的全部信息，valid 为 false 时不做删点插点
   struct InsertInfo
@@ -130,7 +132,7 @@ public:
         "max_garbage_robot_dist_m", 9.0,
         "Ignore garbage farther than this distance (m) from robot (anti false-detect)"),
       BT::InputPort<double>(
-        "garbage_merge_radius_m", 0.8,
+        "garbage_merge_radius_m", 1.0,
         "Merge detections within this radius (m) of the nearest seed into one pile"),
       BT::InputPort<std::string>(
         "local_costmap_topic", std::string("local_costmap/costmap"),
@@ -158,7 +160,7 @@ private:
   /** 行为树周期回调 */
   BT::NodeStatus tick() override;
 
-  /** 垃圾检测话题回调，把垃圾放进 history_list_ */
+  /** 垃圾检测话题回调：收到即转到 map 再进 history；TF 失败则丢弃 */
   void garbageDetectCallback(const capella_ros_msg::msg::GarbageDetect::SharedPtr msg);
 
   /** 特殊清扫/禁扫区域话题回调 */
@@ -369,8 +371,8 @@ private:
   double head_delete_robot_dist_m_{4.0};
   /** 垃圾离机器人超过该距离则忽略，默认 9m */
   double max_garbage_robot_dist_m_{9.0};
-  /** 合堆半径：到种子小于该值并为一堆，默认 0.8m */
-  double garbage_merge_radius_m_{0.8};
+  /** 合堆半径：到种子小于该值并为一堆，默认 1.0m */
+  double garbage_merge_radius_m_{1.0};
   /**
    * 沿 path_yaw 相对垃圾再插一点的距离，环境变量 GARBAGE_EXTEND_M。
    * 默认 2.0；

@@ -43,7 +43,7 @@ InsertGarbagePose::InsertGarbagePose(
   goaltotal_range_m_(10.0),   // 无角点时，前方该距离内末点当作 goalc
   head_delete_robot_dist_m_(4.0),  // 离队头超过该距离就不删点
   max_garbage_robot_dist_m_(9.0),  // 垃圾离机器人超过该距离则忽略
-  garbage_merge_radius_m_(0.8),    // 到种子小于该距离合为一堆
+  garbage_merge_radius_m_(1.0),    // 到种子小于该距离合为一堆
   garbage_extend_m_(2.0)           // 沿扫向相对垃圾再插一点，默认 2.0m；见 GARBAGE_EXTEND_M
 {
   getInput("garbage_topic", garbage_topic_);
@@ -126,7 +126,7 @@ InsertGarbagePose::InsertGarbagePose(
     visualization_topic_, 10);
 }
 
-// 垃圾检测话题回调，把垃圾放进 history_list_
+// 垃圾检测话题回调：收到即转到 map，再放进 history_list_；TF 失败则丢弃
 void InsertGarbagePose::garbageDetectCallback(
   const capella_ros_msg::msg::GarbageDetect::SharedPtr msg)
 {
@@ -134,8 +134,32 @@ void InsertGarbagePose::garbageDetectCallback(
     return;
   }
 
+  capella_ros_msg::msg::GarbageDetect item = *msg;
+  const std::string & detect_frame = item.pose.header.frame_id;
+  if (detect_frame.empty() || detect_frame == robot_base_frame_) {
+    const double bx = item.pose.pose.position.x;
+    const double by = item.pose.pose.position.y;
+    const double origin_r2 =
+      kInvalidGarbageOriginRadiusM * kInvalidGarbageOriginRadiusM;
+    if (bx * bx + by * by < origin_r2) {
+      RCLCPP_DEBUG(
+        node_->get_logger(),
+        "InsertGarbagePose: drop garbage at robot origin in '%s' (%.3f, %.3f)",
+        detect_frame.empty() ? robot_base_frame_.c_str() : detect_frame.c_str(),
+        bx, by);
+      return;
+    }
+  }
+
+  if (!transformGarbageToMap(item)) {
+    RCLCPP_WARN(
+      node_->get_logger(),
+      "InsertGarbagePose: drop garbage, transform to map failed, wait for next frame");
+    return;
+  }
+
   std::lock_guard<std::mutex> lock(history_mutex_);
-  history_list_.push_back(*msg);
+  history_list_.push_back(std::move(item));
   while (history_list_.size() > kMaxHistorySize) {
     history_list_.pop_front();
   }
