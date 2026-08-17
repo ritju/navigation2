@@ -77,7 +77,9 @@ public:
     double radius_m{0.0};                                 // R = 机器人到垃圾距离
     double goald_x{0.0};                                  // 垃圾向 goala-goalc 无限直线的垂足
     double goald_y{0.0};
-    double path_yaw{0.0};                                 // 插入朝向：首堆 robot→G，其后 G_prev→G
+    double path_yaw{0.0};                                 // 插入朝向 / 默认伸 E：首堆 robot→G，其后上一堆到达点→G
+    double extend_from_x{0.0};                            // 算 E 的假设车位 x：首堆当前车，其后上一堆 E
+    double extend_from_y{0.0};                            // 算 E 的假设车位 y
     bool extend_inserted{false};                          // 本堆是否实际插入了延伸点 E
     double extend_used_m{0.0};                            // 实际采用的延伸距离，可与参数不同
     bool hit_mid_case{false};                             // 垂足落在段中
@@ -301,6 +303,12 @@ private:
     double robot_x, double robot_y, double robot_yaw);
 
   /**
+    找机器人最近的这个垃圾
+   */
+  void reorderNearestFirstThenSweep(
+    double robot_x, double robot_y, double robot_yaw);
+
+  /**
    * 导航中新堆：4-1/4-2 重排 garbage_list_。
    * 返回 true 表示 4-1（新堆在队首，可破 pending）。
    */
@@ -447,6 +455,9 @@ private:
   bool bypass_pending_insert_{false};
   /** 上次清扫顺序（map xy），供 4-1 保留其余相对次序 */
   std::vector<std::pair<double, double>> last_sweep_xy_;
+  /** 上一堆假设到达点   有 E 用 E，否则用 G，供下一堆算 E；新任务/整单重排时清空 */
+  bool has_last_sweep_arrive_{false};
+  std::pair<double, double> last_sweep_arrive_xy_{0.0, 0.0};
 
   mutable std::mutex special_terrain_mutex_;
   /** 禁扫区多边形 */

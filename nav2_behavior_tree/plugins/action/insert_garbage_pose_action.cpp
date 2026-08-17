@@ -1238,37 +1238,77 @@ std::vector<std::size_t> InsertGarbagePose::computeSweepOrder(
   return best;
 }
 
-// 按下标顺序重建 garbage_list_，[0] 即下一堆
-void InsertGarbagePose::reorderGarbageListBySweep(
+void InsertGarbagePose::reorderNearestFirstThenSweep(
   double robot_x, double robot_y, double robot_yaw)
 {
   if (garbage_list_.size() <= 1) {
+    if (!garbage_list_.empty()) {
+      syncLastSweepXyFromList();
+    }
     return;
   }
-  // 这个函数会根据机器人位置、朝向，以及所有垃圾堆的坐标，计算出使总转向角度尽可能小的清扫顺序
-  const std::vector<std::size_t> order = computeSweepOrder(
-    garbage_list_, robot_x, robot_y, robot_yaw);
-  if (order.size() != garbage_list_.size()) {
-    return;
+
+  std::size_t nearest_idx = 0;
+  double best_d2 = squaredDistanceXY(
+    garbage_list_[0].pose.pose.position.x,
+    garbage_list_[0].pose.pose.position.y,
+    robot_x, robot_y);
+  for (std::size_t i = 1; i < garbage_list_.size(); ++i) {
+    const double d2 = squaredDistanceXY(
+      garbage_list_[i].pose.pose.position.x,
+      garbage_list_[i].pose.pose.position.y,
+      robot_x, robot_y);
+    if (d2 < best_d2) {
+      best_d2 = d2;
+      nearest_idx = i;
+    }
+  }
+
+  GarbageList rest;
+  rest.reserve(garbage_list_.size() - 1);
+  for (std::size_t i = 0; i < garbage_list_.size(); ++i) {
+    if (i != nearest_idx) {
+      rest.push_back(garbage_list_[i]);
+    }
   }
 
   GarbageList reordered;
-  reordered.reserve(order.size());
-  for (const std::size_t idx : order) {
-    if (idx >= garbage_list_.size()) {
-      return;
-    }
-    reordered.push_back(garbage_list_[idx]);
-  }
-  garbage_list_ = std::move(reordered);
+  reordered.reserve(garbage_list_.size());
+  reordered.push_back(garbage_list_[nearest_idx]);
 
-  RCLCPP_DEBUG(
+  const double nx = reordered.front().pose.pose.position.x;
+  const double ny = reordered.front().pose.pose.position.y;
+  double nyaw = robot_yaw;
+  const double dx = nx - robot_x;
+  const double dy = ny - robot_y;
+  if (dx * dx + dy * dy > 1e-6) {
+    nyaw = std::atan2(dy, dx);
+  }
+
+  if (!rest.empty()) {
+    const auto sub = computeSweepOrder(rest, nx, ny, nyaw);
+    for (const std::size_t k : sub) {
+      if (k < rest.size()) {
+        reordered.push_back(rest[k]);
+      }
+    }
+  }
+
+  garbage_list_ = std::move(reordered);
+  syncLastSweepXyFromList();
+  RCLCPP_INFO(
     node_->get_logger(),
-    "InsertGarbagePose: sweep reorder, next pile at (%.2f, %.2f), n=%zu",
+    "InsertGarbagePose: nearest-first then sweep, next (%.2f, %.2f), n=%zu",
     garbage_list_.front().pose.pose.position.x,
     garbage_list_.front().pose.pose.position.y,
     garbage_list_.size());
-  syncLastSweepXyFromList();
+}
+
+// 按下标顺序重建 garbage_list_，[0] 即下一堆（必须是离车最近的）
+void InsertGarbagePose::reorderGarbageListBySweep(
+  double robot_x, double robot_y, double robot_yaw)
+{
+  reorderNearestFirstThenSweep(robot_x, robot_y, robot_yaw);
 }
 
 void InsertGarbagePose::syncLastSweepXyFromList() // 把排好的顺序保存下来
@@ -1435,13 +1475,15 @@ bool InsertGarbagePose::reorderGarbageListWithNewPile(   // 新来的那一个�
     }
 
     garbage_list_ = std::move(reordered);
-    syncLastSweepXyFromList();
+    reorderNearestFirstThenSweep(robot_x, robot_y, robot_yaw);
     RCLCPP_INFO(
       node_->get_logger(),
       "InsertGarbagePose: 新堆插队(4-1) t=%.2f, next (%.2f, %.2f)",
       t, garbage_list_.front().pose.pose.position.x,
       garbage_list_.front().pose.pose.position.y);
-    return true;
+    return squaredDistanceXY(
+      garbage_list_.front().pose.pose.position.x,
+      garbage_list_.front().pose.pose.position.y, nx, ny) < thresh2;
   }
 
   // 仅新堆：不在半路上，等当前堆扫完再插
@@ -1479,7 +1521,7 @@ bool InsertGarbagePose::reorderGarbageListWithNewPile(   // 新来的那一个�
   }
 
   garbage_list_ = std::move(reordered);
-  syncLastSweepXyFromList();
+  reorderNearestFirstThenSweep(robot_x, robot_y, robot_yaw);
   RCLCPP_INFO(
     node_->get_logger(),
     "InsertGarbagePose: 新堆重排(4-2) t=%.2f, next (%.2f, %.2f)",
@@ -1774,6 +1816,8 @@ void InsertGarbagePose::checkAndResetOnNewMission()
   has_pending_garbage_ = false;
   bypass_pending_insert_ = false;
   last_sweep_xy_.clear();
+  has_last_sweep_arrive_ = false;
+  last_sweep_arrive_xy_ = {0.0, 0.0};
   viz_pile_count_ = 0;
   has_last_viz_time_ = false;
   has_work_circle_ = false;
@@ -2379,16 +2423,18 @@ InsertGarbagePose::InsertInfo InsertGarbagePose::gatherInsertInfo(
     info.goalc.pose.position.x, info.goalc.pose.position.y,
     info.goald_x, info.goald_y);
 
-  // 插入朝向：首堆 机器人→本堆；其后 上一堆→本堆。退化时回退 A→C
+  // 插入朝向 / 默认伸 E：首堆用当前车；其后用上一堆到达点
   constexpr double kYawDegenerateDist2 = 1e-6;  // ~1mm
   double from_x = rx;
   double from_y = ry;
   const char * yaw_src = "robot->G";
-  if (!reached_garbage_xy_.empty()) {
-    from_x = reached_garbage_xy_.back().first;
-    from_y = reached_garbage_xy_.back().second;
-    yaw_src = "G_prev->G";
+  if (has_last_sweep_arrive_) {
+    from_x = last_sweep_arrive_xy_.first;
+    from_y = last_sweep_arrive_xy_.second;
+    yaw_src = "arrive->G";
   }
+  info.extend_from_x = from_x;
+  info.extend_from_y = from_y;
   const double dx_yaw = gx - from_x;
   const double dy_yaw = gy - from_y;
   if (dx_yaw * dx_yaw + dy_yaw * dy_yaw < kYawDegenerateDist2) {
@@ -2401,8 +2447,8 @@ InsertGarbagePose::InsertInfo InsertGarbagePose::gatherInsertInfo(
   }
   RCLCPP_INFO(
     node_->get_logger(),
-    "InsertGarbagePose: path_yaw=%.3f rad (%s) garbage=(%.2f, %.2f)",
-    info.path_yaw, yaw_src, gx, gy);
+    "InsertGarbagePose: path_yaw=%.3f rad (%s) from=(%.2f, %.2f) garbage=(%.2f, %.2f)",
+    info.path_yaw, yaw_src, from_x, from_y, gx, gy);
 
   info.valid = true;
   return info;
@@ -2946,13 +2992,15 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
   }
   garbage_pose.pose.orientation = nav2_util::geometry_utils::orientationAroundZAxis(info.path_yaw);
 
-  // 沿 path_yaw 插 E：通则用原方向；不通则沿最近墙的垂线、离车更远一侧再伸
+  // 沿 path_yaw 插 E：通则用假设到达点→G；不通则沿墙垂线、只留离该到达点更远的一侧
   const double extend_param = garbage_extend_m_;
   double extend_m = 0.0;
   bool add_extend = false;
   geometry_msgs::msg::PoseStamped extend_pose = garbage_pose;
   const double gx = garbage_pose.pose.position.x;
   const double gy = garbage_pose.pose.position.y;
+  const double from_x = info.extend_from_x;
+  const double from_y = info.extend_from_y;
 
   auto setExtendPose = [&](double yaw, double d) {
     extend_pose.pose.position.x = gx + d * std::cos(yaw);
@@ -3017,49 +3065,38 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
         } else {
           const double tx = -ny / nlen;
           const double ty = nx / nlen;
-          const double rx = info.robot_pose.pose.position.x;
-          const double ry = info.robot_pose.pose.position.y;
           const double ex1 = gx + extend_m * tx;
           const double ey1 = gy + extend_m * ty;
           const double ex2 = gx - extend_m * tx;
           const double ey2 = gy - extend_m * ty;
-          const double d1 = std::hypot(ex1 - rx, ey1 - ry);
-          const double d2 = std::hypot(ex2 - rx, ey2 - ry);
+          const double d1 = std::hypot(ex1 - from_x, ey1 - from_y);
+          const double d2 = std::hypot(ex2 - from_x, ey2 - from_y);
           const double fwd_x = std::cos(info.path_yaw);
           const double fwd_y = std::sin(info.path_yaw);
-          bool first_plus = d1 > d2;
+          bool use_plus = d1 > d2;
           if (std::fabs(d1 - d2) < 1e-3) {
-            first_plus = (tx * fwd_x + ty * fwd_y) >= 0.0;
+            use_plus = (tx * fwd_x + ty * fwd_y) >= 0.0;
           }
 
-          auto trySide = [&](bool use_plus, std::string * reason) {
-            const double yaw = use_plus ? std::atan2(ty, tx) : std::atan2(-ty, -tx);
-            setExtendPose(yaw, extend_m);
-            return corridorClear(reason);
-          };
-
+          const double yaw = use_plus ? std::atan2(ty, tx) : std::atan2(-ty, -tx);
+          setExtendPose(yaw, extend_m);
           std::string side_reason;
-          const bool first_ok = trySide(first_plus, &side_reason);
-          std::string other_reason;
-          const bool other_ok = first_ok ? false : trySide(!first_plus, &other_reason);
-          if (first_ok || other_ok) {
-            const double used_yaw = std::atan2(
-              extend_pose.pose.position.y - gy,
-              extend_pose.pose.position.x - gx);
-            applyExtendYaw(used_yaw); 
+          if (corridorClear(&side_reason)) {
+            applyExtendYaw(yaw);
             add_extend = true;
             RCLCPP_INFO(
               node_->get_logger(),
               "InsertGarbagePose: extend wall-tangent after G->E blocked (%s) "
-              "P=(%.2f, %.2f) E=(%.2f, %.2f)",
+              "P=(%.2f, %.2f) E=(%.2f, %.2f) from=(%.2f, %.2f)",
               extend_reason.c_str(), px, py,
-              extend_pose.pose.position.x, extend_pose.pose.position.y);
+              extend_pose.pose.position.x, extend_pose.pose.position.y,
+              from_x, from_y);
           } else {
             RCLCPP_INFO(
               node_->get_logger(),
-              "InsertGarbagePose: skip extend, wall-tangent blocked "
-              "(%s / %s) P=(%.2f, %.2f)",
-              side_reason.c_str(), other_reason.c_str(), px, py);
+              "InsertGarbagePose: skip extend, far-side wall-tangent blocked (%s) "
+              "P=(%.2f, %.2f) from=(%.2f, %.2f)",
+              side_reason.c_str(), px, py, from_x, from_y);
           }
         }
       }
@@ -3068,6 +3105,13 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
 
   info.extend_inserted = add_extend;
   info.extend_used_m = add_extend ? extend_m : 0.0;
+  if (add_extend) {
+    last_sweep_arrive_xy_ = {
+      extend_pose.pose.position.x, extend_pose.pose.position.y};
+  } else {
+    last_sweep_arrive_xy_ = {gx, gy};
+  }
+  has_last_sweep_arrive_ = true;
 
   Goals suffix;
   suffix.assign(
@@ -3718,6 +3762,8 @@ BT::NodeStatus InsertGarbagePose::tick()
     }
     goals_now = std::move(kept_goals);
     reached_garbage_xy_.clear();
+    has_last_sweep_arrive_ = false;
+    last_sweep_arrive_xy_ = {0.0, 0.0};
 
     last_sweep_xy_.clear();
     last_sweep_xy_.reserve(active_piles_.size());
