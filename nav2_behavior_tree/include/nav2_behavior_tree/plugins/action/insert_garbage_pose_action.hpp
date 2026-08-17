@@ -139,6 +139,9 @@ public:
       BT::InputPort<double>(
         "work_circle_radius_m", 10.0,
         "Accept new garbage only inside this radius around the robot pose when the first pile of a batch is accepted"),
+      BT::InputPort<double>(
+        "min_garbage_obstacle_clearance_m", 0.7,
+        "Discard garbage if any lethal obstacle cell is within this radius (m) on local costmap"),
       BT::InputPort<std::string>(
         "local_costmap_topic", std::string("local_costmap/costmap"),
         "Local costmap OccupancyGrid topic for obstacle-info readability check"),
@@ -183,6 +186,12 @@ private:
 
   /** 局部代价图该点可通行：仅 254/255 不可过，253 可通过 */
   bool isMapPointPassableOnLocalCostmap(double x, double y) const;
+
+  /**
+   * 垃圾点周围 radius_m 内局部代价图是否有占用障碍（cell>=100）。
+   * 有则视为贴墙扫不了，筛选阶段直接丢弃。
+   */
+  bool hasObstacleWithinRadius(double x, double y, double radius_m) const;
 
   /**
    * 在局部代价图上找离 (x,y) 最近的障碍格。
@@ -385,6 +394,8 @@ private:
   double head_delete_robot_dist_m_{4.0};
   /** 垃圾离机器人超过该距离则忽略，默认 5m */
   double max_garbage_robot_dist_m_{5.0};
+  /** 垃圾周围该半径内有 lethal 障碍则丢弃，默认 0.7m */
+  double min_garbage_obstacle_clearance_m_{0.7};
   /** 合堆半径：到种子小于该值并为一堆，默认 1.0m */
   double garbage_merge_radius_m_{1.0};
   /**
@@ -398,8 +409,14 @@ private:
   bool has_work_circle_{false};
   double work_circle_x_{0.0};
   double work_circle_y_{0.0};
-  /** 切向重构时找到的最近障碍格，RViz 画红矩形 */
-  std::vector<std::pair<double, double>> viz_obstacle_pixels_;
+  /** 切向重构时找到的最近障碍格，RViz 画红矩形 + P{n} 文字（n 与 E{n} 同号） */
+  struct VizObstaclePixel
+  {
+    double x{0.0};
+    double y{0.0};
+    int pile_num{0};
+  };
+  std::vector<VizObstaclePixel> viz_obstacle_pixels_;
   std::size_t viz_obstacle_marker_count_{0};
   double viz_obstacle_cell_m_{0.15};
 

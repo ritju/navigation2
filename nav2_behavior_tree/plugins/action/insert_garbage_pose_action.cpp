@@ -43,6 +43,7 @@ InsertGarbagePose::InsertGarbagePose(
   goaltotal_range_m_(10.0),   // 无角点时，前方该距离内末点当作 goalc
   head_delete_robot_dist_m_(4.0),  // 离队头超过该距离就不删点
   max_garbage_robot_dist_m_(5.0),  // 垃圾离机器人超过该距离则忽略
+  min_garbage_obstacle_clearance_m_(0.7),  // 垃圾周围该半径内有障碍则丢弃
   garbage_merge_radius_m_(1.0),    // 到种子小于该距离合为一堆
   garbage_extend_m_(2.0),          // 沿扫向相对垃圾再插一点，默认 2.0m；见 GARBAGE_EXTEND_M
   work_circle_radius_m_(10.0)
@@ -58,6 +59,7 @@ InsertGarbagePose::InsertGarbagePose(
   getInput("goaltotal_range_m", goaltotal_range_m_);
   getInput("head_delete_robot_dist_m", head_delete_robot_dist_m_);
   getInput("max_garbage_robot_dist_m", max_garbage_robot_dist_m_);
+  getInput("min_garbage_obstacle_clearance_m", min_garbage_obstacle_clearance_m_);
   getInput("garbage_merge_radius_m", garbage_merge_radius_m_);
   getInput("work_circle_radius_m", work_circle_radius_m_);
   getInput("global_frame", global_frame_);
@@ -420,6 +422,91 @@ bool InsertGarbagePose::isMapPointPassableOnLocalCostmap(double x, double y) con
     return false;
   }
   return true;
+}
+
+bool InsertGarbagePose::hasObstacleWithinRadius(
+  double x, double y, double radius_m) const
+{
+  if (radius_m <= 0.0 || !tf_) {
+    return false;
+  }
+
+  nav_msgs::msg::OccupancyGrid::SharedPtr costmap;
+  {
+    std::lock_guard<std::mutex> lock(local_costmap_mutex_);
+    costmap = latest_local_costmap_;
+  }
+  if (!costmap || costmap->info.width == 0 || costmap->info.height == 0 ||
+    costmap->data.empty() || costmap->info.resolution <= 0.0)
+  {
+    return false;
+  }
+
+  const auto & info = costmap->info;
+  const std::string & costmap_frame = costmap->header.frame_id;
+  double px = x;
+  double py = y;
+  if (!costmap_frame.empty() && costmap_frame != global_frame_) {
+    geometry_msgs::msg::PointStamped in;
+    geometry_msgs::msg::PointStamped out;
+    in.header.frame_id = global_frame_;
+    in.header.stamp = rclcpp::Time(0, 0, RCL_ROS_TIME);
+    in.point.x = x;
+    in.point.y = y;
+    in.point.z = 0.0;
+    try {
+      tf_->transform(in, out, costmap_frame, tf2::durationFromSec(transform_tolerance_));
+      px = out.point.x;
+      py = out.point.y;
+    } catch (const tf2::TransformException &) {
+      return false;
+    }
+  }
+
+  const double origin_yaw = tf2::getYaw(info.origin.orientation);
+  const double cos_yaw = std::cos(origin_yaw);
+  const double sin_yaw = std::sin(origin_yaw);
+  const double dx = px - info.origin.position.x;
+  const double dy = py - info.origin.position.y;
+  const double local_x = cos_yaw * dx + sin_yaw * dy;
+  const double local_y = -sin_yaw * dx + cos_yaw * dy;
+  const int gx = static_cast<int>(std::floor(local_x / info.resolution));
+  const int gy = static_cast<int>(std::floor(local_y / info.resolution));
+  const int width = static_cast<int>(info.width);
+  const int height = static_cast<int>(info.height);
+  if (gx < 0 || gy < 0 || gx >= width || gy >= height) {
+    return false;
+  }
+
+  const int r_cells = std::max(1, static_cast<int>(std::ceil(radius_m / info.resolution)));
+  const double r2 = radius_m * radius_m;
+  const int mx0 = std::max(0, gx - r_cells);
+  const int mx1 = std::min(width - 1, gx + r_cells);
+  const int my0 = std::max(0, gy - r_cells);
+  const int my1 = std::min(height - 1, gy + r_cells);
+  for (int my = my0; my <= my1; ++my) {
+    for (int mx = mx0; mx <= mx1; ++mx) {
+      const std::size_t idx =
+        static_cast<std::size_t>(my) * static_cast<std::size_t>(width) +
+        static_cast<std::size_t>(mx);
+      if (idx >= costmap->data.size()) {
+        continue;
+      }
+      // OccupancyGrid：>=100 是障碍；膨胀层 253 等 <100 不当硬障碍
+      if (costmap->data[idx] < 100) {
+        continue;
+      }
+      const double clx = (static_cast<double>(mx) + 0.5) * info.resolution;
+      const double cly = (static_cast<double>(my) + 0.5) * info.resolution;
+      const double wx = info.origin.position.x + cos_yaw * clx - sin_yaw * cly;
+      const double wy = info.origin.position.y + sin_yaw * clx + cos_yaw * cly;
+      const double d2 = (wx - px) * (wx - px) + (wy - py) * (wy - py);
+      if (d2 <= r2) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 // 在局部代价图上找离查询点最近的占用格，写出该格中心的 map 坐标
@@ -1528,6 +1615,19 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
         eraseFromHistory(original);
         continue;
       }
+    }
+
+    // 垃圾周围 clearance 内有硬障碍：贴墙扫不了，直接丢弃，不进后续规划
+    getInput("min_garbage_obstacle_clearance_m", min_garbage_obstacle_clearance_m_);
+    if (min_garbage_obstacle_clearance_m_ > 0.0 &&
+      hasObstacleWithinRadius(gx, gy, min_garbage_obstacle_clearance_m_))
+    {
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "InsertGarbagePose: 垃圾=(%.2f, %.2f), 因为太靠近障碍物(%.2fm内), 丢弃",
+        gx, gy, min_garbage_obstacle_clearance_m_);
+      eraseFromHistory(original);
+      continue;
     }
 
     // 机器人到垃圾直线走廊有 lethal 则丢弃
@@ -2891,15 +2991,20 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
           extend_reason.c_str());
       } else {
         {
+          const int pile_num = (info.dist_label > 0) ?
+            info.dist_label :
+            (viz_pile_count_ + 1);
           bool already = false;
-          for (const auto & xy : viz_obstacle_pixels_) {
-            if (squaredDistanceXY(xy.first, xy.second, px, py) < 0.04) {
+          for (auto & xy : viz_obstacle_pixels_) {
+            if (squaredDistanceXY(xy.x, xy.y, px, py) < 0.04) {
+              xy.pile_num = pile_num;
               already = true;
               break;
             }
           }
           if (!already) {
-            viz_obstacle_pixels_.emplace_back(px, py);
+            viz_obstacle_pixels_.push_back(
+              VizObstaclePixel{px, py, pile_num});
           }
         }
         const double nx = px - gx;
@@ -2941,7 +3046,7 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
             const double used_yaw = std::atan2(
               extend_pose.pose.position.y - gy,
               extend_pose.pose.position.x - gx);
-            applyExtendYaw(used_yaw);
+            applyExtendYaw(used_yaw); 
             add_extend = true;
             RCLCPP_INFO(
               node_->get_logger(),
@@ -3130,7 +3235,9 @@ void InsertGarbagePose::publishRangeCircles(double robot_x, double robot_y)
         0.02f, 0.40f, 0.10f, 0.95f, 0.08));
   }
   const double cell = std::max(0.12, viz_obstacle_cell_m_);
+  constexpr int kObstacleTextIdBase = 1000;
   for (std::size_t i = 0; i < viz_obstacle_pixels_.size(); ++i) {
+    const auto & obs = viz_obstacle_pixels_[i];
     visualization_msgs::msg::Marker box;
     box.header.frame_id = global_frame_;
     box.header.stamp = node_->now();
@@ -3138,8 +3245,8 @@ void InsertGarbagePose::publishRangeCircles(double robot_x, double robot_y)
     box.id = static_cast<int>(i);
     box.type = visualization_msgs::msg::Marker::CUBE;
     box.action = visualization_msgs::msg::Marker::ADD;
-    box.pose.position.x = viz_obstacle_pixels_[i].first;
-    box.pose.position.y = viz_obstacle_pixels_[i].second;
+    box.pose.position.x = obs.x;
+    box.pose.position.y = obs.y;
     box.pose.position.z = 0.08;
     box.pose.orientation.w = 1.0;
     box.scale.x = cell;
@@ -3151,6 +3258,30 @@ void InsertGarbagePose::publishRangeCircles(double robot_x, double robot_y)
     box.color.a = 0.95f;
     box.lifetime = rclcpp::Duration::from_seconds(0.0);
     arr.markers.push_back(box);
+
+    visualization_msgs::msg::Marker text;
+    text.header = box.header;
+    text.ns = "nearest_obstacle";
+    text.id = kObstacleTextIdBase + static_cast<int>(i);
+    text.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+    text.action = visualization_msgs::msg::Marker::ADD;
+    text.pose.position.x = obs.x;
+    text.pose.position.y = obs.y;
+    text.pose.position.z = 0.38;
+    text.pose.orientation.w = 1.0;
+    text.scale.z = 0.22;
+    {
+      std::ostringstream oss;
+      const int n = (obs.pile_num > 0) ? obs.pile_num : static_cast<int>(i + 1);
+      oss << "P" << n;
+      text.text = oss.str();
+    }
+    text.color.r = 0.95f;
+    text.color.g = 0.12f;
+    text.color.b = 0.10f;
+    text.color.a = 1.0f;
+    text.lifetime = rclcpp::Duration::from_seconds(0.0);
+    arr.markers.push_back(text);
   }
   for (std::size_t i = viz_obstacle_pixels_.size(); i < viz_obstacle_marker_count_; ++i) {
     visualization_msgs::msg::Marker del;
@@ -3160,6 +3291,10 @@ void InsertGarbagePose::publishRangeCircles(double robot_x, double robot_y)
     del.id = static_cast<int>(i);
     del.action = visualization_msgs::msg::Marker::DELETE;
     arr.markers.push_back(del);
+
+    visualization_msgs::msg::Marker del_text = del;
+    del_text.id = kObstacleTextIdBase + static_cast<int>(i);
+    arr.markers.push_back(del_text);
   }
   viz_obstacle_marker_count_ = viz_obstacle_pixels_.size();
   if (!arr.markers.empty()) {
