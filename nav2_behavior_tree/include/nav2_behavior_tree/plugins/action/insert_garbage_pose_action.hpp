@@ -136,6 +136,9 @@ public:
       BT::InputPort<double>(
         "garbage_merge_radius_m", 1.0,
         "Merge detections within this radius (m) of the nearest seed into one pile"),
+      BT::InputPort<double>(
+        "work_circle_radius_m", 10.0,
+        "Accept new garbage only inside this radius around the robot pose when the first pile of a batch is accepted"),
       BT::InputPort<std::string>(
         "local_costmap_topic", std::string("local_costmap/costmap"),
         "Local costmap OccupancyGrid topic for obstacle-info readability check"),
@@ -343,6 +346,8 @@ private:
 
   /** 新导航任务时清空本话题上全部 Marker */
   void clearMissionVisualization();
+  void publishWorkCircle();
+  void clearWorkCircle();
 
   rclcpp::Node::SharedPtr node_;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
@@ -379,6 +384,10 @@ private:
   double garbage_extend_m_{2.0};
   double sweep_turn_weight_{0.5};
   double sweep_dist_weight_{0.5};
+  double work_circle_radius_m_{10.0};
+  bool has_work_circle_{false};
+  double work_circle_x_{0.0};
+  double work_circle_y_{0.0};
 
   std::mutex history_mutex_;
   /** 原始接收缓存 */

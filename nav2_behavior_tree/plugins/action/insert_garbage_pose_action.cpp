@@ -44,7 +44,8 @@ InsertGarbagePose::InsertGarbagePose(
   head_delete_robot_dist_m_(4.0),  // 离队头超过该距离就不删点
   max_garbage_robot_dist_m_(9.0),  // 垃圾离机器人超过该距离则忽略
   garbage_merge_radius_m_(1.0),    // 到种子小于该距离合为一堆
-  garbage_extend_m_(2.0)           // 沿扫向相对垃圾再插一点，默认 2.0m；见 GARBAGE_EXTEND_M
+  garbage_extend_m_(2.0),          // 沿扫向相对垃圾再插一点，默认 2.0m；见 GARBAGE_EXTEND_M
+  work_circle_radius_m_(10.0)
 {
   getInput("garbage_topic", garbage_topic_);
   getInput("special_terrain_topic", special_terrain_topic_);
@@ -58,6 +59,7 @@ InsertGarbagePose::InsertGarbagePose(
   getInput("head_delete_robot_dist_m", head_delete_robot_dist_m_);
   getInput("max_garbage_robot_dist_m", max_garbage_robot_dist_m_);
   getInput("garbage_merge_radius_m", garbage_merge_radius_m_);
+  getInput("work_circle_radius_m", work_circle_radius_m_);
   getInput("global_frame", global_frame_);
   getInput("robot_base_frame", robot_base_frame_);
 
@@ -1294,6 +1296,7 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
 
   getInput("max_garbage_robot_dist_m", max_garbage_robot_dist_m_);
   getInput("garbage_merge_radius_m", garbage_merge_radius_m_);
+  getInput("work_circle_radius_m", work_circle_radius_m_);
 
   auto sameDetect =     // id，stamp，xy 都相同则认为是同一条垃圾
     [](const capella_ros_msg::msg::GarbageDetect & a,
@@ -1405,6 +1408,31 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
       }
     }
 
+    if (work_circle_radius_m_ > 0.0) {
+      if (!has_work_circle_ && garbage_list_.empty() && active_piles_.empty()) {
+        has_work_circle_ = true;
+        work_circle_x_ = robot_x;
+        work_circle_y_ = robot_y;
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "InsertGarbagePose: 生成工作圈 圆心=(%.2f, %.2f) 半径=%.2f m",
+          work_circle_x_, work_circle_y_, work_circle_radius_m_);
+        publishWorkCircle();
+      }
+      if (has_work_circle_) {
+        const double d_circle = std::sqrt(squaredDistanceXY(
+            gx, gy, work_circle_x_, work_circle_y_));
+        if (d_circle > work_circle_radius_m_) {
+          RCLCPP_INFO(
+            node_->get_logger(),
+            "InsertGarbagePose: 垃圾=(%.2f, %.2f), 因为在工作圈外(%.2fm>%.2fm), 丢弃",
+            gx, gy, d_circle, work_circle_radius_m_);
+          eraseFromHistory(original);
+          continue;
+        }
+      }
+    }
+
     candidates.push_back(std::move(garbage));
     candidate_originals.push_back(original);
   }
@@ -1511,6 +1539,7 @@ void InsertGarbagePose::checkAndResetOnNewMission()
   last_sweep_xy_.clear();
   viz_pile_count_ = 0;
   has_last_viz_time_ = false;
+  has_work_circle_ = false;
   mission_stamp_record_ = current_stamp;
   clearMissionVisualization();
 
@@ -2843,6 +2872,56 @@ void InsertGarbagePose::clearMissionVisualization()
   marker_pub_->publish(arr);
 }
 
+void InsertGarbagePose::publishWorkCircle()
+{
+  if (!marker_pub_ || !has_work_circle_ || work_circle_radius_m_ <= 0.0) {
+    return;
+  }
+  visualization_msgs::msg::MarkerArray arr;
+  visualization_msgs::msg::Marker m;
+  m.header.frame_id = global_frame_;
+  m.header.stamp = node_->now();
+  m.ns = "work_circle";
+  m.id = 0;
+  m.type = visualization_msgs::msg::Marker::LINE_STRIP;
+  m.action = visualization_msgs::msg::Marker::ADD;
+  m.pose.orientation.w = 1.0;
+  m.scale.x = 0.06;
+  m.color.r = 0.10f;
+  m.color.g = 0.85f;
+  m.color.b = 0.20f;
+  m.color.a = 0.90f;
+  m.lifetime = rclcpp::Duration::from_seconds(0.0);
+  constexpr int n = 72;
+  m.points.reserve(static_cast<std::size_t>(n) + 1);
+  for (int i = 0; i <= n; ++i) {
+    const double ang = 2.0 * M_PI * static_cast<double>(i) / static_cast<double>(n);
+    geometry_msgs::msg::Point p;
+    p.x = work_circle_x_ + work_circle_radius_m_ * std::cos(ang);
+    p.y = work_circle_y_ + work_circle_radius_m_ * std::sin(ang);
+    p.z = 0.05;
+    m.points.push_back(p);
+  }
+  arr.markers.push_back(m);
+  marker_pub_->publish(arr);
+}
+
+void InsertGarbagePose::clearWorkCircle()
+{
+  if (!marker_pub_) {
+    return;
+  }
+  visualization_msgs::msg::MarkerArray arr;
+  visualization_msgs::msg::Marker m;
+  m.header.frame_id = global_frame_;
+  m.header.stamp = node_->now();
+  m.ns = "work_circle";
+  m.id = 0;
+  m.action = visualization_msgs::msg::Marker::DELETE;
+  arr.markers.push_back(m);
+  marker_pub_->publish(arr);
+}
+
 // 往 RViz 发本次插入的证据 Marker
 
 void InsertGarbagePose::publishVisualization(
@@ -3215,6 +3294,12 @@ BT::NodeStatus InsertGarbagePose::tick()
     }
   }
 
+  if (has_work_circle_ && garbage_list_.empty() && active_piles_.empty()) {
+    RCLCPP_INFO(node_->get_logger(), "InsertGarbagePose: 工作圈取消");
+    clearWorkCircle();
+    has_work_circle_ = false;
+  }
+
   bypass_pending_insert_ = false;
   std::size_t new_idx = 0;
   const bool have_new_pile = findNewGarbageIndex(before, rx, ry, new_idx);
@@ -3352,6 +3437,7 @@ BT::NodeStatus InsertGarbagePose::tick()
       viz_pile_count_ = 0;
     }
     publishVisualization(info, enable_viz, viz_garbage, viz_deleted, viz_ac_pts);
+    publishWorkCircle();
     last_viz_time_ = viz_now;
     has_last_viz_time_ = true;
     addProtectedGarbageXy(gx, gy);
