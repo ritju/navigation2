@@ -112,6 +112,9 @@ public:
     return {
       BT::InputPort<Goals>("input_goals", "Input goals list (e.g. {goals})"),
       BT::OutputPort<Goals>("output_goals", "Goals after inserting garbage poses"),
+      BT::OutputPort<Goals>(
+        "protected_garbage",
+        "Inserted G/E poses; RemovePassedGoals must not drop these as behind-the-robot"),
       BT::InputPort<std::string>(
         "garbage_topic", std::string("/garbage_cord1"), "Garbage detection topic"),
       BT::InputPort<std::string>(
@@ -324,6 +327,9 @@ private:
 
   /** 把当前 garbage_list_ 顺序记入 last_sweep_xy_ */
   void syncLastSweepXyFromList();
+
+  /** 把已插入的 G/E 保护点写到黑板，供 RemovePassedGoals 使用 */
+  void publishProtectedGarbage();
 
   /** 点到无限直线 AB 的垂足 */
   static void projectPointToInfiniteLine(

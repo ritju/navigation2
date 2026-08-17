@@ -267,6 +267,27 @@ double RemovePassedGoals::tebGlobalPlanPolylineLengthMetersFromFirstPose(const n
   return nav2_util::geometry_utils::calculate_path_length(teb_plan_path, 0);
 }
 
+bool RemovePassedGoals::isProtectedGarbagePose(
+  const geometry_msgs::msg::PoseStamped & pose_goal) const
+{
+  Goals protected_garbage;
+  if (!getInput("protected_garbage", protected_garbage) || protected_garbage.empty()) {
+    return false;
+  }
+  constexpr double kProtectMatchM = 0.4;
+  const double thresh2 = kProtectMatchM * kProtectMatchM;
+  const double gx = pose_goal.pose.position.x;
+  const double gy = pose_goal.pose.position.y;
+  for (const auto & prot : protected_garbage) {
+    const double dx = gx - prot.pose.position.x;
+    const double dy = gy - prot.pose.position.y;
+    if (dx * dx + dy * dy < thresh2) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool RemovePassedGoals::posesApproxEqualForGppMissionMatch(
   const geometry_msgs::msg::Pose & pose_a,
   const geometry_msgs::msg::Pose & pose_b,
@@ -465,6 +486,16 @@ BT::NodeStatus RemovePassedGoals::tick()
           }
 
           if (transform_ok && pose_goal_in_robot.pose.position.x < kBehindXThresholdM) {
+            if (isProtectedGarbagePose(pose_goal)) {
+              RCLCPP_INFO(
+                node->get_logger(),
+                "[RemovePassedGoals] reload restore: keep protected G/E z=%u "
+                "behind robot at (%.2f, %.2f)",
+                static_cast<unsigned int>(missionPoseGoalIndexFromPoseZ(pose_goal)),
+                pose_goal.pose.position.x, pose_goal.pose.position.y);
+              recovered_queue.push_back(pose_goal);
+              continue;
+            }
             const uint32_t passed_z = missionPoseGoalIndexFromPoseZ(pose_goal);
             if (std::find(
                 vector_passed_goal_indexes_recorded_.begin(),
@@ -635,6 +666,20 @@ BT::NodeStatus RemovePassedGoals::tick()
             index_goal_candidate,
             distance_robot_to_goal_meters,
             pass_tail_relax_radius_m);
+          continue;
+        }
+        bool would_drop_unvisited_ge = false;
+        for (size_t index_before = 0; index_before < index_goal_candidate; ++index_before) {
+          if (isProtectedGarbagePose(mission_goal_queue_mutable_ref[index_before])) {
+            would_drop_unvisited_ge = true;
+            break;
+          }
+        }
+        if (would_drop_unvisited_ge) {
+          RCLCPP_INFO(
+            node->get_logger(),
+            "[RemovePassedGoals] tail strip skip: would drop unvisited protected G/E before index %zu",
+            index_goal_candidate);
           continue;
         }
         const uint32_t discrete_goal_index_passed_z = missionPoseGoalIndexFromPoseZ(pose_goal_candidate);

@@ -2009,6 +2009,21 @@ void InsertGarbagePose::pruneProtectedGarbageNotInGoals(const Goals & goals)
   }
 }
 
+void InsertGarbagePose::publishProtectedGarbage()
+{
+  Goals protected_goals;
+  protected_goals.reserve(reached_garbage_xy_.size());
+  for (const auto & xy : reached_garbage_xy_) {
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header.frame_id = global_frame_;
+    pose.pose.orientation.w = 1.0;
+    pose.pose.position.x = xy.first;
+    pose.pose.position.y = xy.second;
+    protected_goals.push_back(std::move(pose));
+  }
+  setOutput("protected_garbage", protected_goals);
+}
+
 bool InsertGarbagePose::isPendingGarbageInGoals(const Goals & goals) const
 {
   if (!has_pending_garbage_) {
@@ -3638,6 +3653,7 @@ BT::NodeStatus InsertGarbagePose::tick()
       publishRangeCircles(robot_pose.pose.position.x, robot_pose.pose.position.y);
     }
     setOutput("output_goals", goals_now);
+    publishProtectedGarbage();
     return BT::NodeStatus::SUCCESS;
   }
 
@@ -3646,6 +3662,7 @@ BT::NodeStatus InsertGarbagePose::tick()
       robot_pose, *tf_, global_frame_, robot_base_frame_, transform_tolerance_))
   {
     setOutput("output_goals", goals_now);
+    publishProtectedGarbage();
     return BT::NodeStatus::SUCCESS;
   }
 
@@ -3808,6 +3825,7 @@ BT::NodeStatus InsertGarbagePose::tick()
 
   if (garbage_list_.empty()) {
     setOutput("output_goals", goals_now);
+    publishProtectedGarbage();
     return BT::NodeStatus::SUCCESS;
   }
 
@@ -3924,6 +3942,7 @@ BT::NodeStatus InsertGarbagePose::tick()
     inserted_count, inserted_xy.str().c_str(), goals_now.size());
 
   setOutput("output_goals", goals_now);
+  publishProtectedGarbage();
   return BT::NodeStatus::SUCCESS;
 }
 

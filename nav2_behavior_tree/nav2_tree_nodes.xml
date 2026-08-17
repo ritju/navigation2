@@ -91,6 +91,7 @@
 
     <Action ID="RemovePassedGoals">
       <input_port name="input_goals">Mission goals from the navigate action (full list; internal state holds pruned mission)</input_port>
+      <input_port name="protected_garbage">Inserted G/E from InsertGarbagePose; do not drop as behind-the-robot on reload</input_port>
       <input_port name="radius">Radius tolerance on a goal to consider it passed</input_port>
       <input_port name="pass_check_max_search_dist_m">Search distance window for passed-goal judgement; skip if no near point found</input_port>
       <input_port name="pass_behind_tol_m">In base_link: if goal x exceeds this value the goal is treated as ahead (not passed/recorded). Use 0 for strict: x&gt;0 skips the goal.</input_port>

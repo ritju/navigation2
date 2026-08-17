@@ -54,6 +54,9 @@ public:
   {
     return {
       BT::InputPort<Goals>("input_goals", "Mission goals from navigate action (read each tick)"),
+      BT::InputPort<Goals>(
+        "protected_garbage",
+        "G/E poses from InsertGarbagePose; do not drop as behind until actually passed"),
       BT::OutputPort<Goals>("output_goals",
         "Goals after passed-point stripping; mirrors current mission queue for downstream nodes"),
       BT::OutputPort<Goals>("output_gpp_goals",
@@ -118,6 +121,8 @@ private:
   std::uint64_t fingerprintLastEmittedGppWindow(
     const Goals & filtered_gpp_goal_window,
     std::uint64_t mission_tail_goal_stamp_fingerprint) const;
+
+  bool isProtectedGarbagePose(const geometry_msgs::msg::PoseStamped & pose_goal) const;
 
   static bool posesApproxEqualForGppMissionMatch(
     const geometry_msgs::msg::Pose & pose_a,
