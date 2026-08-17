@@ -878,26 +878,6 @@ Nav2Panel::updateWpNavigationMarkers()
     circle_marker.lifetime = rclcpp::Duration(0s);
     circle_marker.frame_locked = false;
     marker_array->markers.push_back(circle_marker);
-
-    // Draw the waypoint number
-    visualization_msgs::msg::Marker marker_text;
-    marker_text.header = acummulated_poses_[i].header;
-    marker_text.id = getUniqueId();
-    marker_text.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
-    marker_text.action = visualization_msgs::msg::Marker::ADD;
-    marker_text.pose = acummulated_poses_[i].pose;
-    marker_text.pose.position.z += 0.2;  // draw it on top of the waypoint
-    marker_text.scale.x = 0.07;
-    marker_text.scale.y = 0.07;
-    marker_text.scale.z = 0.07;
-    marker_text.color.r = 0;
-    marker_text.color.g = 255;
-    marker_text.color.b = 0;
-    marker_text.color.a = 1.0f;
-    marker_text.lifetime = rclcpp::Duration(0s);
-    marker_text.frame_locked = false;
-    marker_text.text = "wp_" + std::to_string(i + 1);
-    marker_array->markers.push_back(marker_text);
   }
 
   if (marker_array->markers.empty()) {

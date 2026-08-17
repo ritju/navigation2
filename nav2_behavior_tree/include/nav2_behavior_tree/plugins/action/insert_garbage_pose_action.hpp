@@ -82,6 +82,8 @@ public:
     double extend_from_y{0.0};                            // 算 E 的假设车位 y
     bool extend_inserted{false};                          // 本堆是否实际插入了延伸点 E
     double extend_used_m{0.0};                            // 实际采用的延伸距离，可与参数不同
+    double extend_x{0.0};                                 // 实际写入 goals 的 E 点 x，墙切向后与 path_yaw 重算可能不同
+    double extend_y{0.0};                                 // 实际写入 goals 的 E 点 y
     bool hit_mid_case{false};                             // 垂足落在段中
     bool hit_forward_case{false};                         // 前方延长线
     std::vector<std::pair<double, double>> corners_kept_xy;  // 前方延长线保留角点

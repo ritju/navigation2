@@ -3121,8 +3121,10 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
   info.extend_inserted = add_extend;
   info.extend_used_m = add_extend ? extend_m : 0.0;
   if (add_extend) {
-    last_sweep_arrive_xy_ = {
-      extend_pose.pose.position.x, extend_pose.pose.position.y};
+    info.extend_x = extend_pose.pose.position.x;
+    info.extend_y = extend_pose.pose.position.y;
+    last_sweep_arrive_xy_ = {info.extend_x, info.extend_y};
+    addProtectedGarbageXy(info.extend_x, info.extend_y);
   } else {
     last_sweep_arrive_xy_ = {gx, gy};
   }
@@ -3493,8 +3495,8 @@ void InsertGarbagePose::publishVisualization(
     arr.markers.push_back(arrow);
 
     if (info.extend_inserted) {
-      const double ex = gx + info.extend_used_m * std::cos(info.path_yaw);
-      const double ey = gy + info.extend_used_m * std::sin(info.path_yaw);
+      const double ex = info.extend_x;
+      const double ey = info.extend_y;
 
       auto me = makeBase("accepted_garbage", base + 3, visualization_msgs::msg::Marker::SPHERE);
       me.pose.position.x = ex;
@@ -3909,9 +3911,7 @@ BT::NodeStatus InsertGarbagePose::tick()
     has_last_viz_time_ = true;
     addProtectedGarbageXy(gx, gy);
     if (info.extend_inserted) {
-      const double ex = gx + info.extend_used_m * std::cos(info.path_yaw);
-      const double ey = gy + info.extend_used_m * std::sin(info.path_yaw);
-      addProtectedGarbageXy(ex, ey);
+      addProtectedGarbageXy(info.extend_x, info.extend_y);
     }
     active_piles_.push_back(garbage_list_.front());
     garbage_list_.erase(garbage_list_.begin());
