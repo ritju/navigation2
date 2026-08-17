@@ -51,9 +51,9 @@ public:
   /** history_list_ 最大长度 */
   static constexpr std::size_t kMaxHistorySize = 10;
   /** garbage_list_ 最大长度 */
-  static constexpr std::size_t kMaxGarbageSize = 7;
+  static constexpr std::size_t kMaxGarbageSize = 6;
   /** 清扫顺序全排列上限，超过则贪心 */
-  static constexpr std::size_t kSweepBruteMaxN = 7;
+  static constexpr std::size_t kSweepBruteMaxN = 6;
   /** map 下去重距离阈值米，后到且更近于此的删掉 */
   static constexpr double kDedupDistanceM = 0.15;
   /** 连续可视化归入同一任务的间隔阈值秒 */
@@ -83,6 +83,8 @@ public:
     bool hit_mid_case{false};                             // 垂足落在段中
     bool hit_forward_case{false};                         // 前方延长线
     std::vector<std::pair<double, double>> corners_kept_xy;  // 前方延长线保留角点
+    /** 离机器人远近编号 */
+    int dist_label{0};
 
     // 每一轮 A-C 投影，给可视化用
     struct ClipRound
@@ -145,8 +147,6 @@ public:
         "viz_deleted_goals", true, "Show deleted goals as hollow black rings"),
       BT::InputPort<bool>(
         "viz_ac_points", true, "Show A/C points and labels each clip round"),
-      BT::InputPort<bool>(
-        "viz_ac_geometry", true, "Show A-C lines, extensions, foot and F labels"),
       BT::InputPort<std::string>(
         "visualization_topic", std::string("insert_garbage_pose/markers"),
         "MarkerArray topic for insert visualization"),
@@ -160,7 +160,7 @@ private:
   /** 行为树周期回调 */
   BT::NodeStatus tick() override;
 
-  /** 垃圾检测话题回调：收到即转到 map 再进 history；TF 失败则丢弃 */
+  /** 垃圾检测话题回调：转到 map 进 history；超限丢最远；TF/位姿失败则丢弃本条 */
   void garbageDetectCallback(const capella_ros_msg::msg::GarbageDetect::SharedPtr msg);
 
   /** 特殊清扫/禁扫区域话题回调 */
@@ -271,7 +271,7 @@ private:
    * 按机器人当前朝向累加各段最小转角，取 total 最小的访问下标；
    * 点数 <= kSweepBruteMaxN 全排列，否则贪心。
    */
-  static std::vector<std::size_t> computeSweepOrder(
+  std::vector<std::size_t> computeSweepOrder(
     const GarbageList & garbage_list,
     double robot_x, double robot_y,
     double robot_yaw);
@@ -339,8 +339,7 @@ private:
     bool enable = true,
     bool viz_accepted_garbage = true,
     bool viz_deleted_goals = true,
-    bool viz_ac_points = true,
-    bool viz_ac_geometry = true);
+    bool viz_ac_points = true);
 
   /** 新导航任务时清空本话题上全部 Marker */
   void clearMissionVisualization();
@@ -378,12 +377,16 @@ private:
    * 默认 2.0；
    */
   double garbage_extend_m_{2.0};
+  double sweep_turn_weight_{0.5};
+  double sweep_dist_weight_{0.5};
 
   std::mutex history_mutex_;
   /** 原始接收缓存 */
   std::deque<capella_ros_msg::msg::GarbageDetect> history_list_;
   /** 后处理结果列表 */
   GarbageList garbage_list_;
+  /** 已插入且 goals 里尚未扫过的堆，供新垃圾到来时整表重排再放回 */
+  GarbageList active_piles_;
   /** 从黑板接收到的完整 goals */
   Goals received_goals_;
   /** 当前认定的任务时间戳，与 goals 上统一 stamp 对齐 */
