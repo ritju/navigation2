@@ -184,6 +184,14 @@ private:
   /** 局部代价图该点可通行：仅 254/255 不可过，253 可通过 */
   bool isMapPointPassableOnLocalCostmap(double x, double y) const;
 
+  /**
+   * 在局部代价图上找离 (x,y) 最近的障碍格。
+   * 原方向 E 进墙时用：G 与该格连线做法向，垂线方向再伸 E。
+   * 只认占用格（cell>=100）；搜索半径为延伸距离再加 0.5m，不是把 E 伸那么远。
+   * 成功时 ox/oy 为该格中心的 map 坐标。
+   */
+  bool findNearestObstaclePixel(double x, double y, double * ox, double * oy);
+
   /** 直线走廊无 lethal：footprint 转到行驶朝向后，半宽 0.1m 抽样并检查各顶点 */
   bool isStraightCorridorClear(
     double start_x, double start_y,
@@ -348,7 +356,7 @@ private:
   void clearMissionVisualization();
   void publishWorkCircle();
   void clearWorkCircle();
-  /** 深绿工作圈 + 浅绿识别距离圈（圆心为当前车） */
+  /** 深绿工作圈 + 浅绿识别距离圈 */
   void publishRangeCircles(double robot_x, double robot_y);
 
   rclcpp::Node::SharedPtr node_;
@@ -390,6 +398,10 @@ private:
   bool has_work_circle_{false};
   double work_circle_x_{0.0};
   double work_circle_y_{0.0};
+  /** 切向重构时找到的最近障碍格，RViz 画红矩形 */
+  std::vector<std::pair<double, double>> viz_obstacle_pixels_;
+  std::size_t viz_obstacle_marker_count_{0};
+  double viz_obstacle_cell_m_{0.15};
 
   std::mutex history_mutex_;
   /** 原始接收缓存 */

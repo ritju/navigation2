@@ -422,6 +422,132 @@ bool InsertGarbagePose::isMapPointPassableOnLocalCostmap(double x, double y) con
   return true;
 }
 
+// 在局部代价图上找离查询点最近的占用格，写出该格中心的 map 坐标
+bool InsertGarbagePose::findNearestObstaclePixel(
+  double x, double y, double * ox, double * oy)
+{
+  if (!ox || !oy || !tf_) {
+    return false;
+  }
+
+  nav_msgs::msg::OccupancyGrid::SharedPtr costmap;
+  {
+    std::lock_guard<std::mutex> lock(local_costmap_mutex_);
+    costmap = latest_local_costmap_;
+  }
+  if (!costmap || costmap->info.width == 0 || costmap->info.height == 0 ||
+    costmap->data.empty() || costmap->info.resolution <= 0.0)
+  {
+    return false;
+  }
+
+  const auto & info = costmap->info;
+  const std::string & costmap_frame = costmap->header.frame_id;
+  // 查询点先变到代价图坐标系，后面按格子扫
+  double px = x;
+  double py = y;
+  if (!costmap_frame.empty() && costmap_frame != global_frame_) {
+    geometry_msgs::msg::PointStamped in;
+    geometry_msgs::msg::PointStamped out;
+    in.header.frame_id = global_frame_;
+    in.header.stamp = rclcpp::Time(0, 0, RCL_ROS_TIME);
+    in.point.x = x;
+    in.point.y = y;
+    in.point.z = 0.0;
+    try {
+      tf_->transform(in, out, costmap_frame, tf2::durationFromSec(transform_tolerance_));
+      px = out.point.x;
+      py = out.point.y;
+    } catch (const tf2::TransformException &) {
+      return false;
+    }
+  }
+
+  // 世界点 → 栅格下标  含 origin 朝向
+  const double origin_yaw = tf2::getYaw(info.origin.orientation);
+  const double cos_yaw = std::cos(origin_yaw);
+  const double sin_yaw = std::sin(origin_yaw);
+  const double dx = px - info.origin.position.x;
+  const double dy = py - info.origin.position.y;
+  const double local_x = cos_yaw * dx + sin_yaw * dy;
+  const double local_y = -sin_yaw * dx + cos_yaw * dy;
+  const int gx = static_cast<int>(std::floor(local_x / info.resolution));
+  const int gy = static_cast<int>(std::floor(local_y / info.resolution));
+  const int width = static_cast<int>(info.width);
+  const int height = static_cast<int>(info.height);
+  if (gx < 0 || gy < 0 || gx >= width || gy >= height) {
+    return false;
+  }
+
+  // 搜索上限 = E 延伸距离 + 0.5m：挡住 2m 的墙应在 2m 内，不必扫到 4m 外另一面墙
+  const double search_radius_m = std::max(1.0, std::fabs(garbage_extend_m_) + 0.5);
+  const int r_cells = std::max(1, static_cast<int>(std::ceil(search_radius_m / info.resolution)));
+  const double search_r2 = search_radius_m * search_radius_m;
+  bool found = false;
+  double best_d2 = std::numeric_limits<double>::infinity();
+  double best_cx = 0.0;
+  double best_cy = 0.0;
+
+  const int mx0 = std::max(0, gx - r_cells);
+  const int mx1 = std::min(width - 1, gx + r_cells);
+  const int my0 = std::max(0, gy - r_cells);
+  const int my1 = std::min(height - 1, gy + r_cells);
+  for (int my = my0; my <= my1; ++my) {
+    for (int mx = mx0; mx <= mx1; ++mx) {
+      const std::size_t idx =
+        static_cast<std::size_t>(my) * static_cast<std::size_t>(width) +
+        static_cast<std::size_t>(mx);
+      if (idx >= costmap->data.size()) {
+        continue;
+      }
+      // OccupancyGrid：>=100 是障碍；<100 含自由和膨胀层 253，不当墙
+      const int8_t cell = costmap->data[idx];
+      if (cell < 100) {
+        continue;
+      }
+      // 格子中心变回代价图世界坐标，再和查询点比距离
+      const double clx = (static_cast<double>(mx) + 0.5) * info.resolution;
+      const double cly = (static_cast<double>(my) + 0.5) * info.resolution;
+      const double wx = info.origin.position.x + cos_yaw * clx - sin_yaw * cly;
+      const double wy = info.origin.position.y + sin_yaw * clx + cos_yaw * cly;
+      const double d2 = (wx - px) * (wx - px) + (wy - py) * (wy - py);
+      if (d2 > search_r2 || d2 >= best_d2) {
+        continue;
+      }
+      best_d2 = d2;
+      best_cx = wx;
+      best_cy = wy;
+      found = true;
+    }
+  }
+  if (!found) {
+    return false;
+  }
+
+  viz_obstacle_cell_m_ = std::max(0.08, static_cast<double>(info.resolution));
+
+  *ox = best_cx;
+  *oy = best_cy;
+  // 代价图不在 map 时，把最近格中心转回 map，给后面 G-P 垂线用
+  if (!costmap_frame.empty() && costmap_frame != global_frame_) {
+    geometry_msgs::msg::PointStamped in;
+    geometry_msgs::msg::PointStamped out;
+    in.header.frame_id = costmap_frame;
+    in.header.stamp = rclcpp::Time(0, 0, RCL_ROS_TIME);
+    in.point.x = best_cx;
+    in.point.y = best_cy;
+    in.point.z = 0.0;
+    try {
+      tf_->transform(in, out, global_frame_, tf2::durationFromSec(transform_tolerance_));
+      *ox = out.point.x;
+      *oy = out.point.y;
+    } catch (const tf2::TransformException &) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool InsertGarbagePose::isStraightCorridorClear(
   double start_x, double start_y,
   double end_x, double end_y,
@@ -1543,6 +1669,8 @@ void InsertGarbagePose::checkAndResetOnNewMission()
   garbage_list_.clear();
   active_piles_.clear();
   reached_garbage_xy_.clear();
+  viz_obstacle_pixels_.clear();
+  viz_obstacle_marker_count_ = 0;
   has_pending_garbage_ = false;
   bypass_pending_insert_ = false;
   last_sweep_xy_.clear();
@@ -2718,61 +2846,118 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
   }
   garbage_pose.pose.orientation = nav2_util::geometry_utils::orientationAroundZAxis(info.path_yaw);
 
-  // 沿 path_yaw 插 E：extend<0 不查；>0 查 G→E，失败且 >=2m 时折半再试
+  // 沿 path_yaw 插 E：通则用原方向；不通则沿最近墙的垂线、离车更远一侧再伸
   const double extend_param = garbage_extend_m_;
   double extend_m = 0.0;
   bool add_extend = false;
   geometry_msgs::msg::PoseStamped extend_pose = garbage_pose;
+  const double gx = garbage_pose.pose.position.x;
+  const double gy = garbage_pose.pose.position.y;
 
-  auto setExtendPose = [&](double d) {
-    extend_pose.pose.position.x =
-      garbage_pose.pose.position.x + d * std::cos(info.path_yaw);
-    extend_pose.pose.position.y =
-      garbage_pose.pose.position.y + d * std::sin(info.path_yaw);
+  auto setExtendPose = [&](double yaw, double d) {
+    extend_pose.pose.position.x = gx + d * std::cos(yaw);
+    extend_pose.pose.position.y = gy + d * std::sin(yaw);
+  };
+
+  auto corridorClear = [&](std::string * reason) {
+    return isStraightCorridorClear(
+      gx, gy, extend_pose.pose.position.x, extend_pose.pose.position.y, reason);
+  };
+
+  auto applyExtendYaw = [&](double yaw) {
+    info.path_yaw = yaw;
+    garbage_pose.pose.orientation =
+      nav2_util::geometry_utils::orientationAroundZAxis(yaw);
+    extend_pose.pose.orientation = garbage_pose.pose.orientation;
   };
 
   if (extend_param < -1e-9) {
-    // 来向一侧已在 robot→G 走廊里判过，直接插
     extend_m = extend_param;
-    setExtendPose(extend_m);
+    setExtendPose(info.path_yaw, extend_m);
     add_extend = true;
   } else if (extend_param > 1e-9) {
     extend_m = extend_param;
-    setExtendPose(extend_m);
+    setExtendPose(info.path_yaw, extend_m);
     std::string extend_reason;
-    if (isStraightCorridorClear(
-        garbage_pose.pose.position.x, garbage_pose.pose.position.y,
-        extend_pose.pose.position.x, extend_pose.pose.position.y,
-        &extend_reason))
-    {
+    if (corridorClear(&extend_reason)) {
       add_extend = true;
-    } else if (extend_param >= 2.0) {
-      const double half_m = extend_param * 0.5;
-      setExtendPose(half_m);
-      std::string half_reason;
-      if (isStraightCorridorClear(
-          garbage_pose.pose.position.x, garbage_pose.pose.position.y,
-          extend_pose.pose.position.x, extend_pose.pose.position.y,
-          &half_reason))
-      {
-        extend_m = half_m;
-        add_extend = true;
-        RCLCPP_INFO(
-          node_->get_logger(),
-          "InsertGarbagePose: extend halved %.2f->%.2f m after G->E blocked (%s)",
-          extend_param, half_m, extend_reason.c_str());
-      } else {
-        RCLCPP_INFO(
-          node_->get_logger(),
-          "InsertGarbagePose: skip extend, G->E blocked at %.2f and %.2f m (%s / %s)",
-          extend_param, half_m, extend_reason.c_str(), half_reason.c_str());
-      }
     } else {
-      RCLCPP_INFO(
-        node_->get_logger(),
-        "InsertGarbagePose: skip extend point, G->E blocked (%s) at E(%.2f, %.2f)",
-        extend_reason.c_str(),
-        extend_pose.pose.position.x, extend_pose.pose.position.y);
+      double px = 0.0;
+      double py = 0.0;
+      if (!findNearestObstaclePixel(gx, gy, &px, &py)) {
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "InsertGarbagePose: skip extend, G->E blocked (%s) and no nearest obstacle",
+          extend_reason.c_str());
+      } else {
+        {
+          bool already = false;
+          for (const auto & xy : viz_obstacle_pixels_) {
+            if (squaredDistanceXY(xy.first, xy.second, px, py) < 0.04) {
+              already = true;
+              break;
+            }
+          }
+          if (!already) {
+            viz_obstacle_pixels_.emplace_back(px, py);
+          }
+        }
+        const double nx = px - gx;
+        const double ny = py - gy;
+        const double nlen = std::hypot(nx, ny);
+        if (nlen < 1e-6) {
+          RCLCPP_INFO(
+            node_->get_logger(),
+            "InsertGarbagePose: skip extend, nearest obstacle coincides with G");
+        } else {
+          const double tx = -ny / nlen;
+          const double ty = nx / nlen;
+          const double rx = info.robot_pose.pose.position.x;
+          const double ry = info.robot_pose.pose.position.y;
+          const double ex1 = gx + extend_m * tx;
+          const double ey1 = gy + extend_m * ty;
+          const double ex2 = gx - extend_m * tx;
+          const double ey2 = gy - extend_m * ty;
+          const double d1 = std::hypot(ex1 - rx, ey1 - ry);
+          const double d2 = std::hypot(ex2 - rx, ey2 - ry);
+          const double fwd_x = std::cos(info.path_yaw);
+          const double fwd_y = std::sin(info.path_yaw);
+          bool first_plus = d1 > d2;
+          if (std::fabs(d1 - d2) < 1e-3) {
+            first_plus = (tx * fwd_x + ty * fwd_y) >= 0.0;
+          }
+
+          auto trySide = [&](bool use_plus, std::string * reason) {
+            const double yaw = use_plus ? std::atan2(ty, tx) : std::atan2(-ty, -tx);
+            setExtendPose(yaw, extend_m);
+            return corridorClear(reason);
+          };
+
+          std::string side_reason;
+          const bool first_ok = trySide(first_plus, &side_reason);
+          std::string other_reason;
+          const bool other_ok = first_ok ? false : trySide(!first_plus, &other_reason);
+          if (first_ok || other_ok) {
+            const double used_yaw = std::atan2(
+              extend_pose.pose.position.y - gy,
+              extend_pose.pose.position.x - gx);
+            applyExtendYaw(used_yaw);
+            add_extend = true;
+            RCLCPP_INFO(
+              node_->get_logger(),
+              "InsertGarbagePose: extend wall-tangent after G->E blocked (%s) "
+              "P=(%.2f, %.2f) E=(%.2f, %.2f)",
+              extend_reason.c_str(), px, py,
+              extend_pose.pose.position.x, extend_pose.pose.position.y);
+          } else {
+            RCLCPP_INFO(
+              node_->get_logger(),
+              "InsertGarbagePose: skip extend, wall-tangent blocked "
+              "(%s / %s) P=(%.2f, %.2f)",
+              side_reason.c_str(), other_reason.c_str(), px, py);
+          }
+        }
+      }
     }
   }
 
@@ -2944,6 +3129,39 @@ void InsertGarbagePose::publishRangeCircles(double robot_x, double robot_y)
         "work_circle", work_circle_x_, work_circle_y_, work_circle_radius_m_,
         0.02f, 0.40f, 0.10f, 0.95f, 0.08));
   }
+  const double cell = std::max(0.12, viz_obstacle_cell_m_);
+  for (std::size_t i = 0; i < viz_obstacle_pixels_.size(); ++i) {
+    visualization_msgs::msg::Marker box;
+    box.header.frame_id = global_frame_;
+    box.header.stamp = node_->now();
+    box.ns = "nearest_obstacle";
+    box.id = static_cast<int>(i);
+    box.type = visualization_msgs::msg::Marker::CUBE;
+    box.action = visualization_msgs::msg::Marker::ADD;
+    box.pose.position.x = viz_obstacle_pixels_[i].first;
+    box.pose.position.y = viz_obstacle_pixels_[i].second;
+    box.pose.position.z = 0.08;
+    box.pose.orientation.w = 1.0;
+    box.scale.x = cell;
+    box.scale.y = cell;
+    box.scale.z = 0.04;
+    box.color.r = 0.95f;
+    box.color.g = 0.12f;
+    box.color.b = 0.10f;
+    box.color.a = 0.95f;
+    box.lifetime = rclcpp::Duration::from_seconds(0.0);
+    arr.markers.push_back(box);
+  }
+  for (std::size_t i = viz_obstacle_pixels_.size(); i < viz_obstacle_marker_count_; ++i) {
+    visualization_msgs::msg::Marker del;
+    del.header.frame_id = global_frame_;
+    del.header.stamp = node_->now();
+    del.ns = "nearest_obstacle";
+    del.id = static_cast<int>(i);
+    del.action = visualization_msgs::msg::Marker::DELETE;
+    arr.markers.push_back(del);
+  }
+  viz_obstacle_marker_count_ = viz_obstacle_pixels_.size();
   if (!arr.markers.empty()) {
     marker_pub_->publish(arr);
   }
