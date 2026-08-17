@@ -55,11 +55,11 @@ public:
   /** 清扫顺序全排列上限，超过则贪心 */
   static constexpr std::size_t kSweepBruteMaxN = 6;
   /** map 下去重距离阈值米，后到且更近于此的删掉 */
-  static constexpr double kDedupDistanceM = 0.15;
+  static constexpr double kDedupDistanceM = 0.4;
   /** 连续可视化归入同一任务的间隔阈值秒 */
   static constexpr double kVizTaskWindowSec = 2.0;
   /** base_link 下距原点小于此值的检测视为无效 */
-  static constexpr double kInvalidGarbageOriginRadiusM = 0.1;
+  static constexpr double kInvalidGarbageOriginRadiusM = 0.3;
 
   // 插入前采集到的全部信息，valid 为 false 时不做删点插点
   struct InsertInfo
@@ -131,7 +131,7 @@ public:
         "head_delete_robot_dist_m", 4.0,
         "Only delete from goals head forward when robot is within this distance (m) of goals[0]"),
       BT::InputPort<double>(
-        "max_garbage_robot_dist_m", 9.0,
+        "max_garbage_robot_dist_m", 5.0,
         "Ignore garbage farther than this distance (m) from robot (anti false-detect)"),
       BT::InputPort<double>(
         "garbage_merge_radius_m", 1.0,
@@ -163,7 +163,7 @@ private:
   /** 行为树周期回调 */
   BT::NodeStatus tick() override;
 
-  /** 垃圾检测话题回调：转到 map 进 history；超限丢最远；TF/位姿失败则丢弃本条 */
+  /** 垃圾检测话题回调：转到 map；合堆半径内已见过则不进 history */
   void garbageDetectCallback(const capella_ros_msg::msg::GarbageDetect::SharedPtr msg);
 
   /** 特殊清扫/禁扫区域话题回调 */
@@ -348,6 +348,8 @@ private:
   void clearMissionVisualization();
   void publishWorkCircle();
   void clearWorkCircle();
+  /** 深绿工作圈 + 浅绿识别距离圈（圆心为当前车） */
+  void publishRangeCircles(double robot_x, double robot_y);
 
   rclcpp::Node::SharedPtr node_;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
@@ -373,8 +375,8 @@ private:
   double goaltotal_range_m_{10.0};
   /** 离队头超过该距离就不删点，默认 4m */
   double head_delete_robot_dist_m_{4.0};
-  /** 垃圾离机器人超过该距离则忽略，默认 9m */
-  double max_garbage_robot_dist_m_{9.0};
+  /** 垃圾离机器人超过该距离则忽略，默认 5m */
+  double max_garbage_robot_dist_m_{5.0};
   /** 合堆半径：到种子小于该值并为一堆，默认 1.0m */
   double garbage_merge_radius_m_{1.0};
   /**
