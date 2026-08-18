@@ -3041,6 +3041,17 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
   } else if (extend_param > 1e-9) {
     extend_m = extend_param;
     setExtendPose(info.path_yaw, extend_m);
+    const int pile_num = (info.dist_label > 0) ?
+      info.dist_label :
+      (viz_pile_count_ + 1);
+    auto skipE = [&](const std::string & why) {
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "InsertGarbagePose: skip E%d (%.2f, %.2f), 通不过: %s，无法生成",
+        pile_num,
+        extend_pose.pose.position.x, extend_pose.pose.position.y,
+        why.c_str());
+    };
     std::string extend_reason;
     if (corridorClear(&extend_reason)) {
       add_extend = true;
@@ -3048,15 +3059,9 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
       double px = 0.0;
       double py = 0.0;
       if (!findNearestObstaclePixel(gx, gy, &px, &py)) {
-        RCLCPP_INFO(
-          node_->get_logger(),
-          "InsertGarbagePose: skip extend, G->E blocked (%s) and no nearest obstacle",
-          extend_reason.c_str());
+        skipE("默认G->E走廊(" + extend_reason + ")，且无最近障碍P");
       } else {
         {
-          const int pile_num = (info.dist_label > 0) ?
-            info.dist_label :
-            (viz_pile_count_ + 1);
           bool already = false;
           for (auto & xy : viz_obstacle_pixels_) {
             if (squaredDistanceXY(xy.x, xy.y, px, py) < 0.04) {
@@ -3074,9 +3079,7 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
         const double ny = py - gy;
         const double nlen = std::hypot(nx, ny);
         if (nlen < 1e-6) {
-          RCLCPP_INFO(
-            node_->get_logger(),
-            "InsertGarbagePose: skip extend, nearest obstacle coincides with G");
+          skipE("P与G重合");
         } else {
           const double tx = -ny / nlen;
           const double ty = nx / nlen;
@@ -3107,11 +3110,7 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
               extend_pose.pose.position.x, extend_pose.pose.position.y,
               from_x, from_y);
           } else {
-            RCLCPP_INFO(
-              node_->get_logger(),
-              "InsertGarbagePose: skip extend, far-side wall-tangent blocked (%s) "
-              "P=(%.2f, %.2f) from=(%.2f, %.2f)",
-              side_reason.c_str(), px, py, from_x, from_y);
+            skipE("远端墙切向走廊(" + side_reason + ")");
           }
         }
       }
