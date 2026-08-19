@@ -2439,7 +2439,6 @@ InsertGarbagePose::InsertInfo InsertGarbagePose::gatherInsertInfo(
     info.goald_x, info.goald_y);
 
   // 插入朝向 / 默认伸 E：首堆用当前车；其后用上一堆到达点
-  constexpr double kYawDegenerateDist2 = 1e-6;  // ~1mm
   double from_x = rx;
   double from_y = ry;
   const char * yaw_src = "robot->G";
@@ -2448,18 +2447,23 @@ InsertGarbagePose::InsertInfo InsertGarbagePose::gatherInsertInfo(
     from_y = last_sweep_arrive_xy_.second;
     yaw_src = "arrive->G";
   }
+  const double min_from_m = std::max(kMinExtendFromDistM, arrived_radius_);
+  const double dx_from = gx - from_x;
+  const double dy_from = gy - from_y;
+  const double from_dist = std::hypot(dx_from, dy_from);
+  if (from_dist < min_from_m) {
+    // 车已在 G 上：真车不能当来向。沿车头在 G 后方虚设 from，E 只向前
+    const double robot_yaw = tf2::getYaw(robot_pose.pose.orientation);
+    const double back_m = std::max(std::fabs(garbage_extend_m_), min_from_m * 2.0);
+    from_x = gx - back_m * std::cos(robot_yaw);
+    from_y = gy - back_m * std::sin(robot_yaw);
+    info.path_yaw = robot_yaw;
+    yaw_src = "on-G, forward=robot_yaw";
+  } else {
+    info.path_yaw = std::atan2(dy_from, dx_from);
+  }
   info.extend_from_x = from_x;
   info.extend_from_y = from_y;
-  const double dx_yaw = gx - from_x;
-  const double dy_yaw = gy - from_y;
-  if (dx_yaw * dx_yaw + dy_yaw * dy_yaw < kYawDegenerateDist2) {
-    info.path_yaw = std::atan2(
-      info.goalc.pose.position.y - info.goala.pose.position.y,
-      info.goalc.pose.position.x - info.goala.pose.position.x);
-    yaw_src = "A->C(fallback)";
-  } else {
-    info.path_yaw = std::atan2(dy_yaw, dx_yaw);
-  }
   RCLCPP_INFO(
     node_->get_logger(),
     "InsertGarbagePose: path_yaw=%.3f rad (%s) from=(%.2f, %.2f) garbage=(%.2f, %.2f)",
@@ -3091,8 +3095,12 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
           const double d2 = std::hypot(ex2 - from_x, ey2 - from_y);
           const double fwd_x = std::cos(info.path_yaw);
           const double fwd_y = std::sin(info.path_yaw);
+          const double from_g = std::hypot(gx - from_x, gy - from_y);
           bool use_plus = d1 > d2;
-          if (std::fabs(d1 - d2) < 1e-3) {
+          // from 贴着 G，或两侧几乎一样远：按扫向选前侧，避免 4cm 噪声翻面
+          if (from_g < std::max(kMinExtendFromDistM, arrived_radius_) ||
+            std::fabs(d1 - d2) < 0.3)
+          {
             use_plus = (tx * fwd_x + ty * fwd_y) >= 0.0;
           }
 
@@ -3638,6 +3646,19 @@ void InsertGarbagePose::publishVisualization(
 // 行为树周期回调
 BT::NodeStatus InsertGarbagePose::tick()
 {
+  // 连续 tick 只打一次；
+  {
+    static rclcpp::Time last_tick_time{0, 0, RCL_ROS_TIME};
+    static bool has_tick_time = false;
+    const rclcpp::Time now = node_->now();
+    const bool resumed = !has_tick_time || (now - last_tick_time).seconds() > 1.0;
+    if (resumed) {
+      RCLCPP_INFO(node_->get_logger(), "InsertGarbagePose: tick");
+    }
+    last_tick_time = now;
+    has_tick_time = true;
+  }
+
   callback_group_executor_.spin_some();
   checkAndResetOnNewMission();
 

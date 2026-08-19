@@ -60,6 +60,8 @@ public:
   static constexpr double kVizTaskWindowSec = 2.0;
   /** base_link 下距原点小于此值的检测视为无效 */
   static constexpr double kInvalidGarbageOriginRadiusM = 0.3;
+  /** from 离 G 近于此则视为已到达：不用欧氏远近选侧，沿车头在 G 后方虚设来向 */
+  static constexpr double kMinExtendFromDistM = 0.5;
 
   // 插入前采集到的全部信息，valid 为 false 时不做删点插点
   struct InsertInfo
@@ -77,7 +79,7 @@ public:
     double radius_m{0.0};                                 // R = 机器人到垃圾距离
     double goald_x{0.0};                                  // 垃圾向 goala-goalc 无限直线的垂足
     double goald_y{0.0};
-    double path_yaw{0.0};                                 // 插入朝向 / 默认伸 E：首堆 robot→G，其后上一堆到达点→G
+    double path_yaw{0.0};                                 // 插入朝向 / 默认伸 E；from 贴 G 时改用车头向前
     double extend_from_x{0.0};                            // 算 E 的假设车位 x：首堆当前车，其后上一堆 E
     double extend_from_y{0.0};                            // 算 E 的假设车位 y
     bool extend_inserted{false};                          // 本堆是否实际插入了延伸点 E
