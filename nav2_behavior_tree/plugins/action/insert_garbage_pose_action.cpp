@@ -3010,6 +3010,8 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
     garbage_pose.header.frame_id = global_frame_;
   }
   garbage_pose.pose.orientation = nav2_util::geometry_utils::orientationAroundZAxis(info.path_yaw);
+  // 插入的 G/E 用 z=-1 标记
+  garbage_pose.pose.position.z = -1.0;
 
   // 沿 path_yaw 插 E：通则用假设到达点→G；不通则沿墙垂线、只留离该到达点更远的一侧
   const double extend_param = garbage_extend_m_;
@@ -3949,7 +3951,14 @@ BT::NodeStatus InsertGarbagePose::tick()
   if (inserted_count > 0) {
     const rclcpp::Time now_stamp = node_->now();
     for (std::size_t i = 0; i < goals_now.size(); ++i) {
-      goals_now[i].pose.position.z = static_cast<double>(i);
+      // G/E 保持 z=-1；其余途经点仍用序号写在 z 上
+      if (isProtectedGarbageXy(
+          goals_now[i].pose.position.x, goals_now[i].pose.position.y))
+      {
+        goals_now[i].pose.position.z = -1.0;
+      } else {
+        goals_now[i].pose.position.z = static_cast<double>(i);
+      }
       goals_now[i].header.stamp = now_stamp;
     }
     mission_stamp_record_ = now_stamp;
