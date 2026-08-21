@@ -62,6 +62,10 @@ public:
   static constexpr double kInvalidGarbageOriginRadiusM = 0.3;
   /** from 离 G 近于此则视为已到达：不用欧氏远近选侧，沿车头在 G 后方虚设来向 */
   static constexpr double kMinExtendFromDistM = 0.5;
+  /** 墙切向走廊失败后，绕该切向左右各扫到此角度 */
+  static constexpr double kExtendYawSweepMaxDeg = 45.0;
+  /** 切向扫角步长 */
+  static constexpr double kExtendYawSweepStepDeg = 15.0;
 
   // 插入前采集到的全部信息，valid 为 false 时不做删点插点
   struct InsertInfo
@@ -276,7 +280,6 @@ private:
   bool isNearReachedGarbage(double x, double y) const;
   bool isProtectedGarbageXy(double x, double y) const;
   void addProtectedGarbageXy(double x, double y);
-  void pruneProtectedGarbageNotInGoals(const Goals & goals);
 
   /** 上一堆插入点是否仍在 goals 中（未经过则先不插下一堆） */
   bool isPendingGarbageInGoals(const Goals & goals) const;

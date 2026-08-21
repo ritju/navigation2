@@ -1985,28 +1985,10 @@ void InsertGarbagePose::addProtectedGarbageXy(double x, double y)
     return;
   }
   reached_garbage_xy_.emplace_back(x, y);
-}
-
-// 清理不在当前 goals 里的已插入垃圾记录
-void InsertGarbagePose::pruneProtectedGarbageNotInGoals(const Goals & goals)
-{
-  const double thresh2 = kDedupDistanceM * kDedupDistanceM;
-  for (auto it = reached_garbage_xy_.begin(); it != reached_garbage_xy_.end(); ) {
-    bool found = false;
-    for (const auto & g : goals) {
-      if (squaredDistanceXY(
-          g.pose.position.x, g.pose.position.y, it->first, it->second) < thresh2)
-      {
-        found = true;
-        break;
-      }
-    }
-    if (found) {
-      ++it;
-    } else {
-      it = reached_garbage_xy_.erase(it);
-    }
-  }
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "InsertGarbagePose: diag protected+ (%.2f, %.2f), protected_n=%zu",
+    x, y, reached_garbage_xy_.size());
 }
 
 void InsertGarbagePose::publishProtectedGarbage()
@@ -3010,7 +2992,7 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
     garbage_pose.header.frame_id = global_frame_;
   }
   garbage_pose.pose.orientation = nav2_util::geometry_utils::orientationAroundZAxis(info.path_yaw);
-  // 插入的 G/E 用 z=-1 标记
+  // G/E 写入 goals 时 z=-1，供下游识别为需保留的点
   garbage_pose.pose.position.z = -1.0;
 
   // 沿 path_yaw 插 E：通则用假设到达点→G；不通则沿墙垂线、只留离该到达点更远的一侧
@@ -3026,6 +3008,7 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
   auto setExtendPose = [&](double yaw, double d) {
     extend_pose.pose.position.x = gx + d * std::cos(yaw);
     extend_pose.pose.position.y = gy + d * std::sin(yaw);
+    extend_pose.pose.position.z = -1.0;
   };
 
   auto corridorClear = [&](std::string * reason) {
@@ -3120,7 +3103,33 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
               extend_pose.pose.position.x, extend_pose.pose.position.y,
               from_x, from_y);
           } else {
-            skipE("远端墙切向走廊(" + side_reason + ")");
+            // 切向 0° 不通：只绕这一侧 ±15/±30/±45° 小范围再找 E
+            for (double step = kExtendYawSweepStepDeg;
+              step <= kExtendYawSweepMaxDeg + 1e-6 && !add_extend;
+              step += kExtendYawSweepStepDeg)
+            {
+              for (const double sign : {1.0, -1.0}) {
+                const double yaw_try = yaw + sign * step * M_PI / 180.0;
+                setExtendPose(yaw_try, extend_m);
+                std::string sweep_reason;
+                if (!corridorClear(&sweep_reason)) {
+                  continue;
+                }
+                applyExtendYaw(yaw_try);
+                add_extend = true;
+                RCLCPP_INFO(
+                  node_->get_logger(),
+                  "InsertGarbagePose: extend wall-tangent sweep %+g deg after blocked (%s) "
+                  "P=(%.2f, %.2f) E=(%.2f, %.2f) from=(%.2f, %.2f)",
+                  sign * step, side_reason.c_str(), px, py,
+                  extend_pose.pose.position.x, extend_pose.pose.position.y,
+                  from_x, from_y);
+                break;
+              }
+            }
+            if (!add_extend) {
+              skipE("远端墙切向走廊(" + side_reason + ")，±45deg 仍不通");
+            }
           }
         }
       }
@@ -3667,7 +3676,6 @@ BT::NodeStatus InsertGarbagePose::tick()
   const GarbageList before = garbage_list_;
   postProcessHistory();
   Goals goals_now = receiveGoals();
-  pruneProtectedGarbageNotInGoals(goals_now);
 
   if (goals_now.size() < 2) {
     geometry_msgs::msg::PoseStamped robot_pose;
@@ -3694,6 +3702,71 @@ BT::NodeStatus InsertGarbagePose::tick()
   const double ry = robot_pose.pose.position.y;
   const double robot_yaw = tf2::getYaw(robot_pose.pose.orientation);
   publishRangeCircles(rx, ry);
+
+  // 排查：active 堆是否还在 {goals}、footprint 是否已到、z=-1 还剩几个（不改行为）
+  {
+    std::size_t z_neg1_n = 0;
+    std::ostringstream z_neg1_oss;
+    for (const auto & g : goals_now) {
+      if (std::lround(g.pose.position.z) < 0) {
+        if (z_neg1_n > 0) {
+          z_neg1_oss << " ";
+        }
+        z_neg1_oss << "(" << g.pose.position.x << "," << g.pose.position.y << ")";
+        ++z_neg1_n;
+      }
+    }
+    if (!active_piles_.empty() || z_neg1_n > 0) {
+      std::vector<geometry_msgs::msg::Point> footprint_map;
+      const bool have_fp = getRobotFootprintInMap(footprint_map);
+      std::ostringstream active_oss;
+      for (std::size_t i = 0; i < active_piles_.size(); ++i) {
+        const double ax = active_piles_[i].pose.pose.position.x;
+        const double ay = active_piles_[i].pose.pose.position.y;
+        const double dist = std::sqrt(squaredDistanceXY(rx, ry, ax, ay));
+        bool in_goals = false;
+        for (const auto & g : goals_now) {
+          if (squaredDistanceXY(
+              g.pose.position.x, g.pose.position.y, ax, ay) <
+            kDedupDistanceM * kDedupDistanceM)
+          {
+            in_goals = true;
+            break;
+          }
+        }
+        bool fp_arrived = false;
+        if (have_fp) {
+          capella_ros_msg::msg::GarbageDetect tmp = active_piles_[i];
+          fp_arrived = shouldStopInsertingGarbage(tmp, footprint_map, arrived_radius_);
+        }
+        if (i > 0) {
+          active_oss << " | ";
+        }
+        active_oss << "(" << ax << "," << ay << ") dist=" << dist
+                   << " in_goals=" << (in_goals ? 1 : 0)
+                   << " fp_arrived=" << (fp_arrived ? 1 : 0);
+      }
+      std::ostringstream prot_oss;
+      for (std::size_t i = 0; i < reached_garbage_xy_.size(); ++i) {
+        if (i > 0) {
+          prot_oss << " ";
+        }
+        prot_oss << "(" << reached_garbage_xy_[i].first << ","
+                 << reached_garbage_xy_[i].second << ")";
+      }
+      RCLCPP_INFO_THROTTLE(
+        node_->get_logger(), *(node_->get_clock()), 2000,
+        "InsertGarbagePose: diag status robot=(%.2f, %.2f) yaw=%.3f goals=%zu "
+        "z=-1_n=%zu %s | active_n=%zu %s | protected_n=%zu %s | "
+        "fp=%s arrived_r=%.2f (fp_arrived only observes; Insert does not clear "
+        "active_piles on arrive)",
+        rx, ry, robot_yaw, goals_now.size(),
+        z_neg1_n, z_neg1_oss.str().c_str(),
+        active_piles_.size(), active_oss.str().c_str(),
+        reached_garbage_xy_.size(), prot_oss.str().c_str(),
+        have_fp ? "ok" : "none", arrived_radius_);
+    }
+  }
 
   auto logSweepOrder = [this, rx, ry, robot_yaw]() {
     if (garbage_list_.empty()) {
@@ -3760,23 +3833,34 @@ BT::NodeStatus InsertGarbagePose::tick()
       formatOrder(final_idxs).c_str());
   };
 
-  // 已扫过的堆不再参与重排
+  // 已扫过的堆不再参与重排（仅当 goals 里找不到该堆 XY 才丢掉）
   {
     const double thresh2 = kDedupDistanceM * kDedupDistanceM;
     for (auto it = active_piles_.begin(); it != active_piles_.end(); ) {
+      const double ax = it->pose.pose.position.x;
+      const double ay = it->pose.pose.position.y;
       bool found = false;
       for (const auto & g : goals_now) {
         if (squaredDistanceXY(
-            g.pose.position.x, g.pose.position.y,
-            it->pose.pose.position.x, it->pose.pose.position.y) < thresh2)
+            g.pose.position.x, g.pose.position.y, ax, ay) < thresh2)
         {
           found = true;
           break;
         }
       }
       if (found) {
+        RCLCPP_INFO_THROTTLE(
+          node_->get_logger(), *(node_->get_clock()), 2000,
+          "InsertGarbagePose: diag active keep (%.2f, %.2f): still in {goals} "
+          "(will re-insert on next mid-mission pile)",
+          ax, ay);
         ++it;
       } else {
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "InsertGarbagePose: diag active drop (%.2f, %.2f): gone from {goals} "
+          "(treated as swept for mid-mission)",
+          ax, ay);
         it = active_piles_.erase(it);
       }
     }
@@ -3794,11 +3878,43 @@ BT::NodeStatus InsertGarbagePose::tick()
   const bool mid_mission_new = have_new_pile && !active_piles_.empty();
   if (mid_mission_new) {
     // 把还没扫完的已插堆抽出来，和新堆一起按 4-1/4-2 重排后再放回
+    std::ostringstream old_active_oss;
+    for (std::size_t i = 0; i < active_piles_.size(); ++i) {
+      if (i > 0) {
+        old_active_oss << " ";
+      }
+      old_active_oss << "(" << active_piles_[i].pose.pose.position.x << ","
+                     << active_piles_[i].pose.pose.position.y << ")";
+    }
+    std::ostringstream new_list_oss;
+    for (std::size_t i = 0; i < garbage_list_.size(); ++i) {
+      if (i > 0) {
+        new_list_oss << " ";
+      }
+      new_list_oss << "(" << garbage_list_[i].pose.pose.position.x << ","
+                   << garbage_list_[i].pose.pose.position.y << ")";
+    }
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: diag mid-mission BEGIN goals=%zu active_n=%zu %s "
+      "new_list_n=%zu %s protected_n=%zu (will peel protected from goals, "
+      "clear protected, recombine active+new)",
+      goals_now.size(), active_piles_.size(), old_active_oss.str().c_str(),
+      garbage_list_.size(), new_list_oss.str().c_str(),
+      reached_garbage_xy_.size());
+
     Goals kept_goals;
     kept_goals.reserve(goals_now.size());
+    std::size_t peeled_n = 0;
     for (const auto & g : goals_now) {
       if (!isProtectedGarbageXy(g.pose.position.x, g.pose.position.y)) {
         kept_goals.push_back(g);
+      } else {
+        ++peeled_n;
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "InsertGarbagePose: diag mid-mission peel from goals (%.2f, %.2f) z=%.1f",
+          g.pose.position.x, g.pose.position.y, g.pose.position.z);
       }
     }
     goals_now = std::move(kept_goals);
@@ -3818,6 +3934,21 @@ BT::NodeStatus InsertGarbagePose::tick()
       if (!isDuplicateOfKept(g, combined)) {
         combined.push_back(g);
       }
+    }
+    {
+      std::ostringstream comb_oss;
+      for (std::size_t i = 0; i < combined.size(); ++i) {
+        if (i > 0) {
+          comb_oss << " ";
+        }
+        comb_oss << "(" << combined[i].pose.pose.position.x << ","
+                 << combined[i].pose.pose.position.y << ")";
+      }
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "InsertGarbagePose: diag mid-mission recombine peeled=%zu kept_goals=%zu "
+        "combined_n=%zu %s (OLD piles in combined will be inserted again)",
+        peeled_n, goals_now.size(), combined.size(), comb_oss.str().c_str());
     }
     garbage_list_ = std::move(combined);
     active_piles_.clear();
@@ -3910,11 +4041,19 @@ BT::NodeStatus InsertGarbagePose::tick()
     const double gx = garbage_list_.front().pose.pose.position.x;
     const double gy = garbage_list_.front().pose.pose.position.y;
     if (isNearReachedGarbage(gx, gy)) {
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "InsertGarbagePose: diag skip insert (%.2f, %.2f): near protected/reached",
+        gx, gy);
       garbage_list_.erase(garbage_list_.begin());
       continue;
     }
     InsertInfo info = gatherInsertInfo(goals_now, robot_pose, gx, gy);
     if (!info.valid) {
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "InsertGarbagePose: diag skip insert (%.2f, %.2f): gather invalid (%s)",
+        gx, gy, info.invalid_reason.c_str());
       garbage_list_.erase(garbage_list_.begin());
       continue;
     }
@@ -3936,6 +4075,12 @@ BT::NodeStatus InsertGarbagePose::tick()
       addProtectedGarbageXy(info.extend_x, info.extend_y);
     }
     active_piles_.push_back(garbage_list_.front());
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: diag active+ (%.2f, %.2f) extend=%d E=(%.2f, %.2f) "
+      "active_n=%zu",
+      gx, gy, info.extend_inserted ? 1 : 0,
+      info.extend_x, info.extend_y, active_piles_.size());
     garbage_list_.erase(garbage_list_.begin());
     ++inserted_count;
     inserted_xy << "(" << gx << ", " << gy << ") ";
@@ -3950,19 +4095,24 @@ BT::NodeStatus InsertGarbagePose::tick()
 
   if (inserted_count > 0) {
     const rclcpp::Time now_stamp = node_->now();
+    std::size_t z_neg1_n = 0;
     for (std::size_t i = 0; i < goals_now.size(); ++i) {
-      // G/E 保持 z=-1；其余途经点仍用序号写在 z 上
-      if (isProtectedGarbageXy(
-          goals_now[i].pose.position.x, goals_now[i].pose.position.y))
-      {
-        goals_now[i].pose.position.z = -1.0;
-      } else {
+      // G/E 已是 z=-1，重编号时不要改；其余途经点写序号
+      if (goals_now[i].pose.position.z != -1.0) {
         goals_now[i].pose.position.z = static_cast<double>(i);
+      } else {
+        ++z_neg1_n;
       }
       goals_now[i].header.stamp = now_stamp;
     }
     mission_stamp_record_ = now_stamp;
     has_mission_stamp_ = true;
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: diag after-batch goals=%zu z=-1_n=%zu active_n=%zu "
+      "protected_n=%zu",
+      goals_now.size(), z_neg1_n, active_piles_.size(),
+      reached_garbage_xy_.size());
   }
 
   RCLCPP_INFO(

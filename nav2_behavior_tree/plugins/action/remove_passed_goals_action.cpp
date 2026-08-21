@@ -109,9 +109,79 @@ void RemovePassedGoals::publishEnableBackwardIfChanged(bool desired_backward)
     desired_backward ? "true (backward)" : "false (forward)");
 }
 
-uint32_t RemovePassedGoals::missionPoseGoalIndexFromPoseZ(const geometry_msgs::msg::PoseStamped & pose_stamped_goal)
+bool RemovePassedGoals::isUnindexedSentinelPoseZ(
+  const geometry_msgs::msg::PoseStamped & pose_stamped_goal)
 {
-  return static_cast<uint32_t>(std::lround(pose_stamped_goal.pose.position.z));
+  return std::lround(pose_stamped_goal.pose.position.z) < 0;
+}
+
+bool RemovePassedGoals::tryMissionPoseGoalIndexFromPoseZ(
+  const geometry_msgs::msg::PoseStamped & pose_stamped_goal,
+  uint32_t & discrete_goal_index_z)
+{
+  const long rounded_z = std::lround(pose_stamped_goal.pose.position.z);
+  if (rounded_z < 0) {
+    return false;
+  }
+  discrete_goal_index_z = static_cast<uint32_t>(rounded_z);
+  return true;
+}
+
+uint32_t RemovePassedGoals::missionPoseGoalIndexFromPoseZ(
+  const geometry_msgs::msg::PoseStamped & pose_stamped_goal)
+{
+  uint32_t discrete_goal_index_z = 0;
+  if (!tryMissionPoseGoalIndexFromPoseZ(pose_stamped_goal, discrete_goal_index_z)) {
+    return 0;
+  }
+  return discrete_goal_index_z;
+}
+
+bool RemovePassedGoals::tryIndexedGoalZAtOrAfter(
+  const Goals & mission_goal_queue,
+  size_t start_index,
+  uint32_t & discrete_goal_index_z)
+{
+  for (size_t idx = start_index; idx < mission_goal_queue.size(); ++idx) {
+    if (tryMissionPoseGoalIndexFromPoseZ(mission_goal_queue[idx], discrete_goal_index_z)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool RemovePassedGoals::tryIndexedGoalZAtOrBefore(
+  const Goals & mission_goal_queue,
+  size_t start_index,
+  uint32_t & discrete_goal_index_z)
+{
+  if (mission_goal_queue.empty()) {
+    return false;
+  }
+  size_t idx = start_index;
+  if (idx >= mission_goal_queue.size()) {
+    idx = mission_goal_queue.size() - 1;
+  }
+  while (true) {
+    if (tryMissionPoseGoalIndexFromPoseZ(mission_goal_queue[idx], discrete_goal_index_z)) {
+      return true;
+    }
+    if (idx == 0) {
+      break;
+    }
+    --idx;
+  }
+  return false;
+}
+
+std::uint64_t RemovePassedGoals::fingerprintMixFromPoseZ(
+  const geometry_msgs::msg::PoseStamped & pose_stamped_goal)
+{
+  uint32_t discrete_goal_index_z = 0;
+  if (!tryMissionPoseGoalIndexFromPoseZ(pose_stamped_goal, discrete_goal_index_z)) {
+    return std::numeric_limits<std::uint64_t>::max();
+  }
+  return static_cast<std::uint64_t>(discrete_goal_index_z);
 }
 
 void RemovePassedGoals::handleReceivedTebGlobalPlan(const nav_msgs::msg::Path::SharedPtr plan_message)
@@ -182,14 +252,13 @@ std::uint64_t RemovePassedGoals::fingerprintLastEmittedGppWindow(
   fingerprint_mix ^= (static_cast<std::uint64_t>(batch_span_goal_index_z_begin_) << 32) |
     static_cast<std::uint64_t>(batch_span_goal_index_z_end_);
   if (!filtered_gpp_goal_window.empty()) {
-    fingerprint_mix ^= static_cast<std::uint64_t>(missionPoseGoalIndexFromPoseZ(filtered_gpp_goal_window.front()));
-    fingerprint_mix ^= static_cast<std::uint64_t>(
-      missionPoseGoalIndexFromPoseZ(filtered_gpp_goal_window.back())) << 20;
+    fingerprint_mix ^= fingerprintMixFromPoseZ(filtered_gpp_goal_window.front());
+    fingerprint_mix ^= fingerprintMixFromPoseZ(filtered_gpp_goal_window.back()) << 20;
     // Count and per-goal z mix in: endpoints alone are insufficient (middle removals keep same front/back z).
     fingerprint_mix ^= static_cast<std::uint64_t>(filtered_gpp_goal_window.size()) << 48;
     std::uint64_t xor_all_goal_index_z = 0;
     for (const auto & pose_stamped : filtered_gpp_goal_window) {
-      xor_all_goal_index_z ^= static_cast<std::uint64_t>(missionPoseGoalIndexFromPoseZ(pose_stamped)) * 0x9e3779b97f4a7c15ULL;
+      xor_all_goal_index_z ^= fingerprintMixFromPoseZ(pose_stamped) * 0x9e3779b97f4a7c15ULL;
     }
     fingerprint_mix ^= xor_all_goal_index_z;
   }
@@ -211,33 +280,62 @@ void RemovePassedGoals::buildGppWindowFromMissionIndex(
   if (mission_segment_start_index >= mission_goal_queue.size()) {
     mission_segment_start_index = mission_goal_queue.size() - 1;
   }
-  if (mission_goal_queue.size() == 1) {
-    batch_span_goal_index_z_begin_ = missionPoseGoalIndexFromPoseZ(mission_goal_queue[0]);
-    batch_span_goal_index_z_end_ = batch_span_goal_index_z_begin_;
+
+  auto assign_single_indexed_span = [&](size_t search_index) {
+    uint32_t discrete_goal_index_z = 0;
+    if (!tryIndexedGoalZAtOrAfter(mission_goal_queue, search_index, discrete_goal_index_z) &&
+      !tryIndexedGoalZAtOrBefore(mission_goal_queue, search_index, discrete_goal_index_z))
+    {
+      discrete_goal_index_z = 0;
+    }
+    batch_span_goal_index_z_begin_ = discrete_goal_index_z;
+    batch_span_goal_index_z_end_ = discrete_goal_index_z;
+  };
+
+  if (mission_goal_queue.size() == 1 ||
+    mission_segment_start_index == mission_goal_queue.size() - 1)
+  {
+    assign_single_indexed_span(mission_segment_start_index);
     return;
   }
-  if (mission_segment_start_index == mission_goal_queue.size() - 1) {
-    batch_span_goal_index_z_begin_ = missionPoseGoalIndexFromPoseZ(mission_goal_queue[mission_segment_start_index]);
-    batch_span_goal_index_z_end_ = batch_span_goal_index_z_begin_;
-    return;
-  }
+
   using namespace nav2_util::geometry_utils;  // NOLINT
   double window_max_polyline_length_meters = 0.0;
   getInput("max_gpp_segment_m", window_max_polyline_length_meters);
-  batch_span_goal_index_z_begin_ = missionPoseGoalIndexFromPoseZ(mission_goal_queue[mission_segment_start_index]);
+
+  uint32_t z_begin = 0;
+  if (!tryIndexedGoalZAtOrAfter(mission_goal_queue, mission_segment_start_index, z_begin)) {
+    assign_single_indexed_span(mission_segment_start_index);
+    return;
+  }
+  batch_span_goal_index_z_begin_ = z_begin;
+
+  auto assign_end_from_index = [&](size_t search_index) {
+    uint32_t z_end = z_begin;
+    if (!tryIndexedGoalZAtOrBefore(mission_goal_queue, search_index, z_end) &&
+      !tryIndexedGoalZAtOrAfter(mission_goal_queue, search_index, z_end))
+    {
+      z_end = z_begin;
+    }
+    if (z_end < z_begin) {
+      z_end = z_begin;
+    }
+    batch_span_goal_index_z_end_ = z_end;
+  };
+
   double accumulated_segment_length_meters = 0.0;
-  for (size_t idx_segment_end = mission_segment_start_index + 1; idx_segment_end < mission_goal_queue.size();
-    ++idx_segment_end)
+  for (size_t idx_segment_end = mission_segment_start_index + 1;
+    idx_segment_end < mission_goal_queue.size(); ++idx_segment_end)
   {
     accumulated_segment_length_meters += euclidean_distance(
       mission_goal_queue[idx_segment_end - 1].pose,
       mission_goal_queue[idx_segment_end].pose);
     if (accumulated_segment_length_meters > window_max_polyline_length_meters) {
-      batch_span_goal_index_z_end_ = missionPoseGoalIndexFromPoseZ(mission_goal_queue[idx_segment_end]);
+      assign_end_from_index(idx_segment_end);
       return;
     }
   }
-  batch_span_goal_index_z_end_ = missionPoseGoalIndexFromPoseZ(mission_goal_queue.back());
+  assign_end_from_index(mission_goal_queue.size() - 1);
 }
 
 void RemovePassedGoals::advanceGppWindowAfterShortTebPolyline(const Goals & mission_goal_queue)
@@ -248,14 +346,47 @@ void RemovePassedGoals::advanceGppWindowAfterShortTebPolyline(const Goals & miss
 RemovePassedGoals::Goals RemovePassedGoals::filterMissionGoalsByBatchZSpan(const Goals & mission_goal_queue) const
 {
   Goals filtered_window_goal_poses;
-  for (const auto & pose_stamped_goal : mission_goal_queue) {
-    const uint32_t discrete_goal_index_z = missionPoseGoalIndexFromPoseZ(pose_stamped_goal);
-    if (discrete_goal_index_z >= batch_span_goal_index_z_begin_ &&
-      discrete_goal_index_z <= batch_span_goal_index_z_end_)
-    {
-      filtered_window_goal_poses.push_back(pose_stamped_goal);
-    }
+  if (mission_goal_queue.empty()) {
+    return filtered_window_goal_poses;
   }
+
+  size_t first_in_span_index = mission_goal_queue.size();
+  size_t last_in_span_index = 0;
+  bool found_indexed_in_span = false;
+  for (size_t idx = 0; idx < mission_goal_queue.size(); ++idx) {
+    uint32_t discrete_goal_index_z = 0;
+    if (!tryMissionPoseGoalIndexFromPoseZ(mission_goal_queue[idx], discrete_goal_index_z)) {
+      continue;
+    }
+    if (discrete_goal_index_z < batch_span_goal_index_z_begin_ ||
+      discrete_goal_index_z > batch_span_goal_index_z_end_)
+    {
+      continue;
+    }
+    if (!found_indexed_in_span) {
+      first_in_span_index = idx;
+      found_indexed_in_span = true;
+    }
+    last_in_span_index = idx;
+  }
+  if (!found_indexed_in_span) {
+    return filtered_window_goal_poses;
+  }
+
+  while (first_in_span_index > 0 &&
+    isUnindexedSentinelPoseZ(mission_goal_queue[first_in_span_index - 1]))
+  {
+    --first_in_span_index;
+  }
+  while (last_in_span_index + 1 < mission_goal_queue.size() &&
+    isUnindexedSentinelPoseZ(mission_goal_queue[last_in_span_index + 1]))
+  {
+    ++last_in_span_index;
+  }
+
+  filtered_window_goal_poses.assign(
+    mission_goal_queue.begin() + static_cast<std::ptrdiff_t>(first_in_span_index),
+    mission_goal_queue.begin() + static_cast<std::ptrdiff_t>(last_in_span_index) + 1);
   return filtered_window_goal_poses;
 }
 
@@ -301,13 +432,35 @@ RemovePassedGoals::Goals RemovePassedGoals::pruneOutputGppGoalsByMissionPoseMatc
 {
   Goals pruned;
   pruned.reserve(output_gpp_candidates.size());
-  // Inner scan assumes mission_goals ordered by non-decreasing discrete index (pose.position.z).
   for (const auto & pose_stamped_gpp : output_gpp_candidates) {
-    const uint32_t discrete_goal_index_z_gpp =
-      missionPoseGoalIndexFromPoseZ(pose_stamped_gpp);
+    const bool gpp_goal_is_unindexed = isUnindexedSentinelPoseZ(pose_stamped_gpp);
+    uint32_t discrete_goal_index_z_gpp = 0;
+    if (!gpp_goal_is_unindexed &&
+      !tryMissionPoseGoalIndexFromPoseZ(pose_stamped_gpp, discrete_goal_index_z_gpp))
+    {
+      continue;
+    }
     for (const auto & pose_stamped_mission : mission_goals) {
-      const uint32_t discrete_goal_index_z_mission =
-        missionPoseGoalIndexFromPoseZ(pose_stamped_mission);
+      const bool mission_goal_is_unindexed = isUnindexedSentinelPoseZ(pose_stamped_mission);
+      if (gpp_goal_is_unindexed) {
+        if (!mission_goal_is_unindexed) {
+          continue;
+        }
+        if (posesApproxEqualForGppMissionMatch(
+            pose_stamped_gpp.pose, pose_stamped_mission.pose, match_xy_m, match_yaw_rad))
+        {
+          pruned.push_back(pose_stamped_mission);
+          break;
+        }
+        continue;
+      }
+      if (mission_goal_is_unindexed) {
+        continue;
+      }
+      uint32_t discrete_goal_index_z_mission = 0;
+      if (!tryMissionPoseGoalIndexFromPoseZ(pose_stamped_mission, discrete_goal_index_z_mission)) {
+        continue;
+      }
       if (discrete_goal_index_z_mission < discrete_goal_index_z_gpp) {
         continue;
       }
@@ -335,6 +488,12 @@ void RemovePassedGoals::applyMonotonicGppGoalStampsToWindow(
   }
 
   for (auto & pose_stamped_gpp : gpp_goals) {
+    if (isUnindexedSentinelPoseZ(pose_stamped_gpp)) {
+      rclcpp::Time stamp_candidate = assign_fresh_stamp_on_advance ?
+        clock_now : rclcpp::Time(pose_stamped_gpp.header.stamp);
+      pose_stamped_gpp.header.stamp = stamp_candidate;
+      continue;
+    }
     const uint32_t goal_index_z = missionPoseGoalIndexFromPoseZ(pose_stamped_gpp);
     rclcpp::Time stamp_candidate = assign_fresh_stamp_on_advance ?
       clock_now : rclcpp::Time(pose_stamped_gpp.header.stamp);
@@ -354,8 +513,10 @@ void RemovePassedGoals::applyMonotonicGppGoalStampsToWindow(
     rclcpp::Time(gpp_goals.front().header.stamp) < last_emitted_gpp_front_stamp_)
   {
     gpp_goals.front().header.stamp = last_emitted_gpp_front_stamp_;
-    const uint32_t front_goal_index_z = missionPoseGoalIndexFromPoseZ(gpp_goals.front());
-    emitted_gpp_goal_stamp_by_mission_index_z_[front_goal_index_z] = last_emitted_gpp_front_stamp_;
+    if (!isUnindexedSentinelPoseZ(gpp_goals.front())) {
+      const uint32_t front_goal_index_z = missionPoseGoalIndexFromPoseZ(gpp_goals.front());
+      emitted_gpp_goal_stamp_by_mission_index_z_[front_goal_index_z] = last_emitted_gpp_front_stamp_;
+    }
   }
 
   last_emitted_gpp_front_stamp_ = rclcpp::Time(gpp_goals.front().header.stamp);
@@ -557,6 +718,7 @@ BT::NodeStatus RemovePassedGoals::tick()
           continue;
         }
         const uint32_t discrete_goal_index_passed_z = missionPoseGoalIndexFromPoseZ(pose_goal_candidate);
+        const bool candidate_is_unindexed = isUnindexedSentinelPoseZ(pose_goal_candidate);
         if (index_goal_candidate > 0) {
           mission_goal_queue_mutable_ref.erase(
             mission_goal_queue_mutable_ref.begin(),
@@ -564,7 +726,11 @@ BT::NodeStatus RemovePassedGoals::tick()
         } else {
           mission_goal_queue_mutable_ref.erase(mission_goal_queue_mutable_ref.begin());
         }
-        if (std::find(
+        if (candidate_is_unindexed) {
+          RCLCPP_INFO(
+            node->get_logger(),
+            "[RemovePassedGoals] In tail segment, strip unindexed z=-1 goal without recording passed index");
+        } else if (std::find(
             vector_passed_goal_indexes_recorded_.begin(),
             vector_passed_goal_indexes_recorded_.end(),
             discrete_goal_index_passed_z) == vector_passed_goal_indexes_recorded_.end() &&
@@ -632,8 +798,13 @@ BT::NodeStatus RemovePassedGoals::tick()
 
         const uint32_t discrete_goal_index_passed_z =
           missionPoseGoalIndexFromPoseZ(pose_goal_front);
+        const bool front_goal_is_unindexed = isUnindexedSentinelPoseZ(pose_goal_front);
         mission_goal_queue_mutable_ref.erase(mission_goal_queue_mutable_ref.begin());
-        if (std::find(
+        if (front_goal_is_unindexed) {
+          RCLCPP_INFO(
+            node->get_logger(),
+            "[RemovePassedGoals] In full dist behind yaw, strip unindexed z=-1 goal without recording passed index");
+        } else if (std::find(
             vector_passed_goal_indexes_recorded_.begin(),
             vector_passed_goal_indexes_recorded_.end(),
             discrete_goal_index_passed_z) == vector_passed_goal_indexes_recorded_.end() &&
@@ -833,22 +1004,49 @@ BT::NodeStatus RemovePassedGoals::tick()
   if (!filtered_gpp_goal_window_after_prune.empty()) {
     // Detect whether the terminal mission goal has entered the GPP window.
     if (!terminal_goal_dispatched_to_gpp_window_ && !mission_goal_queue_mutable_ref.empty()) {
-      const uint32_t z_terminal = missionPoseGoalIndexFromPoseZ(mission_goal_queue_mutable_ref.back());
-      bool terminal_in_gpp_window = batch_span_goal_index_z_end_ >= z_terminal;
-      if (!terminal_in_gpp_window) {
+      const bool terminal_is_unindexed =
+        isUnindexedSentinelPoseZ(mission_goal_queue_mutable_ref.back());
+      bool terminal_in_gpp_window = false;
+      if (terminal_is_unindexed) {
         for (const auto & pose_stamped_gpp : filtered_gpp_goal_window_after_prune) {
-          if (missionPoseGoalIndexFromPoseZ(pose_stamped_gpp) == z_terminal) {
+          if (isUnindexedSentinelPoseZ(pose_stamped_gpp) &&
+            posesApproxEqualForGppMissionMatch(
+              pose_stamped_gpp.pose, mission_goal_queue_mutable_ref.back().pose,
+              gpp_goal_pose_match_xy_m, gpp_goal_pose_match_yaw_rad))
+          {
             terminal_in_gpp_window = true;
             break;
+          }
+        }
+      } else {
+        uint32_t z_terminal = 0;
+        if (tryMissionPoseGoalIndexFromPoseZ(mission_goal_queue_mutable_ref.back(), z_terminal)) {
+          terminal_in_gpp_window = batch_span_goal_index_z_end_ >= z_terminal;
+          if (!terminal_in_gpp_window) {
+            for (const auto & pose_stamped_gpp : filtered_gpp_goal_window_after_prune) {
+              uint32_t z_gpp = 0;
+              if (tryMissionPoseGoalIndexFromPoseZ(pose_stamped_gpp, z_gpp) && z_gpp == z_terminal) {
+                terminal_in_gpp_window = true;
+                break;
+              }
+            }
           }
         }
       }
       if (terminal_in_gpp_window) {
         terminal_goal_dispatched_to_gpp_window_ = true;
-        RCLCPP_INFO(
-          node->get_logger(),
-          "[RemovePassedGoals] terminal goal z=%u entered gpp window: stamp freeze active",
-          static_cast<unsigned int>(z_terminal));
+        if (terminal_is_unindexed) {
+          RCLCPP_INFO(
+            node->get_logger(),
+            "[RemovePassedGoals] terminal unindexed goal (z=-1) entered gpp window: stamp freeze active");
+        } else {
+          uint32_t z_terminal = 0;
+          tryMissionPoseGoalIndexFromPoseZ(mission_goal_queue_mutable_ref.back(), z_terminal);
+          RCLCPP_INFO(
+            node->get_logger(),
+            "[RemovePassedGoals] terminal goal z=%u entered gpp window: stamp freeze active",
+            static_cast<unsigned int>(z_terminal));
+        }
       }
     }
 
