@@ -3676,6 +3676,8 @@ BT::NodeStatus InsertGarbagePose::tick()
   const GarbageList before = garbage_list_;
   postProcessHistory();
   Goals goals_now = receiveGoals();
+  // 仅在真正改动了 goals
+  bool goals_dirty = false;
 
   if (goals_now.size() < 2) {
     geometry_msgs::msg::PoseStamped robot_pose;
@@ -3684,7 +3686,6 @@ BT::NodeStatus InsertGarbagePose::tick()
     {
       publishRangeCircles(robot_pose.pose.position.x, robot_pose.pose.position.y);
     }
-    setOutput("output_goals", goals_now);
     publishProtectedGarbage();
     return BT::NodeStatus::SUCCESS;
   }
@@ -3693,7 +3694,6 @@ BT::NodeStatus InsertGarbagePose::tick()
   if (!nav2_util::getCurrentPose(
       robot_pose, *tf_, global_frame_, robot_base_frame_, transform_tolerance_))
   {
-    setOutput("output_goals", goals_now);
     publishProtectedGarbage();
     return BT::NodeStatus::SUCCESS;
   }
@@ -3703,7 +3703,7 @@ BT::NodeStatus InsertGarbagePose::tick()
   const double robot_yaw = tf2::getYaw(robot_pose.pose.orientation);
   publishRangeCircles(rx, ry);
 
-  // 排查：active 堆是否还在 {goals}、footprint 是否已到、z=-1 还剩几个（不改行为）
+  // 排查：active 堆是否还在 {goals}、footprint 是否已到、z=-1 还剩几个
   {
     std::size_t z_neg1_n = 0;
     std::ostringstream z_neg1_oss;
@@ -3833,7 +3833,7 @@ BT::NodeStatus InsertGarbagePose::tick()
       formatOrder(final_idxs).c_str());
   };
 
-  // 已扫过的堆不再参与重排（仅当 goals 里找不到该堆 XY 才丢掉）
+  // 判断插入的导航点被删除的
   {
     const double thresh2 = kDedupDistanceM * kDedupDistanceM;
     for (auto it = active_piles_.begin(); it != active_piles_.end(); ) {
@@ -3918,6 +3918,9 @@ BT::NodeStatus InsertGarbagePose::tick()
       }
     }
     goals_now = std::move(kept_goals);
+    if (peeled_n > 0) {
+      goals_dirty = true;
+    }
     reached_garbage_xy_.clear();
     has_last_sweep_arrive_ = false;
     last_sweep_arrive_xy_ = {0.0, 0.0};
@@ -3979,7 +3982,9 @@ BT::NodeStatus InsertGarbagePose::tick()
   }
 
   if (garbage_list_.empty()) {
-    setOutput("output_goals", goals_now);
+    if (goals_dirty) {
+      setOutput("output_goals", goals_now);
+    }
     publishProtectedGarbage();
     return BT::NodeStatus::SUCCESS;
   }
@@ -4107,20 +4112,22 @@ BT::NodeStatus InsertGarbagePose::tick()
     }
     mission_stamp_record_ = now_stamp;
     has_mission_stamp_ = true;
+    goals_dirty = true;
     RCLCPP_INFO(
       node_->get_logger(),
       "InsertGarbagePose: diag after-batch goals=%zu z=-1_n=%zu active_n=%zu "
       "protected_n=%zu",
       goals_now.size(), z_neg1_n, active_piles_.size(),
       reached_garbage_xy_.size());
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: batch inserted %zu pile(s): %s, output goals %zu",
+      inserted_count, inserted_xy.str().c_str(), goals_now.size());
   }
 
-  RCLCPP_INFO(
-    node_->get_logger(),
-    "InsertGarbagePose: batch inserted %zu pile(s): %s, output goals %zu",
-    inserted_count, inserted_xy.str().c_str(), goals_now.size());
-
-  setOutput("output_goals", goals_now);
+  if (goals_dirty) {
+    setOutput("output_goals", goals_now);
+  }
   publishProtectedGarbage();
   return BT::NodeStatus::SUCCESS;
 }
