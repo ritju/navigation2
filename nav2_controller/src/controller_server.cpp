@@ -145,6 +145,10 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
 
   RCLCPP_INFO(get_logger(), "Configuring controller interface");
 
+  if (!costmap_thread_) {
+    costmap_thread_ = std::make_unique<nav2_util::NodeThread>(costmap_ros_);
+  }
+
   get_parameter("progress_checker_plugin", progress_checker_id_);
   if (progress_checker_id_ == default_progress_checker_id_) {
     nav2_util::declare_parameter_if_not_declared(
@@ -357,6 +361,10 @@ nav2_util::CallbackReturn
 ControllerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
 {
   RCLCPP_INFO(get_logger(), "Cleaning up");
+
+  // Stop the costmap executor before destroying TEB / LinePathCompare.
+  // Leaving it spinning races plugin teardown (heap corruption, Magick -6).
+  costmap_thread_.reset();
 
   // Cleanup the helper classes
   ControllerMap::iterator it;

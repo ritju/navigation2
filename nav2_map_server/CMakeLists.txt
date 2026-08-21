@@ -119,6 +119,10 @@ target_include_directories(${map_io_library_name} SYSTEM PRIVATE
 
 target_link_libraries(${map_io_library_name}
   ${GRAPHICSMAGICKCPP_LIBRARIES})
+find_library(GRAPHICSMAGICK_C_LIBRARY NAMES GraphicsMagick graphicsmagick)
+if(GRAPHICSMAGICK_C_LIBRARY)
+  target_link_libraries(${map_io_library_name} ${GRAPHICSMAGICK_C_LIBRARY})
+endif()
 
 if(WIN32)
   target_compile_definitions(${map_io_library_name} PRIVATE

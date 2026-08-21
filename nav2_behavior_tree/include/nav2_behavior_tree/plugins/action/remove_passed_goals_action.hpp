@@ -102,7 +102,21 @@ private:
   void halt() override {}
   BT::NodeStatus tick() override;
 
-  static uint32_t missionPoseGoalIndexFromPoseZ(const geometry_msgs::msg::PoseStamped & pose_stamped_goal);
+  /** False when pose.position.z is negative (sentinel -1): do not cast to uint32_t. */
+  static bool tryMissionPoseGoalIndexFromPoseZ(
+    const geometry_msgs::msg::PoseStamped & pose_stamped_goal,
+    uint32_t & discrete_goal_index_z);
+  /** pose.position.z rounds to a negative sentinel (typically -1): no mission index. */
+  static bool isUnindexedSentinelPoseZ(const geometry_msgs::msg::PoseStamped & pose_stamped_goal);
+  static bool tryIndexedGoalZAtOrAfter(
+    const Goals & mission_goal_queue,
+    size_t start_index,
+    uint32_t & discrete_goal_index_z);
+  static bool tryIndexedGoalZAtOrBefore(
+    const Goals & mission_goal_queue,
+    size_t end_index,
+    uint32_t & discrete_goal_index_z);
+  static std::uint64_t fingerprintMixFromPoseZ(const geometry_msgs::msg::PoseStamped & pose_stamped_goal);
   static std::uint64_t fingerprintMissionQueueTailGoalStampOnly(const Goals & mission_goal_queue);
   void buildFirstWindowFromMission(const Goals & mission_goal_queue);
   void buildGppWindowFromMissionIndex(const Goals & mission_goal_queue, size_t mission_segment_start_index);

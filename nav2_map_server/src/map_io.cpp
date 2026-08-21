@@ -38,6 +38,7 @@
 #include <string>
 #include <vector>
 #include <fstream>
+#include <mutex>
 #include <stdexcept>
 
 #include "Magick++.h"
@@ -47,6 +48,23 @@
 #include "tf2/LinearMath/Matrix3x3.h"
 #include "tf2/LinearMath/Quaternion.h"
 #include "nav2_util/occ_grid_values.hpp"
+
+namespace
+{
+void initMagickWithoutSignalHandlers()
+{
+  static std::once_flag once;
+  std::call_once(
+    once, []() {
+      MagickLib::ExceptionInfo exception;
+      MagickLib::GetExceptionInfo(&exception);
+      // Magick::InitializeMagick() registers SIGSEGV/SIGABRT handlers that turn
+      // unrelated heap errors into "Magick: abort". Keep Magick off the signal path.
+      MagickLib::InitializeMagickEx(nullptr, MAGICK_OPT_NO_SIGNAL_HANDER, &exception);
+      MagickLib::DestroyExceptionInfo(&exception);
+    });
+}
+}  // namespace
 
 #ifdef _WIN32
 // https://github.com/rtv/Stage/blob/master/replace/dirname.c
@@ -173,7 +191,7 @@ void loadMapFromFile(
   const LoadParameters & load_parameters,
   nav_msgs::msg::OccupancyGrid & map)
 {
-  Magick::InitializeMagick(nullptr);
+  initMagickWithoutSignalHandlers();
   nav_msgs::msg::OccupancyGrid msg;
 
   std::cout << "[INFO] [map_io]: Loading image_file: " <<
@@ -319,7 +337,7 @@ LOAD_MAP_STATUS loadMapFromYaml(
 void checkSaveParameters(SaveParameters & save_parameters)
 {
   // Magick must me initialized before any activity with images
-  Magick::InitializeMagick(nullptr);
+  initMagickWithoutSignalHandlers();
 
   // Checking map file name
   if (save_parameters.map_file_name == "") {

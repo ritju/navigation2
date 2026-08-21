@@ -28,6 +28,16 @@ add_executable(lifecycle_bringup
 )
 target_link_libraries(lifecycle_bringup ${library_name})
 
+# Humble overlay of component_container_isolated (rclcpp#2083 / #2085).
+add_executable(component_container_isolated
+  component_container_isolated.cpp
+)
+ament_target_dependencies(component_container_isolated
+  rclcpp
+  rclcpp_components
+  class_loader
+)
+
 find_package(Boost REQUIRED COMPONENTS program_options)
 
 install(TARGETS
@@ -39,5 +49,6 @@ install(TARGETS
 
 install(TARGETS
   lifecycle_bringup
+  component_container_isolated
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
