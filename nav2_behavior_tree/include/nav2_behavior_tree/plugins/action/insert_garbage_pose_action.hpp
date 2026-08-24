@@ -16,6 +16,7 @@
 #define NAV2_BEHAVIOR_TREE__PLUGINS__ACTION__INSERT_GARBAGE_POSE_ACTION_HPP_
 
 #include <deque>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -56,6 +57,8 @@ public:
   static constexpr std::size_t kSweepBruteMaxN = 6;
   /** map 下去重距离阈值米，后到且更近于此的删掉 */
   static constexpr double kDedupDistanceM = 0.4;
+  /** 本节点约定：插入的 G/E 点 pose.position.z 固定写此值，表示无任务序号的哨兵点 */
+  static constexpr double kGarbageSentinelPoseZ = -1.0;
   /** 连续可视化归入同一任务的间隔阈值秒 */
   static constexpr double kVizTaskWindowSec = 2.0;
   /** base_link 下距原点小于此值的检测视为无效 */
@@ -241,7 +244,56 @@ private:
   bool shouldStopInsertingGarbage(
     const capella_ros_msg::msg::GarbageDetect & garbage,
     const std::vector<geometry_msgs::msg::Point> & footprint_map,
+    double arrived_radius,
+    double robot_x, double robot_y, double robot_yaw) const;
+
+  /**
+   * 判断该 goal 是否为本节点插入的 G/E 哨兵点，而不是带序号的普通途经点。
+   */
+  static bool isUnindexedSentinelPoseZ(
+    const geometry_msgs::msg::PoseStamped & pose_stamped_goal);
+
+  /** footprint 是否已到达该 xy，并返回触发原因与距离 */
+  struct SentinelArrivalDetail
+  {
+    bool arrived{false};
+    bool by_vertex_radius{false};
+    bool by_inside_polygon{false};
+    double min_vertex_dist_m{std::numeric_limits<double>::infinity()};
+  };
+
+  SentinelArrivalDetail probeSentinelArrival(
+    double gx, double gy,
+    const std::vector<geometry_msgs::msg::Point> & footprint_map,
     double arrived_radius) const;
+
+  /**
+   * 扫到判定：垃圾在 footprint 内，且距 base_link 不超过 arrived_radius。
+   * 避免只被 1m 多长的车头擦到就删。
+   */
+  bool isGarbageCoveredByFootprint(
+    double gx, double gy,
+    const std::vector<geometry_msgs::msg::Point> & footprint_map,
+    double robot_x, double robot_y, double robot_yaw,
+    double * dist_robot_m = nullptr,
+    double * base_x = nullptr,
+    double * base_y = nullptr) const;
+
+  /** 本任务内按 xy 分配稳定 G 编号，重插同一堆不改号 */
+  int assignStableGNum(double x, double y);
+  int lookupStableGNum(double x, double y) const;
+
+  /**
+   * 只检查当前正在走的队首点：若是 G/E 哨兵且 footprint 已到达则剔除。
+   */
+  std::size_t stripReachedZNeg1Goals(
+    Goals & goals,
+    const std::vector<geometry_msgs::msg::Point> & footprint_map,
+    double robot_x, double robot_y, double robot_yaw,
+    std::string * deleted_summary = nullptr);
+
+  /** 每次 setOutput("output_goals") 时打日志，便于观察时机与频率 */
+  void emitOutputGoals(const Goals & goals, const char * reason);
 
   /** 获取插入所需的全部信息并返回 */
   InsertInfo gatherInsertInfo(
@@ -281,7 +333,7 @@ private:
   bool isProtectedGarbageXy(double x, double y) const;
   void addProtectedGarbageXy(double x, double y);
 
-  /** 上一堆插入点是否仍在 goals 中（未经过则先不插下一堆） */
+  /** 上一堆插入点是否仍在 goals 中 */
   bool isPendingGarbageInGoals(const Goals & goals) const;
 
   /** 平面距离平方 */
@@ -388,6 +440,8 @@ private:
   void clearWorkCircle();
   /** 深绿工作圈 + 浅绿识别距离圈 */
   void publishRangeCircles(double robot_x, double robot_y);
+  /** footprint 主动删点：黑圈 + 标签，与 clip 删点区分 */
+  void publishFootprintStrippedMarkers();
 
   rclcpp::Node::SharedPtr node_;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
@@ -457,6 +511,17 @@ private:
   std::vector<std::pair<double, double>> reached_garbage_xy_;
   /** 本任务内已发布可视化的堆数 */
   int viz_pile_count_{0};
+  /** footprint 删点位置，任务内累加，新任务清空 */
+  struct FootprintStrippedVizPoint
+  {
+    double x{0.0};
+    double y{0.0};
+    std::string label;
+  };
+  std::vector<FootprintStrippedVizPoint> footprint_stripped_viz_;
+  /** 本任务内各堆稳定 G 编号，避免删点全显示成 G1 */
+  std::vector<std::pair<std::pair<double, double>, int>> g_num_xy_;
+  int next_g_num_{1};
   /** 上一次发布可视化的时刻 */
   rclcpp::Time last_viz_time_{0, 0, RCL_ROS_TIME};
   /** 是否已发布过可视化 */

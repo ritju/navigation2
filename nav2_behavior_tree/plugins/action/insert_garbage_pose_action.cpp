@@ -1819,6 +1819,9 @@ void InsertGarbagePose::checkAndResetOnNewMission()
   has_last_sweep_arrive_ = false;
   last_sweep_arrive_xy_ = {0.0, 0.0};
   viz_pile_count_ = 0;
+  footprint_stripped_viz_.clear();
+  g_num_xy_.clear();
+  next_g_num_ = 1;
   has_last_viz_time_ = false;
   has_work_circle_ = false;
   mission_stamp_record_ = current_stamp;
@@ -1927,32 +1930,218 @@ bool InsertGarbagePose::getRobotFootprintInBase(
 bool InsertGarbagePose::shouldStopInsertingGarbage(
   const capella_ros_msg::msg::GarbageDetect & garbage,
   const std::vector<geometry_msgs::msg::Point> & footprint_map,
-  double arrived_radius) const
+  double arrived_radius,
+  double robot_x, double robot_y, double robot_yaw) const
 {
-  if (footprint_map.empty() || arrived_radius <= 0.0) {
+  (void)arrived_radius;
+  const double gx = garbage.pose.pose.position.x;
+  const double gy = garbage.pose.pose.position.y;
+  return isGarbageCoveredByFootprint(
+    gx, gy, footprint_map, robot_x, robot_y, robot_yaw);
+}
+
+int InsertGarbagePose::lookupStableGNum(double x, double y) const
+{
+  const double thresh2 = kDedupDistanceM * kDedupDistanceM;
+  for (const auto & item : g_num_xy_) {
+    if (squaredDistanceXY(item.first.first, item.first.second, x, y) < thresh2) {
+      return item.second;
+    }
+  }
+  return 0;
+}
+
+int InsertGarbagePose::assignStableGNum(double x, double y)
+{
+  const int existing = lookupStableGNum(x, y);
+  if (existing > 0) {
+    return existing;
+  }
+  const int num = next_g_num_++;
+  g_num_xy_.push_back({{x, y}, num});
+  return num;
+}
+
+bool InsertGarbagePose::isGarbageCoveredByFootprint(
+  double gx, double gy,
+  const std::vector<geometry_msgs::msg::Point> & footprint_map,
+  double robot_x, double robot_y, double robot_yaw,
+  double * dist_robot_m,
+  double * base_x,
+  double * base_y) const
+{
+  const double dx = gx - robot_x;
+  const double dy = gy - robot_y;
+  const double dist = std::hypot(dx, dy);
+  if (dist_robot_m != nullptr) {
+    *dist_robot_m = dist;
+  }
+
+  const double c = std::cos(robot_yaw);
+  const double s = std::sin(robot_yaw);
+  const double bx = dx * c + dy * s;
+  const double by = -dx * s + dy * c;
+  if (base_x != nullptr) {
+    *base_x = bx;
+  }
+  if (base_y != nullptr) {
+    *base_y = by;
+  }
+
+  // 车头可到 1.25m，只靠多边形会在车体还没到时就删；必须车体中心也到
+  if (arrived_radius_ > 0.0 && dist > arrived_radius_) {
     return false;
   }
 
-  const double gx = garbage.pose.pose.position.x;
-  const double gy = garbage.pose.pose.position.y;
-  const double r2 = arrived_radius * arrived_radius;
+  geometry_msgs::msg::Polygon footprint_poly;
+  std::vector<std::pair<double, double>> local_xy;
+  if (getRobotFootprintInBase(local_xy) && local_xy.size() >= 3) {
+    footprint_poly.points.reserve(local_xy.size());
+    for (const auto & xy : local_xy) {
+      geometry_msgs::msg::Point32 p32;
+      p32.x = static_cast<float>(xy.first);
+      p32.y = static_cast<float>(xy.second);
+      footprint_poly.points.push_back(p32);
+    }
+    return isPointInPolygon(bx, by, footprint_poly);
+  }
 
+  if (footprint_map.size() < 3) {
+    return false;
+  }
+  footprint_poly.points.reserve(footprint_map.size());
   for (const auto & pt : footprint_map) {
+    const double pdx = pt.x - robot_x;
+    const double pdy = pt.y - robot_y;
+    geometry_msgs::msg::Point32 p32;
+    p32.x = static_cast<float>(pdx * c + pdy * s);
+    p32.y = static_cast<float>(-pdx * s + pdy * c);
+    footprint_poly.points.push_back(p32);
+  }
+  return isPointInPolygon(bx, by, footprint_poly);
+}
+
+InsertGarbagePose::SentinelArrivalDetail InsertGarbagePose::probeSentinelArrival(
+  double gx, double gy,
+  const std::vector<geometry_msgs::msg::Point> & footprint_map,
+  double arrived_radius) const
+{
+  SentinelArrivalDetail detail;
+  if (footprint_map.empty() || arrived_radius <= 0.0) {
+    return detail;
+  }
+
+  const double r2 = arrived_radius * arrived_radius;
+  for (const auto & pt : footprint_map) {
+    const double dist = std::sqrt(squaredDistanceXY(pt.x, pt.y, gx, gy));
+    if (dist < detail.min_vertex_dist_m) {
+      detail.min_vertex_dist_m = dist;
+    }
     if (squaredDistanceXY(pt.x, pt.y, gx, gy) < r2) {
-      return true;
+      detail.by_vertex_radius = true;
+      detail.arrived = true;
     }
   }
 
-  geometry_msgs::msg::Polygon footprint_poly;
-  footprint_poly.points.reserve(footprint_map.size());
-  for (const auto & pt : footprint_map) {
-    geometry_msgs::msg::Point32 p32;
-    p32.x = static_cast<float>(pt.x);
-    p32.y = static_cast<float>(pt.y);
-    p32.z = static_cast<float>(pt.z);
-    footprint_poly.points.push_back(p32);
+  if (!detail.arrived) {
+    geometry_msgs::msg::Polygon footprint_poly;
+    footprint_poly.points.reserve(footprint_map.size());
+    for (const auto & pt : footprint_map) {
+      geometry_msgs::msg::Point32 p32;
+      p32.x = static_cast<float>(pt.x);
+      p32.y = static_cast<float>(pt.y);
+      p32.z = static_cast<float>(pt.z);
+      footprint_poly.points.push_back(p32);
+    }
+    detail.by_inside_polygon = isPointInPolygon(gx, gy, footprint_poly);
+    detail.arrived = detail.by_inside_polygon;
   }
-  return isPointInPolygon(gx, gy, footprint_poly);
+  return detail;
+}
+
+// 判断 goals 里某点是否为本节点写入的 G/E，而不是编号途经点
+bool InsertGarbagePose::isUnindexedSentinelPoseZ(
+  const geometry_msgs::msg::PoseStamped & pose_stamped_goal)
+{
+  // 与写入端统一：圆整后等于 kGarbageSentinelPoseZ 即为 G/E
+  return std::lround(pose_stamped_goal.pose.position.z) ==
+         std::lround(kGarbageSentinelPoseZ);
+}
+
+// 每 tick 只检查队首：是 G/E 且 footprint 到了才删这一个点
+std::size_t InsertGarbagePose::stripReachedZNeg1Goals(
+  Goals & goals,
+  const std::vector<geometry_msgs::msg::Point> & footprint_map,
+  double robot_x, double robot_y, double robot_yaw,
+  std::string * deleted_summary)
+{
+  if (footprint_map.empty() || goals.empty()) {
+    return 0;
+  }
+
+  const geometry_msgs::msg::PoseStamped & current = goals.front();
+  if (!isUnindexedSentinelPoseZ(current)) {
+    return 0;
+  }
+
+  const double gx = current.pose.position.x;
+  const double gy = current.pose.position.y;
+  double dist_robot = 0.0;
+  double base_x = 0.0;
+  double base_y = 0.0;
+  if (!isGarbageCoveredByFootprint(
+      gx, gy, footprint_map, robot_x, robot_y, robot_yaw,
+      &dist_robot, &base_x, &base_y))
+  {
+    return 0;
+  }
+
+  // 稳定 G 编号；对不上已登记堆则视为延伸点 E
+  std::string point_label = "E";
+  const int g_num = lookupStableGNum(gx, gy);
+  if (g_num > 0) {
+    point_label = "G" + std::to_string(g_num);
+  }
+
+  const double thresh2 = kDedupDistanceM * kDedupDistanceM;
+  goals.erase(goals.begin());
+  addProtectedGarbageXy(gx, gy);
+
+  for (auto it = active_piles_.begin(); it != active_piles_.end(); ) {
+    const double ax = it->pose.pose.position.x;
+    const double ay = it->pose.pose.position.y;
+    if (squaredDistanceXY(ax, ay, gx, gy) < thresh2) {
+      it = active_piles_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  footprint_stripped_viz_.push_back({gx, gy, point_label});
+  publishFootprintStrippedMarkers();
+
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "InsertGarbagePose: footprint删点 %s (%.2f, %.2f) robot=(%.2f, %.2f) "
+    "dist=%.2fm base=(%.2f, %.2f) 已覆盖删除",
+    point_label.c_str(), gx, gy, robot_x, robot_y, dist_robot, base_x, base_y);
+
+  if (deleted_summary != nullptr) {
+    std::ostringstream deleted_oss;
+    deleted_oss << point_label << " (" << gx << "," << gy << ")";
+    *deleted_summary = deleted_oss.str();
+  }
+  return 1;
+}
+
+// 真正写黑板前打一条日志，便于观察 output 时机和频率
+void InsertGarbagePose::emitOutputGoals(const Goals & goals, const char * reason)
+{
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "InsertGarbagePose: output_goals emit reason=%s goals=%zu",
+    reason, goals.size());
+  setOutput("output_goals", goals);
 }
 
 bool InsertGarbagePose::isNearReachedGarbage(double x, double y) const
@@ -2992,8 +3181,8 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
     garbage_pose.header.frame_id = global_frame_;
   }
   garbage_pose.pose.orientation = nav2_util::geometry_utils::orientationAroundZAxis(info.path_yaw);
-  // G/E 写入 goals 时 z=-1，供下游识别为需保留的点
-  garbage_pose.pose.position.z = -1.0;
+  // G/E 写入 goals 时用本节点约定的哨兵 z，供下游识别
+  garbage_pose.pose.position.z = kGarbageSentinelPoseZ;
 
   // 沿 path_yaw 插 E：通则用假设到达点→G；不通则沿墙垂线、只留离该到达点更远的一侧
   const double extend_param = garbage_extend_m_;
@@ -3008,7 +3197,7 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
   auto setExtendPose = [&](double yaw, double d) {
     extend_pose.pose.position.x = gx + d * std::cos(yaw);
     extend_pose.pose.position.y = gy + d * std::sin(yaw);
-    extend_pose.pose.position.z = -1.0;
+    extend_pose.pose.position.z = kGarbageSentinelPoseZ;
   };
 
   auto corridorClear = [&](std::string * reason) {
@@ -3247,6 +3436,68 @@ void InsertGarbagePose::clearMissionVisualization()
   clear.id = 0;
   clear.action = visualization_msgs::msg::Marker::DELETEALL;
   arr.markers.push_back(clear);
+  marker_pub_->publish(arr);
+}
+
+void InsertGarbagePose::publishFootprintStrippedMarkers()
+{
+  if (!marker_pub_ || footprint_stripped_viz_.empty()) {
+    return;
+  }
+
+  visualization_msgs::msg::MarkerArray arr;
+  const rclcpp::Time stamp = node_->now();
+  constexpr double kRingR = 0.16;
+
+  for (std::size_t i = 0; i < footprint_stripped_viz_.size(); ++i) {
+    const auto & pt = footprint_stripped_viz_[i];
+
+    visualization_msgs::msg::Marker ring;
+    ring.header.frame_id = global_frame_;
+    ring.header.stamp = stamp;
+    ring.ns = "footprint_stripped";
+    ring.id = static_cast<int>(i * 2);
+    ring.type = visualization_msgs::msg::Marker::LINE_STRIP;
+    ring.action = visualization_msgs::msg::Marker::ADD;
+    ring.pose.orientation.w = 1.0;
+    ring.scale.x = 0.025;
+    ring.color.r = 0.05f;
+    ring.color.g = 0.05f;
+    ring.color.b = 0.05f;
+    ring.color.a = 0.95f;
+    ring.lifetime = rclcpp::Duration::from_seconds(0.0);
+    constexpr int kSegments = 36;
+    for (int seg = 0; seg <= kSegments; ++seg) {
+      const double ang = 2.0 * M_PI * static_cast<double>(seg) / static_cast<double>(kSegments);
+      geometry_msgs::msg::Point p;
+      p.x = pt.x + kRingR * std::cos(ang);
+      p.y = pt.y + kRingR * std::sin(ang);
+      p.z = 0.05;
+      ring.points.push_back(p);
+    }
+    arr.markers.push_back(ring);
+
+    visualization_msgs::msg::Marker text;
+    text.header.frame_id = global_frame_;
+    text.header.stamp = stamp;
+    text.ns = "footprint_stripped";
+    text.id = static_cast<int>(i * 2 + 1);
+    text.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+    text.action = visualization_msgs::msg::Marker::ADD;
+    text.pose.position.x = pt.x;
+    text.pose.position.y = pt.y;
+    text.pose.position.z = 0.35;
+    text.pose.orientation.w = 1.0;
+    text.scale.z = 0.22;
+    text.color.r = 0.05f;
+    text.color.g = 0.05f;
+    text.color.b = 0.05f;
+    text.color.a = 0.95f;
+    text.lifetime = rclcpp::Duration::from_seconds(0.0);
+    text.text = "fp " + pt.label;
+    arr.markers.push_back(text);
+  }
+
   marker_pub_->publish(arr);
 }
 
@@ -3703,12 +3954,29 @@ BT::NodeStatus InsertGarbagePose::tick()
   const double robot_yaw = tf2::getYaw(robot_pose.pose.orientation);
   publishRangeCircles(rx, ry);
 
+  std::vector<geometry_msgs::msg::Point> footprint_map;
+  const bool have_fp = getRobotFootprintInMap(footprint_map);
+  {
+    std::string deleted_summary;
+    const std::size_t stripped_n = stripReachedZNeg1Goals(
+      goals_now, footprint_map, rx, ry, robot_yaw, &deleted_summary);
+    if (stripped_n > 0) {
+      const rclcpp::Time now_stamp = node_->now();
+      for (auto & g : goals_now) {
+        g.header.stamp = now_stamp;
+      }
+      mission_stamp_record_ = now_stamp;
+      has_mission_stamp_ = true;
+      goals_dirty = true;
+    }
+  }
+
   // 排查：active 堆是否还在 {goals}、footprint 是否已到、z=-1 还剩几个
   {
     std::size_t z_neg1_n = 0;
     std::ostringstream z_neg1_oss;
     for (const auto & g : goals_now) {
-      if (std::lround(g.pose.position.z) < 0) {
+      if (isUnindexedSentinelPoseZ(g)) {
         if (z_neg1_n > 0) {
           z_neg1_oss << " ";
         }
@@ -3717,8 +3985,6 @@ BT::NodeStatus InsertGarbagePose::tick()
       }
     }
     if (!active_piles_.empty() || z_neg1_n > 0) {
-      std::vector<geometry_msgs::msg::Point> footprint_map;
-      const bool have_fp = getRobotFootprintInMap(footprint_map);
       std::ostringstream active_oss;
       for (std::size_t i = 0; i < active_piles_.size(); ++i) {
         const double ax = active_piles_[i].pose.pose.position.x;
@@ -3726,6 +3992,9 @@ BT::NodeStatus InsertGarbagePose::tick()
         const double dist = std::sqrt(squaredDistanceXY(rx, ry, ax, ay));
         bool in_goals = false;
         for (const auto & g : goals_now) {
+          if (!isUnindexedSentinelPoseZ(g)) {
+            continue;
+          }
           if (squaredDistanceXY(
               g.pose.position.x, g.pose.position.y, ax, ay) <
             kDedupDistanceM * kDedupDistanceM)
@@ -3737,12 +4006,15 @@ BT::NodeStatus InsertGarbagePose::tick()
         bool fp_arrived = false;
         if (have_fp) {
           capella_ros_msg::msg::GarbageDetect tmp = active_piles_[i];
-          fp_arrived = shouldStopInsertingGarbage(tmp, footprint_map, arrived_radius_);
+          fp_arrived = shouldStopInsertingGarbage(
+            tmp, footprint_map, arrived_radius_, rx, ry, robot_yaw);
         }
         if (i > 0) {
           active_oss << " | ";
         }
-        active_oss << "(" << ax << "," << ay << ") dist=" << dist
+        const int g_num = lookupStableGNum(ax, ay);
+        active_oss << "G" << (g_num > 0 ? g_num : 0)
+                   << "(" << ax << "," << ay << ") dist=" << dist
                    << " in_goals=" << (in_goals ? 1 : 0)
                    << " fp_arrived=" << (fp_arrived ? 1 : 0);
       }
@@ -3758,8 +4030,7 @@ BT::NodeStatus InsertGarbagePose::tick()
         node_->get_logger(), *(node_->get_clock()), 2000,
         "InsertGarbagePose: diag status robot=(%.2f, %.2f) yaw=%.3f goals=%zu "
         "z=-1_n=%zu %s | active_n=%zu %s | protected_n=%zu %s | "
-        "fp=%s arrived_r=%.2f (fp_arrived only observes; Insert does not clear "
-        "active_piles on arrive)",
+        "fp=%s arrived_r=%.2f",
         rx, ry, robot_yaw, goals_now.size(),
         z_neg1_n, z_neg1_oss.str().c_str(),
         active_piles_.size(), active_oss.str().c_str(),
@@ -3841,6 +4112,9 @@ BT::NodeStatus InsertGarbagePose::tick()
       const double ay = it->pose.pose.position.y;
       bool found = false;
       for (const auto & g : goals_now) {
+        if (!isUnindexedSentinelPoseZ(g)) {
+          continue;
+        }
         if (squaredDistanceXY(
             g.pose.position.x, g.pose.position.y, ax, ay) < thresh2)
         {
@@ -3918,9 +4192,6 @@ BT::NodeStatus InsertGarbagePose::tick()
       }
     }
     goals_now = std::move(kept_goals);
-    if (peeled_n > 0) {
-      goals_dirty = true;
-    }
     reached_garbage_xy_.clear();
     has_last_sweep_arrive_ = false;
     last_sweep_arrive_xy_ = {0.0, 0.0};
@@ -3973,6 +4244,7 @@ BT::NodeStatus InsertGarbagePose::tick()
     clearMissionVisualization();
     viz_pile_count_ = 0;
     has_last_viz_time_ = false;
+    publishFootprintStrippedMarkers();
     logSweepOrder();
   } else if (garbage_list_.size() > 1 && last_sweep_xy_.empty()) {
     reorderGarbageListBySweep(rx, ry, robot_yaw);
@@ -3983,7 +4255,7 @@ BT::NodeStatus InsertGarbagePose::tick()
 
   if (garbage_list_.empty()) {
     if (goals_dirty) {
-      setOutput("output_goals", goals_now);
+      emitOutputGoals(goals_now, "strip_z_neg1");
     }
     publishProtectedGarbage();
     return BT::NodeStatus::SUCCESS;
@@ -3997,47 +4269,6 @@ BT::NodeStatus InsertGarbagePose::tick()
   getInput("viz_accepted_garbage", viz_garbage);
   getInput("viz_deleted_goals", viz_deleted);
   getInput("viz_ac_points", viz_ac_pts);
-
-  // 插入前按离机器人距离编号
-  std::vector<std::pair<double, double>> dist_label_xy;
-  std::vector<int> dist_label_of;
-  {
-    std::vector<std::size_t> by_dist(garbage_list_.size());
-    for (std::size_t i = 0; i < by_dist.size(); ++i) {
-      by_dist[i] = i;
-    }
-    std::sort(
-      by_dist.begin(), by_dist.end(),
-      [this, rx, ry](std::size_t a, std::size_t b) {
-        return squaredDistanceXY(
-          garbage_list_[a].pose.pose.position.x,
-          garbage_list_[a].pose.pose.position.y, rx, ry) <
-               squaredDistanceXY(
-          garbage_list_[b].pose.pose.position.x,
-          garbage_list_[b].pose.pose.position.y, rx, ry);
-      });
-    dist_label_xy.resize(garbage_list_.size());
-    dist_label_of.resize(garbage_list_.size(), 0);
-    for (std::size_t r = 0; r < by_dist.size(); ++r) {
-      const std::size_t idx = by_dist[r];
-      dist_label_of[idx] = static_cast<int>(r + 1);
-      dist_label_xy[idx] = {
-        garbage_list_[idx].pose.pose.position.x,
-        garbage_list_[idx].pose.pose.position.y};
-    }
-  }
-
-  auto lookupDistLabel = [&](double x, double y) -> int {
-    const double match_r2 = kDedupDistanceM * kDedupDistanceM;
-    for (std::size_t k = 0; k < dist_label_xy.size(); ++k) {
-      if (squaredDistanceXY(
-          x, y, dist_label_xy[k].first, dist_label_xy[k].second) < match_r2)
-      {
-        return dist_label_of[k];
-      }
-    }
-    return 0;
-  };
 
   // 按当前顺序一次插入全部待插堆
   std::size_t inserted_count = 0;
@@ -4062,7 +4293,7 @@ BT::NodeStatus InsertGarbagePose::tick()
       garbage_list_.erase(garbage_list_.begin());
       continue;
     }
-    info.dist_label = lookupDistLabel(gx, gy);
+    info.dist_label = assignStableGNum(gx, gy);
     goals_now = insertGarbageIntoGoals(info);
     const rclcpp::Time viz_now = node_->now();
     if (has_last_viz_time_ &&
@@ -4070,6 +4301,7 @@ BT::NodeStatus InsertGarbagePose::tick()
     {
       clearMissionVisualization();
       viz_pile_count_ = 0;
+      publishFootprintStrippedMarkers();
     }
     publishVisualization(info, enable_viz, viz_garbage, viz_deleted, viz_ac_pts);
     publishRangeCircles(rx, ry);
@@ -4082,9 +4314,9 @@ BT::NodeStatus InsertGarbagePose::tick()
     active_piles_.push_back(garbage_list_.front());
     RCLCPP_INFO(
       node_->get_logger(),
-      "InsertGarbagePose: diag active+ (%.2f, %.2f) extend=%d E=(%.2f, %.2f) "
+      "InsertGarbagePose: diag active+ G%d (%.2f, %.2f) extend=%d E=(%.2f, %.2f) "
       "active_n=%zu",
-      gx, gy, info.extend_inserted ? 1 : 0,
+      info.dist_label, gx, gy, info.extend_inserted ? 1 : 0,
       info.extend_x, info.extend_y, active_piles_.size());
     garbage_list_.erase(garbage_list_.begin());
     ++inserted_count;
@@ -4102,8 +4334,8 @@ BT::NodeStatus InsertGarbagePose::tick()
     const rclcpp::Time now_stamp = node_->now();
     std::size_t z_neg1_n = 0;
     for (std::size_t i = 0; i < goals_now.size(); ++i) {
-      // G/E 已是 z=-1，重编号时不要改；其余途经点写序号
-      if (goals_now[i].pose.position.z != -1.0) {
+      // G/E 已是哨兵 z，重编号时不要改；其余途经点写序号
+      if (!isUnindexedSentinelPoseZ(goals_now[i])) {
         goals_now[i].pose.position.z = static_cast<double>(i);
       } else {
         ++z_neg1_n;
@@ -4126,7 +4358,8 @@ BT::NodeStatus InsertGarbagePose::tick()
   }
 
   if (goals_dirty) {
-    setOutput("output_goals", goals_now);
+    const char * reason = (inserted_count > 0) ? "batch_insert" : "strip_z_neg1";
+    emitOutputGoals(goals_now, reason);
   }
   publishProtectedGarbage();
   return BT::NodeStatus::SUCCESS;
