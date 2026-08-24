@@ -282,6 +282,9 @@ private:
   /** 本任务内按 xy 分配稳定 G 编号，重插同一堆不改号 */
   int assignStableGNum(double x, double y);
   int lookupStableGNum(double x, double y) const;
+  /** E 点坐标登记所属 G 编号，footprint 删 E 时显示 E1/E2… */
+  void registerStableENum(double x, double y, int g_num);
+  int lookupStableENum(double x, double y) const;
 
   /**
    * 只检查当前正在走的队首点：若是 G/E 哨兵且 footprint 已到达则剔除。
@@ -372,13 +375,13 @@ private:
 
   /**
    * 导航中新堆：4-1/4-2 重排 garbage_list_。
-   * 返回 true 表示 4-1（新堆在队首，可破 pending）。
+   * 返回 true 表示 4-1
    */
   bool reorderGarbageListWithNewPile(
     double robot_x, double robot_y, double robot_yaw,
     std::size_t new_idx);
 
-  /** 相对 before，找出本轮新入队的堆下标（多个时取离机器人最近） */
+  /** 相对 before，找出本轮新入队的堆下标 */
   bool findNewGarbageIndex(
     const GarbageList & before,
     double robot_x, double robot_y,
@@ -521,6 +524,8 @@ private:
   std::vector<FootprintStrippedVizPoint> footprint_stripped_viz_;
   /** 本任务内各堆稳定 G 编号，避免删点全显示成 G1 */
   std::vector<std::pair<std::pair<double, double>, int>> g_num_xy_;
+  /** E 点坐标 -> 所属 G 编号 */
+  std::vector<std::pair<std::pair<double, double>, int>> e_num_xy_;
   int next_g_num_{1};
   /** 上一次发布可视化的时刻 */
   rclcpp::Time last_viz_time_{0, 0, RCL_ROS_TIME};

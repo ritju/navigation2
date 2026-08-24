@@ -1821,6 +1821,7 @@ void InsertGarbagePose::checkAndResetOnNewMission()
   viz_pile_count_ = 0;
   footprint_stripped_viz_.clear();
   g_num_xy_.clear();
+  e_num_xy_.clear();
   next_g_num_ = 1;
   has_last_viz_time_ = false;
   has_work_circle_ = false;
@@ -1962,6 +1963,32 @@ int InsertGarbagePose::assignStableGNum(double x, double y)
   return num;
 }
 
+void InsertGarbagePose::registerStableENum(double x, double y, int g_num)
+{
+  if (g_num <= 0) {
+    return;
+  }
+  const double thresh2 = kDedupDistanceM * kDedupDistanceM;
+  for (auto & item : e_num_xy_) {
+    if (squaredDistanceXY(item.first.first, item.first.second, x, y) < thresh2) {
+      item.second = g_num;
+      return;
+    }
+  }
+  e_num_xy_.push_back({{x, y}, g_num});
+}
+
+int InsertGarbagePose::lookupStableENum(double x, double y) const
+{
+  const double thresh2 = kDedupDistanceM * kDedupDistanceM;
+  for (const auto & item : e_num_xy_) {
+    if (squaredDistanceXY(item.first.first, item.first.second, x, y) < thresh2) {
+      return item.second;
+    }
+  }
+  return 0;
+}
+
 bool InsertGarbagePose::isGarbageCoveredByFootprint(
   double gx, double gy,
   const std::vector<geometry_msgs::msg::Point> & footprint_map,
@@ -2096,11 +2123,16 @@ std::size_t InsertGarbagePose::stripReachedZNeg1Goals(
     return 0;
   }
 
-  // 稳定 G 编号；对不上已登记堆则视为延伸点 E
+  // 稳定 G/E 编号；G 对 g_num_xy_，E 对 e_num_xy_
   std::string point_label = "E";
   const int g_num = lookupStableGNum(gx, gy);
   if (g_num > 0) {
     point_label = "G" + std::to_string(g_num);
+  } else {
+    const int e_num = lookupStableENum(gx, gy);
+    if (e_num > 0) {
+      point_label = "E" + std::to_string(e_num);
+    }
   }
 
   const double thresh2 = kDedupDistanceM * kDedupDistanceM;
@@ -3447,7 +3479,7 @@ void InsertGarbagePose::publishFootprintStrippedMarkers()
 
   visualization_msgs::msg::MarkerArray arr;
   const rclcpp::Time stamp = node_->now();
-  constexpr double kRingR = 0.16;
+  constexpr double kRingR = 0.08;
 
   for (std::size_t i = 0; i < footprint_stripped_viz_.size(); ++i) {
     const auto & pt = footprint_stripped_viz_[i];
@@ -3494,7 +3526,7 @@ void InsertGarbagePose::publishFootprintStrippedMarkers()
     text.color.b = 0.05f;
     text.color.a = 0.95f;
     text.lifetime = rclcpp::Duration::from_seconds(0.0);
-    text.text = "fp " + pt.label;
+    text.text = pt.label;
     arr.markers.push_back(text);
   }
 
@@ -3726,17 +3758,68 @@ void InsertGarbagePose::publishVisualization(
   const double gy = info.garbage.pose.pose.position.y;
 
   if (viz_accepted_garbage) {
-    // 每堆预留 6 个 id：G 三个 + E 三个，避免后一堆盖掉前一堆
+    // 每堆 6 id：G 实心点 + 标签 | G-E 虚线 | E 小箭头 + 标签
     const int base = pile_idx * 6;
-    auto m = makeBase("accepted_garbage", base, visualization_msgs::msg::Marker::SPHERE);
-    m.pose.position.x = gx;
-    m.pose.position.y = gy;
-    m.pose.position.z = 0.12;
-    m.scale.x = 0.28;
-    m.scale.y = 0.28;
-    m.scale.z = 0.28;
-    setColor(m, 0.85f, 0.12f, 0.12f, 0.95f);
-    arr.markers.push_back(m);
+    constexpr double kGarbageDotZM = 0.06;
+    constexpr double kGarbageDotSizeM = 0.10;
+    constexpr double kEArrowLenM = 0.30;
+    constexpr double kEArrowWidthM = 0.05;
+    constexpr double kDashLenM = 0.12;
+    constexpr double kGapLenM = 0.08;
+    constexpr double kDashLineWidthM = 0.030;
+
+    auto makeGarbageDot = [&](int id, double x, double y) {
+      auto dot = makeBase("accepted_garbage", id, visualization_msgs::msg::Marker::SPHERE);
+      dot.pose.position.x = x;
+      dot.pose.position.y = y;
+      dot.pose.position.z = kGarbageDotZM;
+      dot.scale.x = kGarbageDotSizeM;
+      dot.scale.y = kGarbageDotSizeM;
+      dot.scale.z = kGarbageDotSizeM;
+      setColor(dot, 0.92f, 0.10f, 0.10f, 1.0f);
+      return dot;
+    };
+
+    auto makeExtendArrow = [&](int id, double x, double y, double yaw_rad) {
+      auto arrow = makeBase("accepted_garbage", id, visualization_msgs::msg::Marker::ARROW);
+      arrow.pose.position.x = x;
+      arrow.pose.position.y = y;
+      arrow.pose.position.z = kGarbageDotZM;
+      arrow.pose.orientation =
+        nav2_util::geometry_utils::orientationAroundZAxis(yaw_rad);
+      arrow.scale.x = kEArrowLenM;
+      arrow.scale.y = kEArrowWidthM;
+      arrow.scale.z = kEArrowWidthM;
+      setColor(arrow, 0.92f, 0.10f, 0.10f, 1.0f);
+      return arrow;
+    };
+
+    auto appendDashedLine = [&](visualization_msgs::msg::Marker & line,
+        double x0, double y0, double x1, double y1, double z = 0.07)
+    {
+      const double dx = x1 - x0;
+      const double dy = y1 - y0;
+      const double len = std::hypot(dx, dy);
+      if (len < 1e-4) {
+        return;
+      }
+      const double ux = dx / len;
+      const double uy = dy / len;
+      double s = 0.0;
+      bool draw = true;
+      while (s < len - 1e-6) {
+        const double step = draw ? kDashLenM : kGapLenM;
+        const double s_next = std::min(s + step, len);
+        if (draw) {
+          pushPoint(line, x0 + ux * s, y0 + uy * s, z);
+          pushPoint(line, x0 + ux * s_next, y0 + uy * s_next, z);
+        }
+        s = s_next;
+        draw = !draw;
+      }
+    };
+
+    arr.markers.push_back(makeGarbageDot(base, gx, gy));
 
     auto t = makeBase("accepted_garbage", base + 1, visualization_msgs::msg::Marker::TEXT_VIEW_FACING);
     t.pose.position.x = gx;
@@ -3751,31 +3834,20 @@ void InsertGarbagePose::publishVisualization(
     setColor(t, 0.85f, 0.12f, 0.12f);
     arr.markers.push_back(t);
 
-    auto arrow = makeBase("accepted_garbage", base + 2, visualization_msgs::msg::Marker::ARROW);
-    arrow.pose.position.x = gx;
-    arrow.pose.position.y = gy;
-    arrow.pose.position.z = 0.12;
-    arrow.pose.orientation =
-      nav2_util::geometry_utils::orientationAroundZAxis(info.path_yaw);
-    arrow.scale.x = 0.45;
-    arrow.scale.y = 0.07;
-    arrow.scale.z = 0.07;
-    setColor(arrow, 1.00f, 0.35f, 0.05f, 0.95f);
-    arr.markers.push_back(arrow);
-
     if (info.extend_inserted) {
       const double ex = info.extend_x;
       const double ey = info.extend_y;
 
-      auto me = makeBase("accepted_garbage", base + 3, visualization_msgs::msg::Marker::SPHERE);
-      me.pose.position.x = ex;
-      me.pose.position.y = ey;
-      me.pose.position.z = 0.12;
-      me.scale.x = 0.28;
-      me.scale.y = 0.28;
-      me.scale.z = 0.28;
-      setColor(me, 0.85f, 0.12f, 0.12f, 0.95f);
-      arr.markers.push_back(me);
+      auto ge_line = makeBase("accepted_garbage", base + 2, visualization_msgs::msg::Marker::LINE_LIST);
+      ge_line.scale.x = kDashLineWidthM;
+      setColor(ge_line, 0.85f, 0.12f, 0.12f, 0.80f);
+      appendDashedLine(ge_line, gx, gy, ex, ey);
+      if (!ge_line.points.empty()) {
+        arr.markers.push_back(ge_line);
+      }
+
+      const double ge_yaw = std::atan2(ey - gy, ex - gx);
+      arr.markers.push_back(makeExtendArrow(base + 3, ex, ey, ge_yaw));
 
       auto te = makeBase("accepted_garbage", base + 4, visualization_msgs::msg::Marker::TEXT_VIEW_FACING);
       te.pose.position.x = ex;
@@ -3789,35 +3861,48 @@ void InsertGarbagePose::publishVisualization(
       }
       setColor(te, 0.85f, 0.12f, 0.12f);
       arr.markers.push_back(te);
-
-      auto arrown = makeBase("accepted_garbage", base + 5, visualization_msgs::msg::Marker::ARROW);
-      arrown.pose.position.x = ex;
-      arrown.pose.position.y = ey;
-      arrown.pose.position.z = 0.12;
-      arrown.pose.orientation =
-        nav2_util::geometry_utils::orientationAroundZAxis(info.path_yaw);
-      arrown.scale.x = 0.45;
-      arrown.scale.y = 0.07;
-      arrown.scale.z = 0.07;
-      setColor(arrown, 1.00f, 0.35f, 0.05f, 0.95f);
-      arr.markers.push_back(arrown);
     }
   }
 
   if (viz_deleted_goals) {
-    const double ring_r = 0.16;
+    // clip 删点：普通途经点=小空心圆；z=-1 哨兵=黑色箭头
+    constexpr double kDelRingR = 0.08;
+    constexpr double kDelArrowLenM = 0.32;
+    constexpr double kDelArrowWidthM = 0.055;
     int di = 0;
     for (const auto & g : info.goaltotal) {
       if (di >= kDeletedIdSpan) {
         break;
       }
-      auto m = makeBase(
-        "deleted_goals", kDeletedIdBase + pile_idx * kDeletedIdSpan + di,
-        visualization_msgs::msg::Marker::LINE_STRIP);
-      m.scale.x = 0.025;
-      setColor(m, 0.05f, 0.05f, 0.05f, 0.95f);
-      appendRing(m, g.pose.position.x, g.pose.position.y, ring_r);
-      arr.markers.push_back(m);
+      const double x = g.pose.position.x;
+      const double y = g.pose.position.y;
+      if (isUnindexedSentinelPoseZ(g)) {
+        auto arrow = makeBase(
+          "deleted_sentinel", kDeletedIdBase + pile_idx * kDeletedIdSpan + di,
+          visualization_msgs::msg::Marker::ARROW);
+        arrow.pose.position.x = x;
+        arrow.pose.position.y = y;
+        arrow.pose.position.z = 0.08;
+        double yaw = tf2::getYaw(g.pose.orientation);
+        if (!std::isfinite(yaw)) {
+          yaw = info.path_yaw;
+        }
+        arrow.pose.orientation =
+          nav2_util::geometry_utils::orientationAroundZAxis(yaw);
+        arrow.scale.x = kDelArrowLenM;
+        arrow.scale.y = kDelArrowWidthM;
+        arrow.scale.z = kDelArrowWidthM;
+        setColor(arrow, 0.02f, 0.02f, 0.02f, 1.0f);
+        arr.markers.push_back(arrow);
+      } else {
+        auto m = makeBase(
+          "deleted_waypoint", kDeletedIdBase + pile_idx * kDeletedIdSpan + di,
+          visualization_msgs::msg::Marker::LINE_STRIP);
+        m.scale.x = 0.018;
+        setColor(m, 0.05f, 0.05f, 0.05f, 0.90f);
+        appendRing(m, x, y, kDelRingR);
+        arr.markers.push_back(m);
+      }
       ++di;
     }
   }
@@ -4310,6 +4395,7 @@ BT::NodeStatus InsertGarbagePose::tick()
     addProtectedGarbageXy(gx, gy);
     if (info.extend_inserted) {
       addProtectedGarbageXy(info.extend_x, info.extend_y);
+      registerStableENum(info.extend_x, info.extend_y, info.dist_label);
     }
     active_piles_.push_back(garbage_list_.front());
     RCLCPP_INFO(
