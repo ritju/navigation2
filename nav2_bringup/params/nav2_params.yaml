@@ -64,6 +64,7 @@ bt_navigator:
     - nav2_drive_on_heading_bt_node
     - nav2_clear_costmap_service_bt_node
     - nav2_is_stuck_condition_bt_node
+    - nav2_is_moving_condition_bt_node
     - nav2_is_localization_good_condition_bt_node
     - nav2_goal_reached_condition_bt_node
     - nav2_goal_updated_condition_bt_node
@@ -75,6 +76,7 @@ bt_navigator:
     - nav2_distance_controller_bt_node
     - nav2_speed_controller_bt_node
     - nav2_truncate_path_action_bt_node
+    - nav2_clear_path_action_bt_node
     - nav2_convert_goals_to_path_action_bt_node
     - nav2_truncate_path_local_action_bt_node
     - nav2_goal_updater_node_bt_node

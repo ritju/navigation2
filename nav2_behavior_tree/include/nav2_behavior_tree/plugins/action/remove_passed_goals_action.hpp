@@ -37,15 +37,20 @@ namespace nav2_behavior_tree
 {
 
 /**
- * @brief Maintains mission queue, optional passed-point stripping, GPP windows keyed by pose z-index,
- * and output_gpp_goals emission gated by mission identity (terminal stamp), TEB polyline length,
- * and a post-emit wait for teb_global_plan within teb_message_timeout_s.
+ * @brief Strip passed mission goals, then emit a z-index GPP window.
+ *
+ * Mission identity is the tail goal stamp. TEB polyline length drives window
+ * advance. output_gpp_goals is gated by that window plus pose match vs the
+ * current internal queue.
  */
 class RemovePassedGoals : public BT::ActionNodeBase
 {
 public:
   typedef std::vector<geometry_msgs::msg::PoseStamped> Goals;
 
+  /**
+   * @brief Construct the node, subscribe TEB/odom, and create debug publishers.
+   */
   RemovePassedGoals(
     const std::string & xml_tag_name,
     const BT::NodeConfiguration & conf);
@@ -102,103 +107,120 @@ private:
   void halt() override {}
   BT::NodeStatus tick() override;
 
-  /** False when pose.position.z is negative (sentinel -1): do not cast to uint32_t. */
-  static bool tryMissionPoseGoalIndexFromPoseZ(
-    const geometry_msgs::msg::PoseStamped & pose_stamped_goal,
-    uint32_t & discrete_goal_index_z);
-  /** pose.position.z rounds to a negative sentinel (typically -1): no mission index. */
-  static bool isUnindexedSentinelPoseZ(const geometry_msgs::msg::PoseStamped & pose_stamped_goal);
-  static bool tryIndexedGoalZAtOrAfter(
-    const Goals & mission_goal_queue,
-    size_t start_index,
-    uint32_t & discrete_goal_index_z);
-  static bool tryIndexedGoalZAtOrBefore(
-    const Goals & mission_goal_queue,
-    size_t end_index,
-    uint32_t & discrete_goal_index_z);
-  static std::uint64_t fingerprintMixFromPoseZ(const geometry_msgs::msg::PoseStamped & pose_stamped_goal);
-  static std::uint64_t fingerprintMissionQueueTailGoalStampOnly(const Goals & mission_goal_queue);
-  void buildFirstWindowFromMission(const Goals & mission_goal_queue);
-  void buildGppWindowFromMissionIndex(const Goals & mission_goal_queue, size_t mission_segment_start_index);
-  void advanceGppWindowAfterShortTebPolyline(const Goals & mission_goal_queue);
-  Goals filterMissionGoalsByBatchZSpan(const Goals & mission_goal_queue) const;
-  static double tebGlobalPlanPolylineLengthMetersFromFirstPose(const nav_msgs::msg::Path & teb_plan_path);
+  /** TEB plan callback: cache latest path and mark a receive since last GPP emit. */
+  void onTebPlan(const nav_msgs::msg::Path::SharedPtr msg);
+  /** Odometry callback: store linear.x for the pass-check speed gate. */
+  void onOdom(const nav_msgs::msg::Odometry::SharedPtr msg);
+  /** Drop cached TEB paths after a window advance (receive tracking is kept). */
+  void clearTebBuffers();
+  void spinSubs();
 
-  void handleReceivedTebGlobalPlan(const nav_msgs::msg::Path::SharedPtr plan_message);
-  void handleReceivedOdometry(const nav_msgs::msg::Odometry::SharedPtr msg_odometry);
-  void resetStoredTebPlanBuffersKeepingRxTracking();
-  void spinAllExclusiveSubscriptions();
+  /** Publish /enable_backward only when the desired value changes. */
+  void publishEnableBackward(bool enable);
 
-  std::uint64_t fingerprintLastEmittedGppWindow(
-    const Goals & filtered_gpp_goal_window,
-    std::uint64_t mission_tail_goal_stamp_fingerprint) const;
+  /** Reset GPP window, stamps, and TEB buffers (queue / passed indexes unchanged). */
+  void resetGppState();
+  /** Empty input_goals: clear queue, outputs, and GPP state. */
+  void resetOnEmptyInput();
+  /** Reload internal queue when blackboard mission identity (tail stamp) changes. */
+  bool reloadMissionIfChanged(const Goals & input_goals);
 
-  static bool posesApproxEqualForGppMissionMatch(
-    const geometry_msgs::msg::Pose & pose_a,
-    const geometry_msgs::msg::Pose & pose_b,
-    double match_xy_m,
-    double match_yaw_rad);
-  Goals pruneOutputGppGoalsByMissionPoseMatch(
-    const Goals & output_gpp_candidates,
-    const Goals & mission_goals,
-    double match_xy_m,
-    double match_yaw_rad) const;
-  void applyMonotonicGppGoalStampsToWindow(
+  /** Strip passed goals from the queue (tail-relax or radius/behind/yaw). */
+  void stripPassedGoals(
+    Goals & queue,
+    const geometry_msgs::msg::PoseStamped & robot_pose);
+  /** Record z-index into passed_pose_indexes when distance / uniqueness allow. */
+  void maybeRecordPassed(
+    uint32_t z,
+    bool has_z,
+    double dist,
+    double dist_lim,
+    const char * pass_kind);
+
+  /** Publish remaining queue as removed_plan (z flattened for viz). */
+  void publishDebugPlan(const Goals & queue);
+
+  /** Fingerprint of last emitted GPP window (span z + contents). */
+  std::uint64_t gppWindowFp(const Goals & window, std::uint64_t tail_fp) const;
+
+  /** Build first GPP window from queue head. */
+  void initWindow(const Goals & queue);
+  /** Build GPP z-span starting at a queue index, capped by max_gpp_segment_m. */
+  void buildWindowFrom(const Goals & queue, size_t start);
+  /** Rebuild window from queue head after a short TEB polyline. */
+  void advanceWindow(const Goals & queue);
+  /** Keep goals whose z is in [z_begin_, z_end_], plus neighboring unindexed sentinels. */
+  Goals filterByZSpan(const Goals & queue) const;
+  /** Keep GPP candidates that still match a live mission pose (xy / optional yaw). */
+  Goals pruneByMissionPose(
+    const Goals & candidates,
+    const Goals & mission,
+    double match_xy,
+    double match_yaw) const;
+  /**
+   * Keep per-goal stamps monotonic so prune cannot regress time.
+   * On window advance (before terminal freeze), assign a fresh stamp for replan.
+   */
+  void applyMonotonicStamps(
     Goals & gpp_goals,
-    const rclcpp::Time & clock_now,
-    bool assign_fresh_stamp_on_advance);
-  /** Publish /enable_backward only when desired state differs from last published. */
-  void publishEnableBackwardIfChanged(bool desired_backward);
+    const rclcpp::Time & now,
+    bool fresh_on_advance);
+  /** Latch terminal-in-window so later advances do not refresh stamps. */
+  void markTerminalIfNeeded(
+    const Goals & gpp_goals,
+    const Goals & mission,
+    double match_xy,
+    double match_yaw);
 
-  rclcpp::Node::SharedPtr node;
+  rclcpp::Node::SharedPtr node_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
-  rclcpp::CallbackGroup::SharedPtr callback_group_exclusive_;
-  rclcpp::executors::SingleThreadedExecutor callback_executor_exclusive_;
-  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr publisher_removed_plan_debug_;
-  rclcpp::Publisher<capella_ros_msg::msg::PassedPosesIndex>::SharedPtr publisher_passed_pose_indexes_;
-  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr publisher_enable_backward_;
-  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr subscriber_teb_global_plan_;
-  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr subscriber_odometry_;
+  rclcpp::CallbackGroup::SharedPtr cb_group_;
+  rclcpp::executors::SingleThreadedExecutor cb_executor_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_removed_plan_;
+  rclcpp::Publisher<capella_ros_msg::msg::PassedPosesIndex>::SharedPtr pub_passed_indexes_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pub_enable_backward_;
+  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr sub_teb_plan_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
 
-  nav_msgs::msg::Path::SharedPtr shared_ptr_latest_received_teb_plan_;
-  nav_msgs::msg::Path::SharedPtr shared_ptr_cached_copy_last_teb_plan_;
-  rclcpp::Time clock_timestamp_last_valid_teb_plan_message_{0, 0, RCL_ROS_TIME};
-  std::mutex mutex_teb_plan_shared_;
+  nav_msgs::msg::Path::SharedPtr latest_teb_plan_;
+  nav_msgs::msg::Path::SharedPtr cached_teb_plan_;
+  rclcpp::Time last_teb_time_{0, 0, RCL_ROS_TIME};
+  std::mutex teb_mutex_;
 
-  double latest_odometry_linear_velocity_x_mps_{0.0};
-  std::mutex mutex_odometry_velocity_;
+  double odom_vx_{0.0};
+  std::mutex odom_mutex_;
 
-  double viapoint_achieved_radius_{};
-  double accumulate_distance_{};
+  double radius_{};
+  double accumulate_dist_{};
   std::string robot_base_frame_;
   std::string global_frame_;
   double transform_tolerance_{};
-  std::vector<uint32_t> vector_passed_goal_indexes_recorded_;
+  std::vector<uint32_t> passed_indexes_;
 
-  Goals mission_goal_queue_internal_;
-  std::uint64_t fingerprint_accepted_blackboard_input_goals_tail_stamp_{0};
-  std::uint64_t fingerprint_internal_mission_queue_tail_stamp_{0};
-  bool batch_window_initialized_{false};
-  uint32_t batch_span_goal_index_z_begin_{0};
-  uint32_t batch_span_goal_index_z_end_{0};
+  Goals mission_goals_;
+  std::uint64_t board_tail_fp_{0};
+  std::uint64_t queue_tail_fp_{0};
+  bool window_inited_{false};
+  uint32_t z_begin_{0};
+  uint32_t z_end_{0};
 
-  bool has_emitted_output_gpp_goals_once_{false};
-  std::uint64_t fingerprint_last_emitted_gpp_goal_window_{0};
-  bool terminal_goal_dispatched_to_gpp_window_{false};
+  bool gpp_emitted_{false};
+  std::uint64_t last_gpp_fp_{0};
+  bool terminal_in_window_{false};
 
-  bool received_teb_plan_message_since_last_output_gpp_emit_{false};
-  rclcpp::Time clock_timestamp_last_emitted_output_gpp_goals_{0, 0, RCL_ROS_TIME};
+  bool teb_rx_since_emit_{false};
+  rclcpp::Time last_gpp_emit_time_{0, 0, RCL_ROS_TIME};
 
-  /** Last values written to output_gpp_goals (used to drop points no longer present in mission goals). */
-  Goals output_gpp_goals_snapshot_;
-  /** Per mission z-index: last emitted stamp so prune/mission poses cannot regress timestamps. */
-  std::unordered_map<uint32_t, rclcpp::Time> emitted_gpp_goal_stamp_by_mission_index_z_;
-  rclcpp::Time last_emitted_gpp_front_stamp_{0, 0, RCL_ROS_TIME};
+  /** Last values written to output_gpp_goals (fallback if prune drops everything). */
+  Goals last_gpp_goals_;
+  /** Per mission z: last emitted stamp so prune/mission poses cannot go backwards in time. */
+  std::unordered_map<uint32_t, rclcpp::Time> gpp_stamp_by_z_;
+  rclcpp::Time last_gpp_front_stamp_{0, 0, RCL_ROS_TIME};
 
-  double previous_goal_queue_front_stamp_seconds_{0.0};
+  double prev_front_stamp_s_{0.0};
 
-  bool last_published_enable_backward_{false};
-  bool has_published_enable_backward_{false};
+  bool last_enable_backward_{false};
+  bool published_enable_backward_{false};
 };
 
 }  // namespace nav2_behavior_tree

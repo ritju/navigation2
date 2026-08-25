@@ -35,34 +35,30 @@ PathExpiringTimerCondition::PathExpiringTimerCondition(
 
 BT::NodeStatus PathExpiringTimerCondition::tick()
 {
-  if (first_time_) {
-    getInput("path", prev_path_);
+  nav_msgs::msg::Path path;
+  getInput("path", path);
+
+  // Empty path is invalid: treat as expired so Inverter(PathExpiringTimer)
+  // fails and Fallback will ComputePathToPose again.
+  if (path.poses.empty()) {
+    prev_path_ = path;
+    first_time_ = false;
+    return BT::NodeStatus::SUCCESS;
+  }
+
+  if (first_time_ || prev_path_ != path) {
+    prev_path_ = path;
     first_time_ = false;
     start_ = node_->now();
     return BT::NodeStatus::FAILURE;
   }
 
-  // Grab the new path
-  nav_msgs::msg::Path path;
-  getInput("path", path);
-
-  // Reset timer if the path has been updated
-  if (prev_path_ != path) {
-    prev_path_ = path;
-    start_ = node_->now();
-  }
-
-  // Determine how long its been since we've started this iteration
-  auto elapsed = node_->now() - start_;
-
-  // Now, get that in seconds
-  auto seconds = elapsed.seconds();
-
+  auto seconds = (node_->now() - start_).seconds();
   if (seconds < period_) {
     return BT::NodeStatus::FAILURE;
   }
 
-  start_ = node_->now();  // Reset the timer
+  start_ = node_->now();
   return BT::NodeStatus::SUCCESS;
 }
 

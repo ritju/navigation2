@@ -234,8 +234,15 @@ NavigateToPoseNavigator::initializeGoalPose(ActionT::Goal::ConstSharedPtr goal)
   auto blackboard = bt_action_server_->getBlackboard();
   blackboard->set<int>("number_recoveries", 0);  // NOLINT
 
-  // Update the goal pose on the blackboard
   blackboard->set<geometry_msgs::msg::PoseStamped>(goal_blackboard_id_, goal->pose);
+
+  // Drop any previous mission's path so PathExpiringTimer / FollowPath
+  // cannot treat a stale plan as valid for this goal.
+  nav_msgs::msg::Path cleared_path;
+  cleared_path.header = goal->pose.header;
+  cleared_path.header.stamp = clock_->now();
+  cleared_path.poses.clear();
+  blackboard->set<nav_msgs::msg::Path>(path_blackboard_id_, cleared_path);
 
   publishEmptyMissionPoses();
 }

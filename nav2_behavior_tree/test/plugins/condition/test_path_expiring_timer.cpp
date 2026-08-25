@@ -35,6 +35,8 @@ public:
     config_ = new BT::NodeConfiguration();
     config_->blackboard = BT::Blackboard::create();
     config_->blackboard->set<rclcpp::Node::SharedPtr>("node", node_);
+    config_->input_ports["path"] = "{path}";
+    config_->input_ports["seconds"] = "1.0";
     bt_node_ = std::make_shared<nav2_behavior_tree::PathExpiringTimerCondition>(
       "time_expired", *config_);
   }
@@ -61,26 +63,27 @@ BT::NodeConfiguration * PathExpiringTimerConditionTestFixture::config_ = nullptr
 TEST_F(PathExpiringTimerConditionTestFixture, test_behavior)
 {
   EXPECT_EQ(bt_node_->status(), BT::NodeStatus::IDLE);
-  EXPECT_EQ(bt_node_->executeTick(), BT::NodeStatus::FAILURE);
+  EXPECT_EQ(bt_node_->executeTick(), BT::NodeStatus::SUCCESS);
 
-  for (int i = 0; i < 20; ++i) {
-    rclcpp::sleep_for(500ms);
-    if (i % 2) {
-      EXPECT_EQ(bt_node_->executeTick(), BT::NodeStatus::SUCCESS);
-    } else {
-      EXPECT_EQ(bt_node_->executeTick(), BT::NodeStatus::FAILURE);
-    }
-  }
-
-  // place a new path on the blackboard to reset the timer
   nav_msgs::msg::Path path;
   geometry_msgs::msg::PoseStamped pose;
   pose.pose.position.x = 1.0;
   path.poses.push_back(pose);
-
   config_->blackboard->set<nav_msgs::msg::Path>("path", path);
+
+  EXPECT_EQ(bt_node_->executeTick(), BT::NodeStatus::FAILURE);
+  rclcpp::sleep_for(500ms);
   EXPECT_EQ(bt_node_->executeTick(), BT::NodeStatus::FAILURE);
   rclcpp::sleep_for(1500ms);
+  EXPECT_EQ(bt_node_->executeTick(), BT::NodeStatus::SUCCESS);
+
+  pose.pose.position.x = 2.0;
+  path.poses[0] = pose;
+  config_->blackboard->set<nav_msgs::msg::Path>("path", path);
+  EXPECT_EQ(bt_node_->executeTick(), BT::NodeStatus::FAILURE);
+
+  nav_msgs::msg::Path empty;
+  config_->blackboard->set<nav_msgs::msg::Path>("path", empty);
   EXPECT_EQ(bt_node_->executeTick(), BT::NodeStatus::SUCCESS);
 }
 

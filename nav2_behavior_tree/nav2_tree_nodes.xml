@@ -223,6 +223,11 @@
       <input_port name="server_timeout">Server timeout</input_port>
     </Action>
 
+    <Action ID="ClearPath">
+      <input_port name="input_path">Blackboard path to clear (poses emptied)</input_port>
+      <output_port name="output_path">Empty path written back</output_port>
+    </Action>
+
     <Action ID="AssistedTeleop">
       <input_port name="time_allowance">Allowed time for spinning</input_port>
       <input_port name="is_recovery">If true recovery count will be incremented</input_port>
@@ -248,6 +253,17 @@
     </Condition>
 
     <Condition ID="IsStuck"/>
+
+    <Condition ID="IsMoving">
+      <input_port name="odom_topic">Odometry topic</input_port>
+      <input_port name="duration">Sliding window length in seconds</input_port>
+      <input_port name="min_linear_vel">Abs linear.x threshold (m/s)</input_port>
+      <input_port name="min_angular_vel">Abs angular.z threshold (rad/s)</input_port>
+      <input_port name="min_moving_ratio">Min fraction of valid samples that exceed velocity thresholds</input_port>
+      <input_port name="min_samples">Min valid odom samples required in the window</input_port>
+      <input_port name="odom_timeout">Max age of last valid odom (s) before FAILURE</input_port>
+      <input_port name="max_dt_jump">Clear the window if consecutive odom stamps jump by more than this (s)</input_port>
+    </Condition>
 
     <Condition ID="TransformAvailable">
       <input_port name="child">Child frame for transform</input_port>
@@ -296,7 +312,7 @@
 
     <Condition ID="PathExpiringTimer">
       <input_port name="seconds">Time to check if expired</input_port>
-      <input_port name="path">Check if path has been updated to enable timer reset</input_port>
+      <input_port name="path">Path to watch; empty path is treated as expired so planning runs again</input_port>
     </Condition>
 
     <Condition ID="InitialPoseReceived">

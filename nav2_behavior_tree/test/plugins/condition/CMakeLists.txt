@@ -34,6 +34,10 @@ ament_add_gtest(test_condition_is_stuck test_is_stuck.cpp)
 target_link_libraries(test_condition_is_stuck nav2_is_stuck_condition_bt_node)
 ament_target_dependencies(test_condition_is_stuck ${dependencies})
 
+ament_add_gtest(test_condition_is_moving test_is_moving.cpp)
+target_link_libraries(test_condition_is_moving nav2_is_moving_condition_bt_node)
+ament_target_dependencies(test_condition_is_moving ${dependencies})
+
 ament_add_gtest(test_condition_is_battery_low test_is_battery_low.cpp)
 target_link_libraries(test_condition_is_battery_low nav2_is_battery_low_condition_bt_node)
 ament_target_dependencies(test_condition_is_battery_low ${dependencies})
