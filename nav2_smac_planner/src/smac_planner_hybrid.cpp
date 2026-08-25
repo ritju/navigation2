@@ -553,9 +553,7 @@ void SmacPlannerHybrid::configure(
     std::bind(&SmacPlannerHybrid::enableBackwardCallback, this, _1));
   RCLCPP_INFO(
     _logger,
-    "狭窄通道: 已订阅 /narrow_passages，默认非窄通道模式(DUBIN)，"
-    "enable_straight_expand 初始值=%s",
-    _enable_straight_expand_initial ? "true" : "false");
+    "狭窄通道: 已订阅 /narrow_passages，默认非窄通道模式(DUBIN)");
   RCLCPP_INFO(_logger, "已订阅 /enable_backward，true 时强制 REEDS_SHEPP 倒车规划");
 
   RCLCPP_INFO(
@@ -868,17 +866,13 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
       (narrow_active ? "narrow_passage" : "default"));
   }
   const bool backward_planning_active = enable_backward_cmd_received && enable_backward_cmd;
-  _enable_straight_expand = (backward_planning_active || narrow_active) ?
-    false : _enable_straight_expand_initial;
   RCLCPP_INFO_THROTTLE(
     _logger, *_clock, 2000,
-    "规划模式: enable_backward=%s narrow_active=%s latched=%s goal_in=%s "
-    "straight_expand=%s model=%s",
+    "规划模式: enable_backward=%s narrow_active=%s latched=%s goal_in=%s model=%s",
     backward_planning_active ? "是" : "否",
     narrow_active ? "是" : "否",
     _latched_narrow_passage ? "是" : "否",
     goal_in_narrow ? "是" : "否",
-    _enable_straight_expand ? "是" : "否",
     _use_reeds_for_planning ? "REEDS_SHEPP" : "DUBIN");
 
   // Downsample costmap, if required
@@ -895,7 +889,6 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
     findCircumscribedCost(_costmap_ros));
   _a_star->setCollisionChecker(&_collision_checker);
 
-  auto goal_with_tolerance = goal;
   nav_msgs::msg::Path plan;
   plan.header.stamp = _clock->now();
   plan.header.frame_id = _global_frame;
@@ -907,14 +900,11 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   pose.pose.orientation.z = 0;
   pose.pose.orientation.w = 1;
 
-  nav2_costmap_2d::Footprint check_footprint = _costmap_ros->getRobotFootprint();
-  for (auto &point : check_footprint)
-  {
-    for (auto footprint : check_footprint)
-    {
-            footprint_back_x_ = footprint.x < footprint_back_x_ ? footprint.x : footprint_back_x_;
-            footprint_front_x_ = footprint.x > footprint_front_x_ ? footprint.x : footprint_front_x_;
-    }
+  footprint_back_x_ = 0.0;
+  footprint_front_x_ = 0.0;
+  for (const auto & footprint : _costmap_ros->getRobotFootprint()) {
+    footprint_back_x_ = std::min(footprint_back_x_, static_cast<double>(footprint.x));
+    footprint_front_x_ = std::max(footprint_front_x_, static_cast<double>(footprint.x));
   }
   _costmap_resulution = costmap->getResolution();
 
@@ -922,185 +912,19 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   start_pose2d.x = start.pose.position.x;
   start_pose2d.y = start.pose.position.y;
   start_pose2d.theta = tf2::getYaw(start.pose.orientation);
-  double start_footprint_cost = 0.0; 
-  start_footprint_cost = _collision_checker.footprintCostAtPose(start_pose2d.x, start_pose2d.y, start_pose2d.theta, _costmap_ros->getRobotFootprint());
-  if (start_footprint_cost == nav2_costmap_2d::LETHAL_OBSTACLE) 
+  double start_footprint_cost = _collision_checker.footprintCostAtPose(
+    start_pose2d.x, start_pose2d.y, start_pose2d.theta, _costmap_ros->getRobotFootprint());
+  if (start_footprint_cost == nav2_costmap_2d::LETHAL_OBSTACLE)
   {
     RCLCPP_WARN(_logger, "Start pose: (%f, %f) is occupied !", start.pose.position.x, start.pose.position.y);
     throw std::runtime_error("Cannot generate a plan, start is occupied!");
   }
 
-  try
-  {
-    bool is_goal_free = is_free(goal_with_tolerance, costmap, _footprint_extend_back_x, _footprint_extend_front_x, _footprint_extend_y);
-    if (!is_goal_free) {
-      steady_clock::time_point start = steady_clock::now();
-      double goal_search_x = - _goal_occupied_tolerance;
-      
-      double min_dist = 1.5;
-      while (goal_search_x < _goal_occupied_tolerance + 0.1)
-      {
-        double goal_search_y = - _goal_occupied_tolerance;
-        while (goal_search_y < _goal_occupied_tolerance + 0.1)
-        {
-          double dist = sqrt(pow(goal_search_x, 2) + pow(goal_search_y, 2));
-          if (dist > min_dist)
-          {
-            goal_search_y += _goal_search_resolution;
-            continue;
-          }
-          auto search_goal = goal;
-          search_goal.pose.position.x += goal_search_x;
-          search_goal.pose.position.y += goal_search_y;
-          is_goal_free = is_free(search_goal, costmap, _footprint_extend_back_x, _footprint_extend_front_x, _footprint_extend_y);
-          if (is_goal_free)
-          {
-            double dist = sqrt(pow(goal_search_x, 2) + pow(goal_search_y, 2));
-            if (dist < min_dist)
-            {
-              goal_with_tolerance = search_goal;
-              min_dist = dist;
-            }
-          }
-          goal_search_y += _goal_search_resolution;
-        }
-        goal_search_x += _goal_search_resolution;
-      }
-      if (goal.pose == goal_with_tolerance.pose)
-      {
-        RCLCPP_WARN(_logger, "Goal.x: %f, goal.y: %f is occupied !", goal.pose.position.x, goal.pose.position.y);
-        throw std::runtime_error("Cannot generate a plan, goal is occupied!");
-      }
-      steady_clock::time_point end = steady_clock::now();
-      duration<double> time_span = duration_cast<duration<double>>(end - start);
-      RCLCPP_INFO(_logger, "Duration time in adjust path is : %f!", static_cast<double>(time_span.count()) * 1000);
-      RCLCPP_INFO(_logger, "goal.x: %f, goal.y: %f !", goal.pose.position.x, goal.pose.position.y);
-      RCLCPP_INFO(_logger, "goal_with_tolerance.x: %f, goal_with_tolerance.y: %f !", goal_with_tolerance.pose.position.x, goal_with_tolerance.pose.position.y);
-  }
-  }
-  catch (const nav2_costmap_2d::IllegalPoseException & e) {
-    RCLCPP_ERROR(_logger, "%s", e.what());
-  } catch (const nav2_costmap_2d::CollisionCheckerException & e) {
-    RCLCPP_ERROR(_logger, "%s", e.what());
-  }  
-  catch (const std::runtime_error & e) {
-    RCLCPP_ERROR(_logger, "%s", e.what());
-  } 
-  catch (...) {
-    RCLCPP_ERROR(_logger, "Failed to check pose score!");
-  }
-
   geometry_msgs::msg::Pose2D goal_pose2d;
-  goal_pose2d.x = goal_with_tolerance.pose.position.x;
-  goal_pose2d.y = goal_with_tolerance.pose.position.y;
-  goal_pose2d.theta = tf2::getYaw(goal_with_tolerance.pose.orientation);
+  goal_pose2d.x = goal.pose.position.x;
+  goal_pose2d.y = goal.pose.position.y;
+  goal_pose2d.theta = tf2::getYaw(goal.pose.orientation);
 
-  if (_enable_straight_expand) {
-    double yaw = atan2(goal_pose2d.y - start_pose2d.y, goal_pose2d.x - start_pose2d.x);
-    tf2::Quaternion quat;
-    quat.setRPY(0, 0, yaw);
-
-    // Setup message
-    pose.pose.orientation.x = quat.x();
-    pose.pose.orientation.y = quat.y();
-    pose.pose.orientation.z = quat.z();
-    pose.pose.orientation.w = quat.w();
-
-    double goal_footprint_cost = 0.0;
-
-    // 检查从起点方向旋转至终点方向是否会碰撞，如果会碰撞，跳过生成直线路径
-    double start_theta = tf2::getYaw(start.pose.orientation);
-    double goal_theta = tf2::getYaw(goal_with_tolerance.pose.orientation);
-
-    double diff_theta = goal_theta - start_theta;
-    diff_theta = std::fmod(diff_theta, 2 * M_PI);            // 取模到 (-2π, 2π)
-    if (diff_theta > M_PI) {
-      diff_theta -= 2 * M_PI;
-    } else if (diff_theta < -M_PI) {
-      diff_theta += 2 * M_PI;
-    }
-    double step = diff_theta < 0 ? -0.087 : 0.087;  // 设置步长为5度
-
-    for (size_t i = 1; i < floor(fabs(diff_theta / step)); ++i) {
-      geometry_msgs::msg::Pose2D pose2d;
-      pose2d.x = start.pose.position.x;
-      pose2d.y = start.pose.position.y;
-      if (start_theta + step * i > M_PI) {
-        pose2d.theta = start_theta + step * i - 2 * M_PI;  // 将角度限制在 (-π, π)
-      } else if (start_theta + step * i < -M_PI) {
-        pose2d.theta = start_theta + step * i + 2 * M_PI;  // 将角度限制在 (-π, π)
-      } else {
-        pose2d.theta = start_theta + step * i;
-      }
-      double footprint_cost = 0.0;
-      footprint_cost = _collision_checker.footprintCostAtPose(
-        pose2d.x, pose2d.y, pose2d.theta, check_footprint);
-      if (footprint_cost == nav2_costmap_2d::LETHAL_OBSTACLE) {
-        RCLCPP_WARN(_logger, "Rotation to goal is occupied, jump to A* search!");
-        goto start_a_star;
-      }
-    }
-
-    goal_footprint_cost = _collision_checker.footprintCostAtPose(
-      goal_pose2d.x, goal_pose2d.y, yaw, check_footprint);
-    if (goal_footprint_cost != nav2_costmap_2d::LETHAL_OBSTACLE) {
-      try {
-        bool is_path_free = true;
-        double distance_start_to_goal =
-          nav2_util::geometry_utils::euclidean_distance(start_pose2d, goal_pose2d);
-        for (double d = _costmap_resulution;
-          d < distance_start_to_goal + _costmap_resulution;
-          d += _costmap_resulution)
-        {
-          geometry_msgs::msg::Pose2D path_pose;
-          path_pose.theta = yaw;
-          find_pose(start_pose2d, goal_pose2d, d, path_pose);
-          geometry_msgs::msg::PoseStamped path_posestamped;
-          path_posestamped.header.frame_id = _global_frame;
-          path_posestamped.header.stamp = _clock->now();
-          path_posestamped.pose.position.x = path_pose.x;
-          path_posestamped.pose.position.y = path_pose.y;
-          path_posestamped.pose.orientation = getWorldOrientation(path_pose.theta);
-          if (d <= _costmap_resulution) {
-            is_path_free = is_free(
-              path_posestamped, costmap, _footprint_extend_back_x, -footprint_front_x_,
-              _footprint_extend_y);
-          } else if (d >= distance_start_to_goal - _costmap_resulution) {
-            is_path_free = is_free(
-              path_posestamped, costmap, -footprint_back_x_, -_footprint_extend_front_x,
-              _footprint_extend_y);
-          } else {
-            is_path_free = is_free(
-              path_posestamped, costmap, -footprint_back_x_, -footprint_front_x_,
-              _footprint_extend_y);
-          }
-          if (is_path_free && d < distance_start_to_goal - _costmap_resulution) {
-            pose.pose.position.x = path_pose.x;
-            pose.pose.position.y = path_pose.y;
-            plan.poses.emplace_back(pose);
-          } else if (!is_path_free) {
-            plan.poses.clear();
-            break;
-          }
-        }
-        if (is_path_free) {
-          pose.pose = goal_with_tolerance.pose;
-          plan.poses.emplace_back(pose);
-          return plan;
-        }
-      } catch (const nav2_costmap_2d::IllegalPoseException & e) {
-        RCLCPP_ERROR(_logger, "%s", e.what());
-      } catch (const nav2_costmap_2d::CollisionCheckerException & e) {
-        RCLCPP_ERROR(_logger, "%s", e.what());
-      } catch (const std::runtime_error & e) {
-        RCLCPP_ERROR(_logger, "%s", e.what());
-      } catch (...) {
-        RCLCPP_ERROR(_logger, "Failed to check pose score!");
-      }
-    }
-  }
-
-  start_a_star:
   ScopedHybridAStarLimits limits_scope(_a_star.get(), _max_iterations, _max_planning_time);
   double smooth_budget_ceiling = _max_planning_time;
 
@@ -1120,11 +944,11 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
 
   unsigned int mx_g, my_g;
   if (!costmap->worldToMap(
-      goal_with_tolerance.pose.position.x, goal_with_tolerance.pose.position.y, mx_g, my_g))
+      goal.pose.position.x, goal.pose.position.y, mx_g, my_g))
   {
     throw std::runtime_error("Goal pose is out of costmap!");
   }
-  double goal_orientation_bin = tf2::getYaw(goal_with_tolerance.pose.orientation) / _angle_bin_size;
+  double goal_orientation_bin = tf2::getYaw(goal.pose.orientation) / _angle_bin_size;
   while (goal_orientation_bin < 0.0) {
     goal_orientation_bin += static_cast<float>(_angle_quantizations);
   }
@@ -1293,41 +1117,6 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
 #endif
 
   return plan;
-}
-
-bool SmacPlannerHybrid::find_pose(geometry_msgs::msg::Pose2D original_pose, geometry_msgs::msg::Pose2D edge_pose, double d, geometry_msgs::msg::Pose2D &output_pose) 
-{
-    // 计算法向量的单位向量
-    double vx = edge_pose.x - original_pose.x;
-    double vy = edge_pose.y - original_pose.y;
-    double param_x, param_y;
-    calculate_line_param(param_x, param_y, vx, vy);
-
-    // 计算从点P出发沿法向量方向的点
-    double Qx1 = original_pose.x + param_x * d;
-    double Qy1 = original_pose.y + param_y * d;
-
-    output_pose.x = Qx1;
-    output_pose.y = Qy1;
-    RCLCPP_DEBUG(_logger, "original_pose x: %f, y: %f!", original_pose.x, original_pose.y);
-    RCLCPP_DEBUG(_logger, "edge_pose x: %f, y: %f!", edge_pose.x, edge_pose.y);
-    RCLCPP_DEBUG(_logger, "output_pose x: %f, y: %f!", output_pose.x, output_pose.y);
-
-    return true;
-}
-
-void SmacPlannerHybrid::calculate_line_param(double &x, double &y, double vx, double vy)
-{
-        if (fabs(vx) < 1e-5 && fabs(vy) < 1e-5)
-        {
-                x = 0;
-                y = 0;
-                return;
-        }
-        double magnitude = sqrt(vx * vx + vy * vy);
-        x = vx / magnitude;
-        y = vy / magnitude;
-        return;
 }
 
 bool SmacPlannerHybrid::is_free(const geometry_msgs::msg::PoseStamped &pose,
