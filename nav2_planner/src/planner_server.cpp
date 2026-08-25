@@ -60,11 +60,18 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
   declare_parameter("goal_occupied_tolerance", 0.5);
   declare_parameter("goal_search_resolution", 0.1);
   declare_parameter("goal_close_to_obstacle_distance", 0.3);
+  declare_parameter("enable_straight_expand", true);
+  declare_parameter("footprint_extend_back_x", 0.0);
+  declare_parameter("footprint_extend_front_x", 0.0);
+  declare_parameter("footprint_extend_y", 0.0);
+  declare_parameter("straight_check_length_ratio", 0.5);
+  declare_parameter("straight_path_resolution", 0.1);
 
   get_parameter("planner_plugins", planner_ids_);
   get_parameter("goal_occupied_tolerance", _goal_occupied_tolerance);
   get_parameter("goal_search_resolution", _goal_search_resolution);
   get_parameter("goal_close_to_obstacle_distance", _goal_close_to_obstacle_distance);
+  get_parameter("enable_straight_expand", enable_straight_expand_);
 
   if (planner_ids_ == default_ids_) {
     for (size_t i = 0; i < default_ids_.size(); ++i) {
@@ -134,9 +141,23 @@ PlannerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
     planner_ids_concat_ += planner_ids_[i] + std::string(" ");
   }
 
+  // Overlay plugin-namespace enable_straight_expand so existing yaml still works.
+  for (const auto & id : planner_ids_) {
+    const std::string plugin_param = id + ".enable_straight_expand";
+    if (has_parameter(plugin_param)) {
+      enable_straight_expand_ = get_parameter(plugin_param).as_bool();
+    }
+  }
+
+  fast_path_planner_ = std::make_unique<FastPathPlanner>();
+  fast_path_planner_->configure(
+    node, costmap_ros_, footprint_collision_checker_, planner_ids_);
+
   RCLCPP_INFO(
     get_logger(),
-    "Planner Server has %s planners available.", planner_ids_concat_.c_str());
+    "Planner Server has %s planners available. enable_straight_expand=%s",
+    planner_ids_concat_.c_str(),
+    enable_straight_expand_ ? "true" : "false");
 
   double expected_planner_frequency;
   get_parameter("expected_planner_frequency", expected_planner_frequency);
@@ -255,6 +276,10 @@ PlannerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   }
 
   planners_.clear();
+  if (fast_path_planner_) {
+    fast_path_planner_->cleanup();
+    fast_path_planner_.reset();
+  }
   costmap_thread_.reset();
   costmap_ = nullptr;
   footprint_collision_checker_ = nullptr;
@@ -467,15 +492,12 @@ PlannerServer::computePlanThroughPoses()
         // to allow for path tolerance deviations
         // curr_start = concat_path.poses.back();
         // curr_start.header = concat_path.header;
-        if (concat_path.poses.size() > 0)
-          {
+        if (concat_path.poses.size() > 0) {
             curr_start = concat_path.poses.back();
             curr_start.header = concat_path.header;
-          }
-          else
-          {
-            curr_start = start;
-          }
+        } else {
+          curr_start = start;
+        }
       }
       curr_goal = goal_poses[i];
 
@@ -678,6 +700,17 @@ PlannerServer::computePlan()
   }
 }
 
+bool
+PlannerServer::allowStraightExpand(
+  const geometry_msgs::msg::PoseStamped & start,
+  const geometry_msgs::msg::PoseStamped & /*goal*/)
+{
+  if (fast_path_planner_) {
+    fast_path_planner_->updateNarrowPassageLatch(start);
+  }
+  return enable_straight_expand_ && static_cast<bool>(fast_path_planner_);
+}
+
 nav_msgs::msg::Path
 PlannerServer::getPlan(
   const geometry_msgs::msg::PoseStamped & start,
@@ -689,15 +722,40 @@ PlannerServer::getPlan(
     "(%.2f, %.2f).", start.pose.position.x, start.pose.position.y,
     goal.pose.position.x, goal.pose.position.y);
 
+  geometry_msgs::msg::PoseStamped snapped_goal = goal;
+  if (fast_path_planner_) {
+    const bool allow_straight = allowStraightExpand(start, goal);
+    const bool allow_reverse =
+      fast_path_planner_->isBackwardActive() ||
+      fast_path_planner_->isNarrowActive(start, goal);
+    const FastPlanResult fast_result =
+      fast_path_planner_->compute(start, goal, allow_straight, allow_reverse);
+    snapped_goal = fast_result.snapped_goal;
+    if (fast_result.reason == FastPlanReason::StraightOk) {
+      RCLCPP_INFO(
+        get_logger(),
+        "FastPathPlanner returned a straight-line path with %zu poses.",
+        fast_result.path.poses.size());
+      return fast_result.path;
+    }
+    if (fast_result.reason == FastPlanReason::GoalUnreachable) {
+      RCLCPP_WARN(
+        get_logger(),
+        "FastPathPlanner: goal (%.2f, %.2f) is occupied and no free pose was found.",
+        goal.pose.position.x, goal.pose.position.y);
+      return nav_msgs::msg::Path();
+    }
+  }
+
   if (planners_.find(planner_id) != planners_.end()) {
-    return planners_[planner_id]->createPlan(start, goal);
+    return planners_[planner_id]->createPlan(start, snapped_goal);
   } else {
     if (planners_.size() == 1 && planner_id.empty()) {
       RCLCPP_WARN_ONCE(
         get_logger(), "No planners specified in action call. "
         "Server will use only plugin %s in server."
         " This warning will appear once.", planner_ids_concat_.c_str());
-      return planners_[planners_.begin()->first]->createPlan(start, goal);
+      return planners_[planners_.begin()->first]->createPlan(start, snapped_goal);
     } else {
       RCLCPP_ERROR(
         get_logger(), "planner %s is not a valid planner. "
@@ -787,41 +845,6 @@ void PlannerServer::isPathValid(
   }
 }
 
-bool PlannerServer::find_pose(geometry_msgs::msg::Pose2D original_pose, geometry_msgs::msg::Pose2D edge_pose, double d, geometry_msgs::msg::Pose2D &output_pose) 
-{
-    // 计算法向量的单位向量
-    double vx = edge_pose.x - original_pose.x;
-    double vy = edge_pose.y - original_pose.y;
-    double param_x, param_y;
-    calculate_line_param(param_x, param_y, vx, vy);
-
-    // 计算从点P出发沿法向量方向的点
-    double Qx1 = original_pose.x + param_x * d;
-    double Qy1 = original_pose.y + param_y * d;
-
-    output_pose.x = Qx1;
-    output_pose.y = Qy1;
-    RCLCPP_DEBUG(get_logger(), "original_pose x: %f, y: %f!", original_pose.x, original_pose.y);
-    RCLCPP_DEBUG(get_logger(), "edge_pose x: %f, y: %f!", edge_pose.x, edge_pose.y);
-    RCLCPP_DEBUG(get_logger(), "output_pose x: %f, y: %f!", output_pose.x, output_pose.y);
-
-    return true;
-}
-
-void PlannerServer::calculate_line_param(double &x, double &y, double vx, double vy)
-{
-        if (fabs(vx) < 1e-5 && fabs(vy) < 1e-5)
-        {
-                x = 0;
-                y = 0;
-                return;
-        }
-        double magnitude = sqrt(vx * vx + vy * vy);
-        x = vx / magnitude;
-        y = vy / magnitude;
-        return;
-}
-
 rcl_interfaces::msg::SetParametersResult
 PlannerServer::dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters)
 {
@@ -831,6 +854,10 @@ PlannerServer::dynamicParametersCallback(std::vector<rclcpp::Parameter> paramete
   for (auto parameter : parameters) {
     const auto & type = parameter.get_type();
     const auto & name = parameter.get_name();
+    auto ends_with = [&name](const std::string & suffix) {
+      return name.size() >= suffix.size() &&
+             name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+    };
 
     if (type == ParameterType::PARAMETER_DOUBLE) {
       if (name == "expected_planner_frequency") {
@@ -843,6 +870,44 @@ PlannerServer::dynamicParametersCallback(std::vector<rclcpp::Parameter> paramete
             " than 0.0 to turn on duration overrrun warning messages", parameter.as_double());
           max_planner_duration_ = 0.0;
         }
+      } else if (name == "goal_occupied_tolerance" || ends_with(".goal_occupied_tolerance")) {
+        _goal_occupied_tolerance = parameter.as_double();
+        if (fast_path_planner_) {
+          fast_path_planner_->setGoalOccupiedTolerance(_goal_occupied_tolerance);
+        }
+      } else if (name == "goal_search_resolution" || ends_with(".goal_search_resolution")) {
+        _goal_search_resolution = parameter.as_double();
+        if (fast_path_planner_) {
+          fast_path_planner_->setGoalSearchResolution(_goal_search_resolution);
+        }
+      } else if (name == "footprint_extend_back_x" || ends_with(".footprint_extend_back_x")) {
+        if (fast_path_planner_) {
+          fast_path_planner_->setFootprintExtendBackX(parameter.as_double());
+        }
+      } else if (name == "footprint_extend_front_x" || ends_with(".footprint_extend_front_x")) {
+        if (fast_path_planner_) {
+          fast_path_planner_->setFootprintExtendFrontX(parameter.as_double());
+        }
+      } else if (name == "footprint_extend_y" || ends_with(".footprint_extend_y")) {
+        if (fast_path_planner_) {
+          fast_path_planner_->setFootprintExtendY(parameter.as_double());
+        }
+      } else if (name == "straight_check_length_ratio" ||
+        ends_with(".straight_check_length_ratio"))
+      {
+        if (fast_path_planner_) {
+          fast_path_planner_->setStraightCheckLengthRatio(parameter.as_double());
+        }
+      } else if (name == "straight_path_resolution" ||
+        ends_with(".straight_path_resolution"))
+      {
+        if (fast_path_planner_) {
+          fast_path_planner_->setStraightPathResolution(parameter.as_double());
+        }
+      }
+    } else if (type == ParameterType::PARAMETER_BOOL) {
+      if (name == "enable_straight_expand" || ends_with(".enable_straight_expand")) {
+        enable_straight_expand_ = parameter.as_bool();
       }
     }
   }

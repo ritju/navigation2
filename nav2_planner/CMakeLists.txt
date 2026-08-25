@@ -18,6 +18,8 @@ find_package(tf2_ros REQUIRED)
 find_package(nav2_costmap_2d REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(nav2_core REQUIRED)
+find_package(garage_utils_msgs REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
 
 nav2_package()
 
@@ -44,10 +46,13 @@ set(dependencies
   nav2_costmap_2d
   pluginlib
   nav2_core
+  garage_utils_msgs
+  tf2_geometry_msgs
 )
 
 add_library(${library_name} SHARED
   src/planner_server.cpp
+  src/fast_path_planner.cpp
 )
 
 ament_target_dependencies(${library_name}

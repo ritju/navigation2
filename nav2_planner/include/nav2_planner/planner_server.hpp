@@ -44,6 +44,7 @@
 #include "std_msgs/msg/bool.hpp"
 #include "nav2_costmap_2d/footprint_collision_checker.hpp"
 #include "nav2_costmap_2d/exceptions.hpp"
+#include "nav2_planner/fast_path_planner.hpp"
 namespace nav2_planner
 {
 /**
@@ -224,8 +225,14 @@ protected:
    */
   rcl_interfaces::msg::SetParametersResult
   dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters);
-  bool find_pose(geometry_msgs::msg::Pose2D original_pose, geometry_msgs::msg::Pose2D edge_pose, double d, geometry_msgs::msg::Pose2D &output_pose);
-  void calculate_line_param(double &x, double &y, double vx, double vy);
+
+  /**
+   * @brief 是否尝试直线捷径：仅看 enable_straight_expand。
+   * 会先更新窄通道 latch，供 allow_reverse 使用。
+   */
+  bool allowStraightExpand(
+    const geometry_msgs::msg::PoseStamped & start,
+    const geometry_msgs::msg::PoseStamped & goal);
 
   // Dynamic parameters handler
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;
@@ -265,6 +272,8 @@ protected:
   double _goal_occupied_tolerance;
   double _goal_search_resolution;
   double _goal_close_to_obstacle_distance;
+  bool enable_straight_expand_{true};
+  std::unique_ptr<FastPathPlanner> fast_path_planner_;
 };
 
 }  // namespace nav2_planner

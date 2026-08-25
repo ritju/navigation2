@@ -55,9 +55,14 @@ void ComputePathThroughPosesAction::on_tick()
 BT::NodeStatus ComputePathThroughPosesAction::on_success()
 {
   setOutput("path", result_.result->path);
-  if (!result_.result->path.poses.empty()) {
-    markPathSyncedToCurrentMission(config().blackboard);
+  if (result_.result->path.poses.empty()) {
+    clearPathMissionSync(config().blackboard);
+    RCLCPP_ERROR(
+      node_->get_logger(),
+      "ComputePathThroughPosesAction: planner succeeded with empty path");
+    return BT::NodeStatus::FAILURE;
   }
+  markPathSyncedToCurrentMission(config().blackboard);
   return BT::NodeStatus::SUCCESS;
 }
 
@@ -65,6 +70,7 @@ BT::NodeStatus ComputePathThroughPosesAction::on_aborted()
 {
   nav_msgs::msg::Path empty_path;
   setOutput("path", empty_path);
+  clearPathMissionSync(config().blackboard);
   return BT::NodeStatus::FAILURE;
 }
 
@@ -72,7 +78,8 @@ BT::NodeStatus ComputePathThroughPosesAction::on_cancelled()
 {
   nav_msgs::msg::Path empty_path;
   setOutput("path", empty_path);
-  return BT::NodeStatus::SUCCESS;
+  clearPathMissionSync(config().blackboard);
+  return BT::NodeStatus::FAILURE;
 }
 
 }  // namespace nav2_behavior_tree

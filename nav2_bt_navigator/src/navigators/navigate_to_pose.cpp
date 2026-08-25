@@ -18,6 +18,7 @@
 #include <memory>
 #include <limits>
 #include "nav2_bt_navigator/navigators/navigate_to_pose.hpp"
+#include "nav2_behavior_tree/mission_path_sync.hpp"
 
 namespace nav2_bt_navigator
 {
@@ -57,6 +58,12 @@ NavigateToPoseNavigator::configure(
   mission_poses_qos.reliable();
   mission_poses_publisher_ = node->create_publisher<nav_msgs::msg::Path>(
     "mission_poses", mission_poses_qos);
+
+  rclcpp::QoS enable_backward_qos(rclcpp::KeepLast(1));
+  enable_backward_qos.transient_local();
+  enable_backward_qos.reliable();
+  enable_backward_publisher_ = node->create_publisher<std_msgs::msg::Bool>(
+    "/enable_backward", enable_backward_qos);
   return true;
 }
 
@@ -86,6 +93,7 @@ NavigateToPoseNavigator::cleanup()
 {
   goal_sub_.reset();
   mission_poses_publisher_.reset();
+  enable_backward_publisher_.reset();
   self_client_.reset();
   return true;
 }
@@ -126,6 +134,21 @@ NavigateToPoseNavigator::publishEmptyMissionPoses()
   mission_poses_message.header.stamp = clock_->now();
   mission_poses_message.poses.clear();
   mission_poses_publisher_->publish(mission_poses_message);
+}
+
+void
+NavigateToPoseNavigator::publishEnableBackward(bool enable)
+{
+  if (!enable_backward_publisher_) {
+    return;
+  }
+  std_msgs::msg::Bool msg;
+  msg.data = enable;
+  enable_backward_publisher_->publish(msg);
+  RCLCPP_INFO(
+    logger_,
+    "NavigateToPose: published /enable_backward=%s (reverse only in narrow passages)",
+    enable ? "true" : "false");
 }
 
 void
@@ -236,15 +259,21 @@ NavigateToPoseNavigator::initializeGoalPose(ActionT::Goal::ConstSharedPtr goal)
 
   blackboard->set<geometry_msgs::msg::PoseStamped>(goal_blackboard_id_, goal->pose);
 
-  // Drop any previous mission's path so PathExpiringTimer / FollowPath
-  // cannot treat a stale plan as valid for this goal.
+  const uint64_t mission_generation_id = nav2_behavior_tree::bumpNavMissionGenerationId(blackboard);
   nav_msgs::msg::Path cleared_path;
   cleared_path.header = goal->pose.header;
   cleared_path.header.stamp = clock_->now();
   cleared_path.poses.clear();
   blackboard->set<nav_msgs::msg::Path>(path_blackboard_id_, cleared_path);
 
+  RCLCPP_INFO(
+    logger_,
+    "Mission generation id=%lu: cleared stale path until planner completes",
+    static_cast<unsigned long>(mission_generation_id));
+
   publishEmptyMissionPoses();
+  // 覆盖途经点任务 latched 的 true，单点导航仅窄通道允许后退。
+  publishEnableBackward(false);
 }
 
 void

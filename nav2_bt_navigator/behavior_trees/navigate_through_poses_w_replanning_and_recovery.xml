@@ -34,10 +34,10 @@
             <Fallback>
               <ReactiveSequence>
                 <Inverter>
-                  <PathExpiringTimer seconds="10000" path="{path}"/>
+                  <GlobalUpdatedGoal goals="{gpp_goals}"/>
                 </Inverter>
                 <Inverter>
-                  <GlobalUpdatedGoal goals="{gpp_goals}"/>
+                  <PathExpiringTimer seconds="10000" path="{path}"/>
                 </Inverter>
               </ReactiveSequence>
               <Sequence>

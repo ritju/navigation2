@@ -91,8 +91,6 @@ public:
     const geometry_msgs::msg::PoseStamped & start,
     const geometry_msgs::msg::PoseStamped & goal) override;
   
-  bool find_pose(geometry_msgs::msg::Pose2D original_pose, geometry_msgs::msg::Pose2D edge_pose, double d, geometry_msgs::msg::Pose2D &output_pose);
-  void calculate_line_param(double &x, double &y, double vx, double vy);
   // When ignore_inscribed is true, treat only LETHAL_OBSTACLE as collision and allow INSCRIBED_INFLATED_OBSTACLE.
   // In all other cases, both LETHAL_OBSTACLE and INSCRIBED_INFLATED_OBSTACLE are treated as collision.
   bool is_free(const geometry_msgs::msg::PoseStamped &pose,
@@ -165,9 +163,8 @@ protected:
   double _goal_close_to_obstacle_distance;
   double _footprint_extend_back_x, _footprint_extend_front_x, _footprint_extend_y, _costmap_resulution;
   double footprint_back_x_, footprint_front_x_;
-  /** 是否启用直线扩展捷径（窄通道内会被临时关闭） */
+  /** 参数仍保留，实际直线捷径改由 planner_server 决策 */
   bool _enable_straight_expand{true};
-  /** 参数配置的直线扩展初始值（非窄通道模式恢复用） */
   bool _enable_straight_expand_initial{true};
   /** 狭窄通道 latch：进入宽松（base_link 在内），退出严格（footprint 全在外） */
   bool _latched_narrow_passage{false};
