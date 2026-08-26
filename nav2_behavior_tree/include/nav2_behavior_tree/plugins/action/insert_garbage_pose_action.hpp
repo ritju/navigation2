@@ -57,6 +57,8 @@ public:
   static constexpr std::size_t kSweepBruteMaxN = 6;
   /** map 下去重距离阈值米，后到且更近于此的删掉 */
   static constexpr double kDedupDistanceM = 0.4;
+  /** 认「同一颗」：按下标找到 z=-1 槽后，xy 只用来确认 3.1 vs 3.11，不拿来搜附近别的堆 */
+  static constexpr double kSentinelIdentityMatchM = 0.05;
   /** 本节点约定：插入的 G/E 点 pose.position.z 固定写此值，表示无任务序号的哨兵点 */
   static constexpr double kGarbageSentinelPoseZ = -1.0;
   /** 连续可视化归入同一任务的间隔阈值秒 */
@@ -287,7 +289,14 @@ private:
   int lookupStableENum(double x, double y) const;
 
   /**
-   * 每 tick 只检查清扫顺序上当前这一堆
+   * 按下标找这堆在 {goals} 里的槽：该格 z=-1，xy 仅确认同一颗。
+   * 找到返回 true 并写出 index；没有任何一格对上返回 false。
+   */
+  bool findUnindexedSentinelIndex(
+    const Goals & goals, double x, double y, std::size_t * index_out) const;
+
+  /**
+   * 每 tick 检查全部已插堆：{goals} 里找不到这堆自己的 z=-1 槽则从 active 去掉。
    */
   std::size_t stripReachedZNeg1Goals(
     const Goals & goals,
@@ -295,6 +304,9 @@ private:
 
   /** 每次 setOutput("output_goals") 时打日志，便于观察时机与频率 */
   void emitOutputGoals(const Goals & goals, const char * reason);
+
+  /** 紧凑打印 goals：(x,y) 或 (x,y,-1) */
+  std::string formatGoalsListCompact(const Goals & goals) const;
 
   /** 获取插入所需的全部信息并返回 */
   InsertInfo gatherInsertInfo(
@@ -334,7 +346,7 @@ private:
   bool isProtectedGarbageXy(double x, double y) const;
   void addProtectedGarbageXy(double x, double y);
   void eraseProtectedGarbageXy(double x, double y);
-  /** 正在清扫的堆：{goals} 第一段 G/E；中途新堆时这些点不剥、不重插 */
+  /** 正在清扫的堆：active 里仍占着 z=-1 槽的那一堆；中途新堆时这些点不剥、不重插 */
   bool collectInProgressKeepXy(
     const Goals & goals,
     std::vector<std::pair<double, double>> * keep_xy,
@@ -358,9 +370,7 @@ private:
     double merge_radius_m);
 
   /**
-   * 多堆清扫顺序（只读 garbage_list，不拷贝内容）。
-   * 按机器人当前朝向累加各段最小转角，取 total 最小的访问下标；
-   * 点数 <= kSweepBruteMaxN 全排列，否则贪心。
+   * 多堆清扫顺序
    */
   std::vector<std::size_t> computeSweepOrder(
     const GarbageList & garbage_list,

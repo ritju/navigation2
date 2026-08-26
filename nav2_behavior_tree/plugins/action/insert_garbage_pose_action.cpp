@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <memory>
@@ -1784,7 +1785,7 @@ InsertGarbagePose::Goals InsertGarbagePose::receiveGoals()
   }
 
   received_goals_ = goals;
-  return received_goals_;
+  return goals;
 }
 
 // 对比 goals 时间戳，外部重发任务时清空 history 和 garbage
@@ -2099,7 +2100,28 @@ bool InsertGarbagePose::isUnindexedSentinelPoseZ(
          std::lround(kGarbageSentinelPoseZ);
 }
 
-// 每 tick 只检查清扫顺序上当前这一堆：还在 {goals} 就不删，不在就从 active 去掉
+// 按下标找这堆自己的槽：该格 z=-1，xy 只确认同一颗，不拿附近别的 -1 冒充
+bool InsertGarbagePose::findUnindexedSentinelIndex(
+  const Goals & goals, double x, double y, std::size_t * index_out) const
+{
+  const double thresh2 = kSentinelIdentityMatchM * kSentinelIdentityMatchM;
+  for (std::size_t i = 0; i < goals.size(); ++i) {
+    if (!isUnindexedSentinelPoseZ(goals[i])) {
+      continue;
+    }
+    if (squaredDistanceXY(
+        goals[i].pose.position.x, goals[i].pose.position.y, x, y) < thresh2)
+    {
+      if (index_out != nullptr) {
+        *index_out = i;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+// 每 tick 扫全部已插堆：还占着自己 z=-1 槽的留下，找不到这格的从 active 去掉
 std::size_t InsertGarbagePose::stripReachedZNeg1Goals(
   const Goals & goals,
   std::string * deleted_summary)
@@ -2108,55 +2130,77 @@ std::size_t InsertGarbagePose::stripReachedZNeg1Goals(
     return 0;
   }
 
-  const double ax = active_piles_.front().pose.pose.position.x;
-  const double ay = active_piles_.front().pose.pose.position.y;
-  const int g_num = lookupStableGNum(ax, ay);
-  const double thresh2 = kDedupDistanceM * kDedupDistanceM;
+  GarbageList still;
+  still.reserve(active_piles_.size());
+  std::size_t n_gone = 0;
+  std::ostringstream deleted_oss;
 
-  bool found = false;
-  for (const auto & g : goals) {
-    if (!isUnindexedSentinelPoseZ(g)) {
+  for (const auto & pile : active_piles_) {
+    const double ax = pile.pose.pose.position.x;
+    const double ay = pile.pose.pose.position.y;
+    const int g_num = lookupStableGNum(ax, ay);
+    std::size_t idx = 0;
+    if (findUnindexedSentinelIndex(goals, ax, ay, &idx)) {
+      still.push_back(pile);
       continue;
     }
-    if (squaredDistanceXY(
-        g.pose.position.x, g.pose.position.y, ax, ay) < thresh2)
-    {
-      found = true;
-      break;
+
+    addProtectedGarbageXy(ax, ay);
+    if (g_num > 0) {
+      for (const auto & item : e_num_xy_) {
+        if (item.second == g_num) {
+          addProtectedGarbageXy(item.first.first, item.first.second);
+        }
+      }
     }
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: strip pile G%d (%.2f, %.2f): gone from {goals} "
+      "(no own z=-1 slot, xy confirm %.2fm), treated as swept",
+      g_num, ax, ay, kSentinelIdentityMatchM);
+    if (n_gone > 0) {
+      deleted_oss << " ";
+    }
+    deleted_oss << "G" << g_num << " (" << ax << "," << ay << ")";
+    ++n_gone;
   }
 
-  if (found) {
+  active_piles_ = std::move(still);
+
+  if (!active_piles_.empty()) {
+    const double ax = active_piles_.front().pose.pose.position.x;
+    const double ay = active_piles_.front().pose.pose.position.y;
+    const int g_num = lookupStableGNum(ax, ay);
+    std::size_t idx = 0;
+    const bool found = findUnindexedSentinelIndex(goals, ax, ay, &idx);
     RCLCPP_INFO_THROTTLE(
       node_->get_logger(), *(node_->get_clock()), 2000,
       "InsertGarbagePose: strip current pile G%d (%.2f, %.2f): still in {goals} "
-      "(z=-1 within %.2fm), not swept",
-      g_num, ax, ay, kDedupDistanceM);
-    return 0;
+      "at index %zu z=-1 (xy confirm %.2fm), not swept",
+      g_num, ax, ay, found ? idx : static_cast<std::size_t>(-1),
+      kSentinelIdentityMatchM);
   }
 
-  addProtectedGarbageXy(ax, ay);
-  if (g_num > 0) {
-    for (const auto & item : e_num_xy_) {
-      if (item.second == g_num) {
-        addProtectedGarbageXy(item.first.first, item.first.second);
-      }
-    }
-  }
-  active_piles_.erase(active_piles_.begin());
-
-  RCLCPP_INFO(
-    node_->get_logger(),
-    "InsertGarbagePose: strip current pile G%d (%.2f, %.2f): gone from {goals} "
-    "(no z=-1 within %.2fm), treated as swept",
-    g_num, ax, ay, kDedupDistanceM);
-
-  if (deleted_summary != nullptr) {
-    std::ostringstream deleted_oss;
-    deleted_oss << "G" << g_num << " (" << ax << "," << ay << ")";
+  if (deleted_summary != nullptr && n_gone > 0) {
     *deleted_summary = deleted_oss.str();
   }
-  return 1;
+  return n_gone;
+}
+
+std::string InsertGarbagePose::formatGoalsListCompact(const Goals & goals) const
+{
+  std::ostringstream oss;
+  oss << std::fixed << std::setprecision(2);
+  for (const auto & g : goals) {
+    const double x = g.pose.position.x;
+    const double y = g.pose.position.y;
+    oss << "(" << x << "," << y;
+    if (isUnindexedSentinelPoseZ(g)) {
+      oss << ",-1";
+    }
+    oss << ") ";
+  }
+  return oss.str();
 }
 
 // 真正写黑板前打一条日志，便于观察 output 时机和频率
@@ -2233,7 +2277,7 @@ bool InsertGarbagePose::collectInProgressKeepXy(
   }
   keep_xy->clear();
   *keep_g_num = 0;
-  const double thresh2 = kDedupDistanceM * kDedupDistanceM;
+  const double thresh2 = kSentinelIdentityMatchM * kSentinelIdentityMatchM;
 
   auto already = [&](double x, double y) {
     for (const auto & p : *keep_xy) {
@@ -2250,40 +2294,28 @@ bool InsertGarbagePose::collectInProgressKeepXy(
   };
 
   int g_num = 0;
-  for (const auto & g : goals) {
-    if (!isUnindexedSentinelPoseZ(g)) {
+  for (const auto & pile : active_piles_) {
+    const double ax = pile.pose.pose.position.x;
+    const double ay = pile.pose.pose.position.y;
+    if (!findUnindexedSentinelIndex(goals, ax, ay, nullptr)) {
       continue;
     }
-    const double x = g.pose.position.x;
-    const double y = g.pose.position.y;
-    g_num = lookupStableGNum(x, y);
-    if (g_num <= 0) {
-      g_num = lookupStableENum(x, y);
-    }
-    add(x, y);
+    g_num = lookupStableGNum(ax, ay);
+    add(ax, ay);
     break;
   }
   if (keep_xy->empty()) {
-    for (const auto & pile : active_piles_) {
-      const double ax = pile.pose.pose.position.x;
-      const double ay = pile.pose.pose.position.y;
-      bool in_goals = false;
-      for (const auto & g : goals) {
-        if (!isUnindexedSentinelPoseZ(g)) {
-          continue;
-        }
-        if (squaredDistanceXY(
-            g.pose.position.x, g.pose.position.y, ax, ay) < thresh2)
-        {
-          in_goals = true;
-          break;
-        }
-      }
-      if (!in_goals) {
+    for (std::size_t i = 0; i < goals.size(); ++i) {
+      if (!isUnindexedSentinelPoseZ(goals[i])) {
         continue;
       }
-      g_num = lookupStableGNum(ax, ay);
-      add(ax, ay);
+      const double x = goals[i].pose.position.x;
+      const double y = goals[i].pose.position.y;
+      g_num = lookupStableGNum(x, y);
+      if (g_num <= 0) {
+        g_num = lookupStableENum(x, y);
+      }
+      add(x, y);
       break;
     }
   }
@@ -2323,16 +2355,8 @@ bool InsertGarbagePose::isPendingGarbageInGoals(const Goals & goals) const
   if (!has_pending_garbage_) {
     return false;
   }
-  const double thresh2 = kDedupDistanceM * kDedupDistanceM;
-  for (const auto & g : goals) {
-    if (squaredDistanceXY(
-        g.pose.position.x, g.pose.position.y,
-        pending_garbage_xy_.first, pending_garbage_xy_.second) < thresh2)
-    {
-      return true;
-    }
-  }
-  return false;
+  return findUnindexedSentinelIndex(
+    goals, pending_garbage_xy_.first, pending_garbage_xy_.second, nullptr);
 }
 
 namespace
@@ -4156,19 +4180,8 @@ BT::NodeStatus InsertGarbagePose::tick()
         const double ax = active_piles_[i].pose.pose.position.x;
         const double ay = active_piles_[i].pose.pose.position.y;
         const double dist = std::sqrt(squaredDistanceXY(rx, ry, ax, ay));
-        bool in_goals = false;
-        for (const auto & g : goals_now) {
-          if (!isUnindexedSentinelPoseZ(g)) {
-            continue;
-          }
-          if (squaredDistanceXY(
-              g.pose.position.x, g.pose.position.y, ax, ay) <
-            kDedupDistanceM * kDedupDistanceM)
-          {
-            in_goals = true;
-            break;
-          }
-        }
+        std::size_t in_idx = 0;
+        const bool in_goals = findUnindexedSentinelIndex(goals_now, ax, ay, &in_idx);
         bool fp_arrived = false;
         if (have_fp) {
           capella_ros_msg::msg::GarbageDetect tmp = active_piles_[i];
@@ -4181,8 +4194,11 @@ BT::NodeStatus InsertGarbagePose::tick()
         const int g_num = lookupStableGNum(ax, ay);
         active_oss << "G" << (g_num > 0 ? g_num : 0)
                    << "(" << ax << "," << ay << ") dist=" << dist
-                   << " in_goals=" << (in_goals ? 1 : 0)
-                   << " fp_arrived=" << (fp_arrived ? 1 : 0);
+                   << " in_goals=" << (in_goals ? 1 : 0);
+        if (in_goals) {
+          active_oss << " idx=" << in_idx;
+        }
+        active_oss << " fp_arrived=" << (fp_arrived ? 1 : 0);
       }
       std::ostringstream prot_oss;
       for (std::size_t i = 0; i < reached_garbage_xy_.size(); ++i) {
@@ -4285,7 +4301,7 @@ BT::NodeStatus InsertGarbagePose::tick()
     std::vector<std::pair<double, double>> keep_xy;
     int keep_g_num = 0;
     const bool have_keep = collectInProgressKeepXy(goals_now, &keep_xy, &keep_g_num);
-    const double thresh2 = kDedupDistanceM * kDedupDistanceM;
+    const double thresh2 = kSentinelIdentityMatchM * kSentinelIdentityMatchM;
     auto isKeepXy = [&](double x, double y) {
       for (const auto & p : keep_xy) {
         if (squaredDistanceXY(p.first, p.second, x, y) < thresh2) {
@@ -4294,6 +4310,10 @@ BT::NodeStatus InsertGarbagePose::tick()
       }
       return false;
     };
+    std::size_t keep_idx = 0;
+    const bool keep_idx_found = have_keep && !keep_xy.empty() &&
+      findUnindexedSentinelIndex(
+        goals_now, keep_xy.front().first, keep_xy.front().second, &keep_idx);
 
     std::ostringstream old_active_oss;
     for (std::size_t i = 0; i < active_piles_.size(); ++i) {
@@ -4318,14 +4338,15 @@ BT::NodeStatus InsertGarbagePose::tick()
       }
       keep_oss << "(" << keep_xy[i].first << "," << keep_xy[i].second << ")";
     }
+    const std::string keep_idx_str = keep_idx_found ? std::to_string(keep_idx) : "-";
     RCLCPP_INFO(
       node_->get_logger(),
       "InsertGarbagePose: diag mid-mission BEGIN goals=%zu active_n=%zu %s "
-      "new_list_n=%zu %s keep_g=%d keep_xy=%s "
-      "(keep in-progress G/E, reorder unstarted+new only)",
+      "new_list_n=%zu %s keep_g=%d keep_idx=%s keep_xy=%s "
+      "(keep in-progress G/E slot, reorder unstarted+new only)",
       goals_now.size(), active_piles_.size(), old_active_oss.str().c_str(),
       garbage_list_.size(), new_list_oss.str().c_str(),
-      keep_g_num, keep_oss.str().c_str());
+      keep_g_num, keep_idx_str.c_str(), keep_oss.str().c_str());
 
     GarbageList keep_active;
     GarbageList rest_active;
@@ -4355,7 +4376,8 @@ BT::NodeStatus InsertGarbagePose::tick()
     Goals kept_goals;
     kept_goals.reserve(goals_now.size());
     std::size_t peeled_n = 0;
-    for (const auto & g : goals_now) {
+    for (std::size_t i = 0; i < goals_now.size(); ++i) {
+      const auto & g = goals_now[i];
       const double px = g.pose.position.x;
       const double py = g.pose.position.y;
       if (isUnindexedSentinelPoseZ(g) && have_keep && !isKeepXy(px, py)) {
@@ -4363,8 +4385,9 @@ BT::NodeStatus InsertGarbagePose::tick()
         eraseProtectedGarbageXy(px, py);
         RCLCPP_INFO(
           node_->get_logger(),
-          "InsertGarbagePose: diag mid-mission peel unstarted (%.2f, %.2f) z=%.1f",
-          px, py, g.pose.position.z);
+          "InsertGarbagePose: diag mid-mission peel unstarted idx=%zu "
+          "(%.2f, %.2f) z=%.1f",
+          i, px, py, g.pose.position.z);
         continue;
       }
       kept_goals.push_back(g);
@@ -4524,6 +4547,10 @@ BT::NodeStatus InsertGarbagePose::tick()
       "goals %zu -> %zu",
       info.dist_label, gx, gy, info.extend_inserted ? 1 : 0,
       pile_deleted, goals_before_pile, goals_now.size());
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: goals list (%zu): %s",
+      goals_now.size(), formatGoalsListCompact(goals_now).c_str());
     const rclcpp::Time viz_now = node_->now();
     if (has_last_viz_time_ &&
       (viz_now - last_viz_time_).seconds() > kVizTaskWindowSec)
