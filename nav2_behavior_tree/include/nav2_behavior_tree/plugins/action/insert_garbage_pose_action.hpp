@@ -66,9 +66,9 @@ public:
   /** from 离 G 近于此则视为已到达：不用欧氏远近选侧，沿车头在 G 后方虚设来向 */
   static constexpr double kMinExtendFromDistM = 0.5;
   /** 墙切向走廊失败后，绕该切向左右各扫到此角度 */
-  static constexpr double kExtendYawSweepMaxDeg = 45.0;
+  static constexpr double kExtendYawSweepMaxDeg = 30.0;
   /** 切向扫角步长 */
-  static constexpr double kExtendYawSweepStepDeg = 15.0;
+  static constexpr double kExtendYawSweepStepDeg = 10.0;
 
   // 插入前采集到的全部信息，valid 为 false 时不做删点插点
   struct InsertInfo
@@ -282,14 +282,15 @@ private:
   /** 本任务内按 xy 分配稳定 G 编号，重插同一堆不改号 */
   int assignStableGNum(double x, double y);
   int lookupStableGNum(double x, double y) const;
+  /** E 点坐标登记所属 G 编号，footprint 删 E 时显示 E1/E2… */
+  void registerStableENum(double x, double y, int g_num);
+  int lookupStableENum(double x, double y) const;
 
   /**
-   * 只检查当前正在走的队首点：若是 G/E 哨兵且 footprint 已到达则剔除。
+   * 每 tick 只检查清扫顺序上当前这一堆
    */
   std::size_t stripReachedZNeg1Goals(
-    Goals & goals,
-    const std::vector<geometry_msgs::msg::Point> & footprint_map,
-    double robot_x, double robot_y, double robot_yaw,
+    const Goals & goals,
     std::string * deleted_summary = nullptr);
 
   /** 每次 setOutput("output_goals") 时打日志，便于观察时机与频率 */
@@ -332,6 +333,12 @@ private:
   bool isNearReachedGarbage(double x, double y) const;
   bool isProtectedGarbageXy(double x, double y) const;
   void addProtectedGarbageXy(double x, double y);
+  void eraseProtectedGarbageXy(double x, double y);
+  /** 正在清扫的堆：{goals} 第一段 G/E；中途新堆时这些点不剥、不重插 */
+  bool collectInProgressKeepXy(
+    const Goals & goals,
+    std::vector<std::pair<double, double>> * keep_xy,
+    int * keep_g_num) const;
 
   /** 上一堆插入点是否仍在 goals 中 */
   bool isPendingGarbageInGoals(const Goals & goals) const;
@@ -372,13 +379,13 @@ private:
 
   /**
    * 导航中新堆：4-1/4-2 重排 garbage_list_。
-   * 返回 true 表示 4-1（新堆在队首，可破 pending）。
+   * 返回 true 表示 4-1
    */
   bool reorderGarbageListWithNewPile(
     double robot_x, double robot_y, double robot_yaw,
     std::size_t new_idx);
 
-  /** 相对 before，找出本轮新入队的堆下标（多个时取离机器人最近） */
+  /** 相对 before，找出本轮新入队的堆下标 */
   bool findNewGarbageIndex(
     const GarbageList & before,
     double robot_x, double robot_y,
@@ -425,6 +432,9 @@ private:
     std::size_t & out_idx,
     std::size_t * nearest_seg_out = nullptr,
     std::size_t * start_idx_out = nullptr) const;
+
+  /** 打印 garbage_list_ 当前内容，reason 为更新原因 */
+  void logGarbageListState(const char * reason) const;
 
   /** 按开关往 RViz 发 Marker；同一任务内累加，新任务再清 */
   void publishVisualization(
@@ -500,7 +510,7 @@ private:
   std::deque<capella_ros_msg::msg::GarbageDetect> history_list_;
   /** 后处理结果列表 */
   GarbageList garbage_list_;
-  /** 已插入且 goals 里尚未扫过的堆，供新垃圾到来时整表重排再放回 */
+  /** 已插入且 goals 里尚未扫过的堆；中途新堆只重排其中尚未开始的，正在扫的不重插 */
   GarbageList active_piles_;
   /** 从黑板接收到的完整 goals */
   Goals received_goals_;
@@ -521,6 +531,8 @@ private:
   std::vector<FootprintStrippedVizPoint> footprint_stripped_viz_;
   /** 本任务内各堆稳定 G 编号，避免删点全显示成 G1 */
   std::vector<std::pair<std::pair<double, double>, int>> g_num_xy_;
+  /** E 点坐标 -> 所属 G 编号 */
+  std::vector<std::pair<std::pair<double, double>, int>> e_num_xy_;
   int next_g_num_{1};
   /** 上一次发布可视化的时刻 */
   rclcpp::Time last_viz_time_{0, 0, RCL_ROS_TIME};
