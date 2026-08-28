@@ -1780,11 +1780,8 @@ InsertGarbagePose::Goals InsertGarbagePose::receiveGoals()
     RCLCPP_WARN(
       node_->get_logger(),
       "InsertGarbagePose: failed to get input_goals");
-    received_goals_.clear();
-    return received_goals_;
+    return {};
   }
-
-  received_goals_ = goals;
   return goals;
 }
 

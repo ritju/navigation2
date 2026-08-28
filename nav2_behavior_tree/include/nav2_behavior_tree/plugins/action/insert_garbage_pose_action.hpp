@@ -522,8 +522,6 @@ private:
   GarbageList garbage_list_;
   /** 已插入且 goals 里尚未扫过的堆；中途新堆只重排其中尚未开始的，正在扫的不重插 */
   GarbageList active_piles_;
-  /** 从黑板接收到的完整 goals */
-  Goals received_goals_;
   /** 当前认定的任务时间戳，与 goals 上统一 stamp 对齐 */
   rclcpp::Time mission_stamp_record_{0, 0, RCL_ROS_TIME};
   bool has_mission_stamp_{false};
