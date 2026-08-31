@@ -18,6 +18,9 @@ find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(nav2_util REQUIRED)
 find_package(capella_ros_msg REQUIRED)
+find_package(garage_utils_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
+
 
 nav2_package()
 
@@ -43,6 +46,8 @@ set(dependencies
   std_srvs
   nav2_util
   capella_ros_msg
+  garage_utils_msgs
+  visualization_msgs
 )
 
 add_library(${library_name} SHARED
@@ -202,6 +207,9 @@ list(APPEND plugin_libs nav2_navigate_through_poses_action_bt_node)
 
 add_library(nav2_remove_passed_goals_action_bt_node SHARED plugins/action/remove_passed_goals_action.cpp)
 list(APPEND plugin_libs nav2_remove_passed_goals_action_bt_node)
+
+add_library(nav2_insert_garbage_pose_action_bt_node SHARED plugins/action/insert_garbage_pose_action.cpp)
+list(APPEND plugin_libs nav2_insert_garbage_pose_action_bt_node)
 
 add_library(nav2_pipeline_sequence_bt_node SHARED plugins/control/pipeline_sequence.cpp)
 list(APPEND plugin_libs nav2_pipeline_sequence_bt_node)
