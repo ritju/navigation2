@@ -20,6 +20,7 @@
 #include <limits>
 #include <iterator>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <utility>
@@ -32,10 +33,209 @@
 #include "nav2_costmap_2d/cost_values.hpp"
 
 #include "nav2_planner/planner_server.hpp"
+#include "nav2_smac_planner/hybrid_heading_hint.hpp"
+#include "tf2/utils.h"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 using namespace std::chrono_literals;
 using rcl_interfaces::msg::ParameterType;
 using std::placeholders::_1;
+
+namespace
+{
+
+struct PlanSessionStats
+{
+  size_t n_goals{0};
+  size_t n_success{0};
+  size_t n_straight{0};
+  size_t n_hybrid{0};
+  double t_straight_sec{0.0};
+  double t_hybrid_sec{0.0};
+
+  struct FailedGoal
+  {
+    unsigned int index{0};
+    double x{0.0};
+    double y{0.0};
+    std::string reason;
+  };
+  std::vector<FailedGoal> failed;
+
+  void recordKind(nav2_planner::GetPlanKind kind, double dt_sec)
+  {
+    if (kind == nav2_planner::GetPlanKind::Straight) {
+      ++n_straight;
+      t_straight_sec += dt_sec;
+    } else if (kind == nav2_planner::GetPlanKind::Hybrid) {
+      ++n_hybrid;
+      t_hybrid_sec += dt_sec;
+    }
+  }
+
+  void addFailed(
+    unsigned int index, const geometry_msgs::msg::PoseStamped & goal,
+    const std::string & reason)
+  {
+    failed.push_back({index, goal.pose.position.x, goal.pose.position.y, reason});
+  }
+};
+
+std::string failedReasonFromMeta(
+  nav2_planner::GetPlanKind kind, bool path_empty, bool heading_rejected)
+{
+  if (heading_rejected) {
+    return "hybrid_heading_rejected";
+  }
+  if (kind == nav2_planner::GetPlanKind::Failed) {
+    return "fastpath_unreachable_or_no_path";
+  }
+  if (kind == nav2_planner::GetPlanKind::Hybrid && path_empty) {
+    return "hybrid_empty";
+  }
+  if (kind == nav2_planner::GetPlanKind::Straight) {
+    return path_empty ? "straight_empty" : "straight_invalid";
+  }
+  if (kind == nav2_planner::GetPlanKind::Hybrid) {
+    return "hybrid_invalid";
+  }
+  return "empty_or_invalid_path";
+}
+
+double wrapPi(double a)
+{
+  return std::remainder(a, 2.0 * M_PI);
+}
+
+double pathChordYaw(const nav_msgs::msg::Path & p)
+{
+  if (p.poses.size() < 2) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  const auto & a = p.poses[p.poses.size() - 2].pose.position;
+  const auto & b = p.poses.back().pose.position;
+  return std::atan2(b.y - a.y, b.x - a.x);
+}
+
+double pathEndYaw(const nav_msgs::msg::Path & p)
+{
+  if (p.poses.empty()) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return tf2::getYaw(p.poses.back().pose.orientation);
+}
+
+enum class HeadingTrimKind
+{
+  Unchanged,
+  Trimmed,
+  Failed
+};
+
+HeadingTrimKind trimHybridPathTailByHeading(
+  nav_msgs::msg::Path & path,
+  double goal_yaw,
+  double heading_tol,
+  double max_trim_length)
+{
+  if (path.poses.empty()) {
+    return HeadingTrimKind::Failed;
+  }
+  auto yaw_ok = [&](size_t i) {
+    return std::fabs(
+      wrapPi(tf2::getYaw(path.poses[i].pose.orientation) - goal_yaw)) <= heading_tol;
+  };
+  const size_t n = path.poses.size();
+  if (n == 1) {
+    return yaw_ok(0) ? HeadingTrimKind::Unchanged : HeadingTrimKind::Failed;
+  }
+  if (yaw_ok(n - 1)) {
+    return HeadingTrimKind::Unchanged;
+  }
+  double acc = 0.0;
+  int keep = -1;
+  for (int i = static_cast<int>(n) - 1; i >= 0; --i) {
+    if (i < static_cast<int>(n) - 1) {
+      const auto & a = path.poses[static_cast<size_t>(i)].pose.position;
+      const auto & b = path.poses[static_cast<size_t>(i + 1)].pose.position;
+      acc += std::hypot(b.x - a.x, b.y - a.y);
+      if (acc > max_trim_length + 1e-9) {
+        break;
+      }
+    }
+    if (yaw_ok(static_cast<size_t>(i))) {
+      keep = i;
+      break;
+    }
+  }
+  if (keep < 1) {
+    return HeadingTrimKind::Failed;
+  }
+  path.poses.resize(static_cast<size_t>(keep) + 1);
+  return HeadingTrimKind::Trimmed;
+}
+
+struct HybridHeadingHintGuard
+{
+  ~HybridHeadingHintGuard()
+  {
+    nav2_smac_planner::setHybridPendingGoalHeadingTolerance(-1.0);
+  }
+};
+
+void logPlanSessionStats(
+  const rclcpp::Logger & logger,
+  const char * tag,
+  const PlanSessionStats & stats,
+  double total_sec,
+  size_t concat_poses)
+{
+  auto fmt_avg_ms = [](size_t n, double t_sec) -> std::string {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(2);
+    if (n == 0) {
+      oss << "0.00ms";
+    } else {
+      oss << (t_sec / static_cast<double>(n)) * 1000.0 << "ms";
+    }
+    return oss.str();
+  };
+  const std::string avg_s = fmt_avg_ms(stats.n_straight, stats.t_straight_sec);
+  const std::string avg_h = fmt_avg_ms(stats.n_hybrid, stats.t_hybrid_sec);
+
+  RCLCPP_INFO(
+    logger,
+    "[%s] summary: goals=%zu concat_poses=%zu total=%.3fs "
+    "success=%zu failed=%zu straight=%zu avg=%s hybrid=%zu avg=%s",
+    tag,
+    stats.n_goals,
+    concat_poses,
+    total_sec,
+    stats.n_success,
+    stats.failed.size(),
+    stats.n_straight,
+    avg_s.c_str(),
+    stats.n_hybrid,
+    avg_h.c_str());
+
+  if (stats.failed.empty()) {
+    RCLCPP_INFO(logger, "[%s] failed goals: none", tag);
+    return;
+  }
+
+  std::ostringstream oss;
+  oss << std::fixed << std::setprecision(3);
+  for (size_t k = 0; k < stats.failed.size(); ++k) {
+    const auto & f = stats.failed[k];
+    if (k > 0) {
+      oss << "; ";
+    }
+    oss << "via=" << f.index << " (" << f.x << ", " << f.y << ") reason=" << f.reason;
+  }
+  RCLCPP_WARN(logger, "[%s] failed goals: %s", tag, oss.str().c_str());
+}
+
+}  // namespace
 
 namespace nav2_planner
 {
@@ -48,8 +248,7 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
   costmap_(nullptr),
   footprint_collision_checker_(nullptr),
   _goal_occupied_tolerance(0.5),
-   _goal_search_resolution(0.1),
-  _goal_close_to_obstacle_distance(0.3)
+  _goal_search_resolution(0.1)
 
 {
   RCLCPP_INFO(get_logger(), "Creating");
@@ -59,19 +258,43 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
   declare_parameter("expected_planner_frequency", 1.0);
   declare_parameter("goal_occupied_tolerance", 0.5);
   declare_parameter("goal_search_resolution", 0.1);
-  declare_parameter("goal_close_to_obstacle_distance", 0.3);
   declare_parameter("enable_straight_expand", true);
-  declare_parameter("footprint_extend_back_x", 0.0);
-  declare_parameter("footprint_extend_front_x", 0.0);
-  declare_parameter("footprint_extend_y", 0.0);
   declare_parameter("straight_check_length_ratio", 0.5);
   declare_parameter("straight_path_resolution", 0.1);
+  declare_parameter("publish_planning_debug", true);
+  declare_parameter("planning_debug_footprint_stride", 0);
+  declare_parameter("planning_debug_keep_mode", "session");
+
+  declare_parameter("near_distance_threshold", 2.0);
+  declare_parameter("near_yaw_threshold", 0.35);
+  declare_parameter("enable_line_rotate", true);
+  declare_parameter("line_rotate_max_iters", 5);
+  declare_parameter("line_rotate_goal_shift_tol", 0.5);
+  declare_parameter("corridor_intrusion_tol", 0.08);
+  declare_parameter("enable_line_stretch", true);
+  declare_parameter("line_stretch_max", 0.4);
+  declare_parameter("line_stretch_goal_window", 0.8);
+  declare_parameter("line_stretch_allow_extend", false);
+  declare_parameter("rewrite_via_yaw_to_approach", true);
+  declare_parameter("via_heading_tolerance", 0.35);
+  declare_parameter("via_heading_trim_length", 1.0);
 
   get_parameter("planner_plugins", planner_ids_);
   get_parameter("goal_occupied_tolerance", _goal_occupied_tolerance);
   get_parameter("goal_search_resolution", _goal_search_resolution);
-  get_parameter("goal_close_to_obstacle_distance", _goal_close_to_obstacle_distance);
   get_parameter("enable_straight_expand", enable_straight_expand_);
+  get_parameter("near_distance_threshold", near_distance_threshold_);
+  get_parameter("near_yaw_threshold", near_yaw_threshold_);
+  get_parameter("enable_line_rotate", enable_line_rotate_);
+  get_parameter("line_rotate_max_iters", line_rotate_max_iters_);
+  get_parameter("line_rotate_goal_shift_tol", line_rotate_goal_shift_tol_);
+  get_parameter("enable_line_stretch", enable_line_stretch_);
+  get_parameter("line_stretch_max", line_stretch_max_);
+  get_parameter("line_stretch_goal_window", line_stretch_goal_window_);
+  get_parameter("line_stretch_allow_extend", line_stretch_allow_extend_);
+  get_parameter("rewrite_via_yaw_to_approach", rewrite_via_yaw_to_approach_);
+  get_parameter("via_heading_tolerance", via_heading_tolerance_);
+  get_parameter("via_heading_trim_length", via_heading_trim_length_);
 
   if (planner_ids_ == default_ids_) {
     for (size_t i = 0; i < default_ids_.size(); ++i) {
@@ -141,23 +364,26 @@ PlannerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
     planner_ids_concat_ += planner_ids_[i] + std::string(" ");
   }
 
-  // Overlay plugin-namespace enable_straight_expand so existing yaml still works.
-  for (const auto & id : planner_ids_) {
-    const std::string plugin_param = id + ".enable_straight_expand";
-    if (has_parameter(plugin_param)) {
-      enable_straight_expand_ = get_parameter(plugin_param).as_bool();
-    }
-  }
-
   fast_path_planner_ = std::make_unique<FastPathPlanner>();
   fast_path_planner_->configure(
     node, costmap_ros_, footprint_collision_checker_, planner_ids_);
 
+  debug_viz_ = std::make_shared<PlanningDebugViz>();
+  debug_viz_->configure(node, costmap_ros_);
+  fast_path_planner_->setDebugViz(debug_viz_);
+
   RCLCPP_INFO(
     get_logger(),
-    "Planner Server has %s planners available. enable_straight_expand=%s",
+    "Planner Server has %s planners available. enable_straight_expand=%s "
+    "near_dist=%.2f near_yaw=%.2f via_heading_tol=%.2f via_trim_len=%.2f "
+    "stretch=%s rotate=%s debug=%s",
     planner_ids_concat_.c_str(),
-    enable_straight_expand_ ? "true" : "false");
+    enable_straight_expand_ ? "true" : "false",
+    near_distance_threshold_, near_yaw_threshold_,
+    via_heading_tolerance_, via_heading_trim_length_,
+    enable_line_stretch_ ? "true" : "false",
+    enable_line_rotate_ ? "true" : "false",
+    (debug_viz_ && debug_viz_->enabled()) ? "true" : "false");
 
   double expected_planner_frequency;
   get_parameter("expected_planner_frequency", expected_planner_frequency);
@@ -200,6 +426,9 @@ PlannerServer::on_activate(const rclcpp_lifecycle::State & /*state*/)
   RCLCPP_INFO(get_logger(), "Activating");
 
   plan_publisher_->on_activate();
+  if (debug_viz_) {
+    debug_viz_->activate();
+  }
   action_server_pose_->activate();
   action_server_poses_->activate();
   costmap_ros_->activate();
@@ -235,6 +464,9 @@ PlannerServer::on_deactivate(const rclcpp_lifecycle::State & /*state*/)
   action_server_pose_->deactivate();
   action_server_poses_->deactivate();
   plan_publisher_->on_deactivate();
+  if (debug_viz_) {
+    debug_viz_->deactivate();
+  }
 
   /*
    * The costmap is also a lifecycle node, so it may have already fired on_deactivate
@@ -279,6 +511,10 @@ PlannerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   if (fast_path_planner_) {
     fast_path_planner_->cleanup();
     fast_path_planner_.reset();
+  }
+  if (debug_viz_) {
+    debug_viz_->cleanup();
+    debug_viz_.reset();
   }
   costmap_thread_.reset();
   costmap_ = nullptr;
@@ -452,6 +688,19 @@ PlannerServer::computePlanThroughPoses()
   }
   auto result = std::make_shared<ActionThroughPoses::Result>();
   nav_msgs::msg::Path concat_path;
+  PlanSessionStats stats;
+  stats.n_goals = goal_poses.size();
+  bool summary_logged = false;
+  auto log_summary = [&]() {
+    if (summary_logged) {
+      return;
+    }
+    summary_logged = true;
+    logPlanSessionStats(
+      get_logger(), "ThroughPoses", stats,
+      (this->now() - start_time).seconds(),
+      concat_path.poses.size());
+  };
 
   try {
     if (isServerInactive(action_server_poses_) || isCancelRequested(action_server_poses_)) {
@@ -476,12 +725,28 @@ PlannerServer::computePlanThroughPoses()
     }
     start.pose.position.z = 0.0;  // Ensure z is zero for 2D planning
 
+    if (debug_viz_) {
+      debug_viz_->beginSession();
+    }
+    auto flush_dbg = [this]() {
+      if (debug_viz_) {
+        debug_viz_->endSession();
+      }
+    };
+
+    RCLCPP_INFO(
+      get_logger(),
+      "[ThroughPoses] start=(%.3f, %.3f, yaw=%.3f) goals=%zu enable_straight=%s",
+      start.pose.position.x, start.pose.position.y,
+      tf2::getYaw(start.pose.orientation), goal_poses.size(),
+      enable_straight_expand_ ? "true" : "false");
+
     // Get consecutive paths through these points
     geometry_msgs::msg::PoseStamped curr_start, curr_goal;
-    size_t planned_success_count = 0;
-    size_t planned_failed_count = 0;
     for (unsigned int i = 0; i != goal_poses.size(); i++) {
       if (isServerInactive(action_server_poses_) || isCancelRequested(action_server_poses_)) {
+        log_summary();
+        flush_dbg();
         return;
       }
       // Get starting point
@@ -503,7 +768,40 @@ PlannerServer::computePlanThroughPoses()
 
       // Transform them into the global frame
       if (!transformPosesToGlobalFrame(action_server_poses_, curr_start, curr_goal)) {
+        log_summary();
+        flush_dbg();
         return;
+      }
+
+      const bool is_last = (i + 1u == static_cast<unsigned int>(goal_poses.size()));
+      const bool near = isNearSegment(curr_start, curr_goal);
+      const double orig_goal_yaw = tf2::getYaw(curr_goal.pose.orientation);
+      const bool rewrite_yaw = shouldRewriteGoalYawToApproach(
+        curr_start, curr_goal, is_last);
+
+      RCLCPP_INFO(
+        get_logger(),
+        "[ThroughPoses] via=%u/%zu start=(%.3f, %.3f, yaw=%.3f) goal=(%.3f, %.3f, yaw=%.3f) "
+        "dist=%.3f near=%s last=%s rewrite_yaw=%s stretch=%s rotate=%s "
+        "footprint_corridor=%s concat_poses=%zu",
+        i, goal_poses.size(),
+        curr_start.pose.position.x, curr_start.pose.position.y,
+        tf2::getYaw(curr_start.pose.orientation),
+        curr_goal.pose.position.x, curr_goal.pose.position.y,
+        tf2::getYaw(curr_goal.pose.orientation),
+        std::hypot(
+          curr_goal.pose.position.x - curr_start.pose.position.x,
+          curr_goal.pose.position.y - curr_start.pose.position.y),
+        near ? "true" : "false",
+        is_last ? "true" : "false",
+        rewrite_yaw ? "true" : "false",
+        (near || is_last) ? "true" : "false",
+        near ? "true" : "false",
+        is_last ? "true" : "false",
+        concat_path.poses.size());
+
+      if (debug_viz_) {
+        debug_viz_->setSegmentContext(i, goal_poses.size(), curr_start, curr_goal);
       }
 
       // Get plan from start -> goal
@@ -513,13 +811,20 @@ PlannerServer::computePlanThroughPoses()
       const std::string start_occupied_msg = "Cannot generate a plan, start is occupied!";
       const std::string start_lethal_msg =
         "Starting point in lethal space! Cannot create feasible plan.";
+      GetPlanMeta last_meta;
+      bool plugin_threw = false;
+      const auto t_via = this->now();
       while (rclcpp::ok()) {
         if (!transformPosesToGlobalFrame(action_server_poses_, curr_start, curr_goal)) {
+          log_summary();
+          flush_dbg();
           return;
         }
 
         try {
-          curr_path = getPlan(curr_start, curr_goal, goal->planner_id);
+          curr_path = getPlan(
+            curr_start, curr_goal, goal->planner_id,
+            near || is_last, near, is_last, &last_meta);
           break;  // planned (or at least returned something for validation)
         } catch (const std::runtime_error & ex) {
           RCLCPP_WARN(
@@ -551,29 +856,70 @@ PlannerServer::computePlanThroughPoses()
 
           // Other runtime errors (or we can't recover): leave curr_path empty and move on.
           curr_path = nav_msgs::msg::Path();
+          plugin_threw = true;
           break;
         }
       }
+      stats.recordKind(last_meta.kind, (this->now() - t_via).seconds());
       // check path for validity
       if (!validatePath(curr_goal, curr_path, goal->planner_id)) {
-        planned_failed_count++;
+        const std::string reason = plugin_threw ?
+          "plugin_exception" :
+          failedReasonFromMeta(
+            last_meta.kind, curr_path.poses.empty(), last_meta.heading_rejected);
+        stats.addFailed(i, curr_goal, reason);
         RCLCPP_INFO(
           get_logger(),
-          "Totally poses: %ld, planned poses: %d, failed to generate path to goal (%.2f, %.2f)!",
-          goal->goals.size(), i,
+          "[ThroughPoses] via=%u FAILED concat_unchanged poses=%zu goal=(%.2f, %.2f) last=%s",
+          i, concat_path.poses.size(),
           curr_goal.pose.position.x,
-          curr_goal.pose.position.y);
+          curr_goal.pose.position.y,
+          is_last ? "true" : "false");
+        if (is_last) {
+          RCLCPP_ERROR(
+            get_logger(),
+            "[ThroughPoses] last goal failed, terminating through-poses");
+          log_summary();
+          flush_dbg();
+          action_server_poses_->terminate_current();
+          return;
+        }
         continue;
-        // return;
       }
-      planned_success_count++;
-      
+      stats.n_success++;
+
+      if (last_meta.kind == GetPlanKind::Hybrid && !curr_path.poses.empty()) {
+        const double request_yaw = tf2::getYaw(curr_goal.pose.orientation);
+        const double path_end = pathEndYaw(curr_path);
+        const double chord = pathChordYaw(curr_path);
+        const auto & end_p = curr_path.poses.back().pose.position;
+        const double xy_err = std::hypot(
+          end_p.x - curr_goal.pose.position.x,
+          end_p.y - curr_goal.pose.position.y);
+        RCLCPP_INFO(
+          get_logger(),
+          "[ThroughPoses] via=%u Hybrid yaw orig=%.3f request=%.3f snapped=%.3f "
+          "path_end=%.3f chord=%.3f d_end_orig=%.3f d_end_req=%.3f d_end_snap=%.3f "
+          "d_chord_orig=%.3f d_chord_req=%.3f xy_err=%.3f end_xy=(%.3f, %.3f) "
+          "rewrite=%s",
+          i, orig_goal_yaw, request_yaw, last_meta.snapped_yaw,
+          path_end, chord,
+          wrapPi(path_end - orig_goal_yaw),
+          wrapPi(path_end - request_yaw),
+          wrapPi(path_end - last_meta.snapped_yaw),
+          wrapPi(chord - orig_goal_yaw),
+          wrapPi(chord - request_yaw),
+          xy_err, end_p.x, end_p.y,
+          rewrite_yaw ? "true" : "false");
+      }
+
       RCLCPP_INFO(
           get_logger(),
-          "Totally poses: %ld, planned poses: %d, successfully generate path to goal (%.2f, %.2f)!",
-          goal->goals.size(), i,
+          "[ThroughPoses] via=%u OK poses=%zu goal=(%.2f, %.2f) concat=%zu",
+          i, curr_path.poses.size(),
           curr_goal.pose.position.x,
-          curr_goal.pose.position.y);
+          curr_goal.pose.position.y,
+          concat_path.poses.size() + curr_path.poses.size());
 
       // Concatenate paths together
       concat_path.poses.insert(
@@ -583,19 +929,13 @@ PlannerServer::computePlanThroughPoses()
 
     if (concat_path.poses.size() == 0)
     {
+      log_summary();
+      flush_dbg();
       action_server_poses_->terminate_current();
       return;
     }
 
-    RCLCPP_INFO(
-      get_logger(),
-      "Total path size through %zu poses is %zu",
-      goal->goals.size(), concat_path.poses.size());
-      
-    RCLCPP_INFO(
-      get_logger(),
-      "PlanThroughPoses summary: success=%zu, failed=%zu, total=%zu",
-      planned_success_count, planned_failed_count, goal_poses.size());
+    log_summary();
 
     // Publish the plan for visualization purposes
     result->path = concat_path;
@@ -611,16 +951,17 @@ PlannerServer::computePlanThroughPoses()
         1 / max_planner_duration_, 1 / cycle_duration.seconds());
     }
     action_server_poses_->succeeded_current(result);
-    RCLCPP_INFO(
-      get_logger(),
-      "Total path size through %zu poses is %zu",
-      goal->goals.size(), concat_path.poses.size());
+    flush_dbg();
   } catch (std::runtime_error & ex) {
     RCLCPP_WARN(
       get_logger(),
       "%s plugin failed to plan through %zu points with final goal (%.2f, %.2f): \"%s\"",
       goal->planner_id.c_str(), goal->goals.size(), goal->goals.back().pose.position.x,
       goal->goals.back().pose.position.y, ex.what());
+    log_summary();
+    if (debug_viz_) {
+      debug_viz_->endSession();
+    }
     action_server_poses_->terminate_current();
   } catch (std::exception & ex) {
     RCLCPP_WARN(
@@ -628,6 +969,10 @@ PlannerServer::computePlanThroughPoses()
       "%s plugin failed to plan through %zu points with final goal (%.2f, %.2f): \"%s\"",
       goal->planner_id.c_str(), goal->goals.size(), goal->goals.back().pose.position.x,
       goal->goals.back().pose.position.y, ex.what());
+    log_summary();
+    if (debug_viz_) {
+      debug_viz_->endSession();
+    }
     action_server_poses_->terminate_current();
   }
 }
@@ -664,12 +1009,58 @@ PlannerServer::computePlan()
       return;
     }
 
-    result->path = getPlan(start, goal_pose, goal->planner_id);
+    if (debug_viz_) {
+      debug_viz_->beginSession();
+      debug_viz_->setSegmentContext(0, 1, start, goal_pose);
+    }
+
+    const bool near = isNearSegment(start, goal_pose);
+    const double orig_goal_yaw = tf2::getYaw(goal_pose.pose.orientation);
+
+    PlanSessionStats stats;
+    stats.n_goals = 1;
+    GetPlanMeta meta;
+    const auto t_goal = this->now();
+    result->path = getPlan(start, goal_pose, goal->planner_id, true, near, true, &meta);
+    stats.recordKind(meta.kind, (this->now() - t_goal).seconds());
+    if (debug_viz_) {
+      debug_viz_->endSession();
+    }
+
+    if (meta.kind == GetPlanKind::Hybrid && !result->path.poses.empty()) {
+      const double request_yaw = tf2::getYaw(goal_pose.pose.orientation);
+      const double path_end = pathEndYaw(result->path);
+      const double chord = pathChordYaw(result->path);
+      RCLCPP_INFO(
+        get_logger(),
+        "[getPlan] Hybrid yaw orig=%.3f request=%.3f snapped=%.3f "
+        "path_end=%.3f chord=%.3f d_end_orig=%.3f d_end_req=%.3f d_end_snap=%.3f "
+        "d_chord_orig=%.3f rewrite=%s",
+        orig_goal_yaw, request_yaw, meta.snapped_yaw,
+        path_end, chord,
+        wrapPi(path_end - orig_goal_yaw),
+        wrapPi(path_end - request_yaw),
+        wrapPi(path_end - meta.snapped_yaw),
+        wrapPi(chord - orig_goal_yaw),
+        "false");
+    }
+
+    auto log_pose_summary = [&]() {
+      logPlanSessionStats(
+        get_logger(), "getPlan", stats,
+        (this->now() - start_time).seconds(),
+        result->path.poses.size());
+    };
 
     if (!validatePath(goal_pose, result->path, goal->planner_id)) {
+      stats.addFailed(
+        0, goal_pose, failedReasonFromMeta(
+          meta.kind, result->path.poses.empty(), meta.heading_rejected));
+      log_pose_summary();
       action_server_pose_->terminate_current();
       return;
     }
+    stats.n_success = 1;
 
     // Publish the plan for visualization purposes
     publishPlan(result->path);
@@ -685,17 +1076,26 @@ PlannerServer::computePlan()
     }
 
     action_server_pose_->succeeded_current(result);
+    log_pose_summary();
   } catch (std::runtime_error & ex) {
     RCLCPP_WARN(
       get_logger(), "%s plugin failed to plan calculation to (%.2f, %.2f): \"%s\"",
       goal->planner_id.c_str(), goal->goal.pose.position.x,
       goal->goal.pose.position.y, ex.what());
+    RCLCPP_WARN(
+      get_logger(),
+      "[getPlan] failed goals: via=0 (%.3f, %.3f) reason=plugin_exception",
+      goal->goal.pose.position.x, goal->goal.pose.position.y);
     action_server_pose_->terminate_current();
   } catch (std::exception & ex) {
     RCLCPP_WARN(
       get_logger(), "%s plugin failed to plan calculation to (%.2f, %.2f): \"%s\"",
       goal->planner_id.c_str(), goal->goal.pose.position.x,
       goal->goal.pose.position.y, ex.what());
+    RCLCPP_WARN(
+      get_logger(),
+      "[getPlan] failed goals: via=0 (%.3f, %.3f) reason=plugin_exception",
+      goal->goal.pose.position.x, goal->goal.pose.position.y);
     action_server_pose_->terminate_current();
   }
 }
@@ -711,12 +1111,73 @@ PlannerServer::allowStraightExpand(
   return enable_straight_expand_ && static_cast<bool>(fast_path_planner_);
 }
 
+bool
+PlannerServer::isNearSegment(
+  const geometry_msgs::msg::PoseStamped & start,
+  const geometry_msgs::msg::PoseStamped & goal) const
+{
+  const double dx = goal.pose.position.x - start.pose.position.x;
+  const double dy = goal.pose.position.y - start.pose.position.y;
+  const double dist = std::hypot(dx, dy);
+  if (dist >= near_distance_threshold_) {
+    return false;
+  }
+  const double approach = std::atan2(dy, dx);
+  const double yaw_s = tf2::getYaw(start.pose.orientation);
+  const double yaw_g = tf2::getYaw(goal.pose.orientation);
+  auto ang_abs = [](double a) {
+    a = std::fmod(a + M_PI, 2.0 * M_PI);
+    if (a < 0.0) {
+      a += 2.0 * M_PI;
+    }
+    return std::fabs(a - M_PI);
+  };
+  if (ang_abs(yaw_s - approach) >= near_yaw_threshold_) {
+    return false;
+  }
+  if (ang_abs(yaw_g - approach) >= near_yaw_threshold_) {
+    return false;
+  }
+  return true;
+}
+
+bool
+PlannerServer::isNearByDistance(
+  const geometry_msgs::msg::PoseStamped & start,
+  const geometry_msgs::msg::PoseStamped & goal) const
+{
+  const double dist = std::hypot(
+    goal.pose.position.x - start.pose.position.x,
+    goal.pose.position.y - start.pose.position.y);
+  return dist <= near_distance_threshold_;
+}
+
+bool
+PlannerServer::shouldRewriteGoalYawToApproach(
+  const geometry_msgs::msg::PoseStamped & start,
+  const geometry_msgs::msg::PoseStamped & goal,
+  bool is_terminal) const
+{
+  if (!rewrite_via_yaw_to_approach_ || is_terminal) {
+    return false;
+  }
+  return isNearByDistance(start, goal);
+}
+
 nav_msgs::msg::Path
 PlannerServer::getPlan(
   const geometry_msgs::msg::PoseStamped & start,
   const geometry_msgs::msg::PoseStamped & goal,
-  const std::string & planner_id)
+  const std::string & planner_id,
+  bool allow_stretch,
+  bool allow_rotate,
+  bool strict_goal_footprint,
+  GetPlanMeta * meta)
 {
+  if (meta) {
+    meta->kind = GetPlanKind::Failed;
+    meta->heading_rejected = false;
+  }
   RCLCPP_DEBUG(
     get_logger(), "Attempting to a find path from (%.2f, %.2f) to "
     "(%.2f, %.2f).", start.pose.position.x, start.pose.position.y,
@@ -724,47 +1185,166 @@ PlannerServer::getPlan(
 
   geometry_msgs::msg::PoseStamped snapped_goal = goal;
   if (fast_path_planner_) {
-    const bool allow_straight = allowStraightExpand(start, goal);
-    const bool allow_reverse =
+    FastPlanOptions options;
+    options.allow_straight = allowStraightExpand(start, goal);
+    options.allow_reverse =
       fast_path_planner_->isBackwardActive() ||
       fast_path_planner_->isNarrowActive(start, goal);
+    options.allow_stretch = allow_stretch && enable_line_stretch_;
+    options.allow_rotate = allow_rotate && enable_line_rotate_;
+    options.strict_goal_footprint = strict_goal_footprint;
+    options.rewrite_goal_yaw_to_approach = shouldRewriteGoalYawToApproach(
+      start, goal, strict_goal_footprint);
     const FastPlanResult fast_result =
-      fast_path_planner_->compute(start, goal, allow_straight, allow_reverse);
+      fast_path_planner_->compute(start, goal, options);
     snapped_goal = fast_result.snapped_goal;
     if (fast_result.reason == FastPlanReason::StraightOk) {
       RCLCPP_INFO(
         get_logger(),
-        "FastPathPlanner returned a straight-line path with %zu poses.",
-        fast_result.path.poses.size());
+        "[getPlan] StraightOk poses=%zu start=(%.2f, %.2f, yaw=%.3f) "
+        "goal=(%.2f, %.2f) snapped=(%.2f, %.2f) stretch=%s rotate=%s footprint_corridor=%s",
+        fast_result.path.poses.size(),
+        start.pose.position.x, start.pose.position.y, tf2::getYaw(start.pose.orientation),
+        goal.pose.position.x, goal.pose.position.y,
+        snapped_goal.pose.position.x, snapped_goal.pose.position.y,
+        options.allow_stretch ? "true" : "false",
+        options.allow_rotate ? "true" : "false",
+        options.strict_goal_footprint ? "true" : "false");
+      if (meta) {
+        meta->kind = GetPlanKind::Straight;
+        meta->snapped_yaw = tf2::getYaw(snapped_goal.pose.orientation);
+      }
       return fast_result.path;
     }
     if (fast_result.reason == FastPlanReason::GoalUnreachable) {
       RCLCPP_WARN(
         get_logger(),
-        "FastPathPlanner: goal (%.2f, %.2f) is occupied and no free pose was found.",
+        "[getPlan] GoalUnreachable original=(%.2f, %.2f) snapped search failed",
         goal.pose.position.x, goal.pose.position.y);
       return nav_msgs::msg::Path();
     }
+    RCLCPP_INFO(
+      get_logger(),
+      "[getPlan] FastPath NeedAstar, plugin=%s start_yaw=%.3f (kept) "
+      "goal_yaw=%.3f snapped_goal=(%.3f, %.3f) snapped_yaw=%.3f rewrite=%s",
+      planner_id.c_str(),
+      tf2::getYaw(start.pose.orientation),
+      tf2::getYaw(goal.pose.orientation),
+      snapped_goal.pose.position.x, snapped_goal.pose.position.y,
+      tf2::getYaw(snapped_goal.pose.orientation),
+      options.rewrite_goal_yaw_to_approach ? "true" : "false");
   }
 
+  if (meta) {
+    meta->kind = GetPlanKind::Hybrid;
+    meta->snapped_yaw = tf2::getYaw(snapped_goal.pose.orientation);
+  }
+
+  const bool near_by_dist = isNearByDistance(start, goal);
+  const double search_heading_tol =
+    (near_by_dist && !strict_goal_footprint) ? via_heading_tolerance_ : -1.0;
+
+  nav2_core::GlobalPlanner::Ptr planner;
   if (planners_.find(planner_id) != planners_.end()) {
-    return planners_[planner_id]->createPlan(start, snapped_goal);
+    planner = planners_[planner_id];
+  } else if (planners_.size() == 1 && planner_id.empty()) {
+    RCLCPP_WARN_ONCE(
+      get_logger(), "No planners specified in action call. "
+      "Server will use only plugin %s in server."
+      " This warning will appear once.", planner_ids_concat_.c_str());
+    planner = planners_.begin()->second;
   } else {
-    if (planners_.size() == 1 && planner_id.empty()) {
-      RCLCPP_WARN_ONCE(
-        get_logger(), "No planners specified in action call. "
-        "Server will use only plugin %s in server."
-        " This warning will appear once.", planner_ids_concat_.c_str());
-      return planners_[planners_.begin()->first]->createPlan(start, snapped_goal);
-    } else {
-      RCLCPP_ERROR(
-        get_logger(), "planner %s is not a valid planner. "
-        "Planner names are: %s", planner_id.c_str(),
-        planner_ids_concat_.c_str());
+    RCLCPP_ERROR(
+      get_logger(), "planner %s is not a valid planner. "
+      "Planner names are: %s", planner_id.c_str(),
+      planner_ids_concat_.c_str());
+  }
+
+  nav_msgs::msg::Path plugin_path;
+  if (planner) {
+    HybridHeadingHintGuard heading_guard;
+    nav2_smac_planner::setHybridPendingGoalHeadingTolerance(search_heading_tol);
+    RCLCPP_INFO(
+      get_logger(),
+      "[getPlan] createPlan heading_search=%s last=%s near_dist=%s tol=%.3f",
+      search_heading_tol >= 0.0 ? "on" : "off",
+      strict_goal_footprint ? "true" : "false",
+      near_by_dist ? "true" : "false",
+      search_heading_tol);
+    plugin_path = planner->createPlan(start, snapped_goal);
+  }
+
+  if (!plugin_path.poses.empty()) {
+    const double request_yaw = tf2::getYaw(goal.pose.orientation);
+    const double snap_yaw = tf2::getYaw(snapped_goal.pose.orientation);
+    const double path_end = pathEndYaw(plugin_path);
+    const double chord = pathChordYaw(plugin_path);
+    RCLCPP_INFO(
+      get_logger(),
+      "[getPlan] Hybrid yaw request=%.3f snapped=%.3f path_end=%.3f chord=%.3f "
+      "d_end_req=%.3f d_end_snap=%.3f d_chord_req=%.3f d_chord_snap=%.3f "
+      "d_end_chord=%.3f poses=%zu near_dist=%s heading_search=%s",
+      request_yaw, snap_yaw, path_end, chord,
+      wrapPi(path_end - request_yaw),
+      wrapPi(path_end - snap_yaw),
+      wrapPi(chord - request_yaw),
+      wrapPi(chord - snap_yaw),
+      wrapPi(path_end - chord),
+      plugin_path.poses.size(),
+      near_by_dist ? "true" : "false",
+      search_heading_tol >= 0.0 ? "on" : "off");
+  }
+
+  if (debug_viz_ && !plugin_path.poses.empty()) {
+    debug_viz_->publishHybridRaw(plugin_path);
+    RCLCPP_INFO(
+      get_logger(),
+      "[getPlan] plugin path poses=%zu (raw Hybrid/GridBased, heading trim not applied yet)",
+      plugin_path.poses.size());
+  }
+
+  if (!plugin_path.poses.empty()) {
+    const double goal_yaw = tf2::getYaw(snapped_goal.pose.orientation);
+    const size_t n_before = plugin_path.poses.size();
+    const HeadingTrimKind trim_kind = trimHybridPathTailByHeading(
+      plugin_path, goal_yaw, via_heading_tolerance_, via_heading_trim_length_);
+    if (trim_kind == HeadingTrimKind::Trimmed) {
+      RCLCPP_INFO(
+        get_logger(),
+        "[getPlan] heading trim poses %zu -> %zu path_end_yaw=%.3f d_end_goal=%.3f "
+        "max_len=%.2f near_dist=%s last=%s",
+        n_before, plugin_path.poses.size(),
+        pathEndYaw(plugin_path),
+        wrapPi(pathEndYaw(plugin_path) - goal_yaw),
+        via_heading_trim_length_,
+        near_by_dist ? "true" : "false",
+        strict_goal_footprint ? "true" : "false");
+    } else if (trim_kind == HeadingTrimKind::Failed) {
+      if (near_by_dist && !strict_goal_footprint) {
+        RCLCPP_INFO(
+          get_logger(),
+          "[getPlan] heading trim failed, drop intermediate via goal=(%.3f, %.3f) "
+          "goal_yaw=%.3f path_end=%.3f d_end=%.3f window=%.2f",
+          goal.pose.position.x, goal.pose.position.y, goal_yaw,
+          pathEndYaw(plugin_path),
+          wrapPi(pathEndYaw(plugin_path) - goal_yaw),
+          via_heading_trim_length_);
+        if (meta) {
+          meta->heading_rejected = true;
+        }
+        return nav_msgs::msg::Path();
+      }
+      RCLCPP_INFO(
+        get_logger(),
+        "[getPlan] heading trim failed, keep path (far or last) poses=%zu "
+        "path_end=%.3f d_end=%.3f",
+        plugin_path.poses.size(),
+        pathEndYaw(plugin_path),
+        wrapPi(pathEndYaw(plugin_path) - goal_yaw));
     }
   }
 
-  return nav_msgs::msg::Path();
+  return plugin_path;
 }
 
 void
@@ -854,10 +1434,6 @@ PlannerServer::dynamicParametersCallback(std::vector<rclcpp::Parameter> paramete
   for (auto parameter : parameters) {
     const auto & type = parameter.get_type();
     const auto & name = parameter.get_name();
-    auto ends_with = [&name](const std::string & suffix) {
-      return name.size() >= suffix.size() &&
-             name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
-    };
 
     if (type == ParameterType::PARAMETER_DOUBLE) {
       if (name == "expected_planner_frequency") {
@@ -870,44 +1446,91 @@ PlannerServer::dynamicParametersCallback(std::vector<rclcpp::Parameter> paramete
             " than 0.0 to turn on duration overrrun warning messages", parameter.as_double());
           max_planner_duration_ = 0.0;
         }
-      } else if (name == "goal_occupied_tolerance" || ends_with(".goal_occupied_tolerance")) {
+      } else if (name == "goal_occupied_tolerance") {
         _goal_occupied_tolerance = parameter.as_double();
         if (fast_path_planner_) {
           fast_path_planner_->setGoalOccupiedTolerance(_goal_occupied_tolerance);
         }
-      } else if (name == "goal_search_resolution" || ends_with(".goal_search_resolution")) {
+      } else if (name == "goal_search_resolution") {
         _goal_search_resolution = parameter.as_double();
         if (fast_path_planner_) {
           fast_path_planner_->setGoalSearchResolution(_goal_search_resolution);
         }
-      } else if (name == "footprint_extend_back_x" || ends_with(".footprint_extend_back_x")) {
-        if (fast_path_planner_) {
-          fast_path_planner_->setFootprintExtendBackX(parameter.as_double());
-        }
-      } else if (name == "footprint_extend_front_x" || ends_with(".footprint_extend_front_x")) {
-        if (fast_path_planner_) {
-          fast_path_planner_->setFootprintExtendFrontX(parameter.as_double());
-        }
-      } else if (name == "footprint_extend_y" || ends_with(".footprint_extend_y")) {
-        if (fast_path_planner_) {
-          fast_path_planner_->setFootprintExtendY(parameter.as_double());
-        }
-      } else if (name == "straight_check_length_ratio" ||
-        ends_with(".straight_check_length_ratio"))
-      {
+      } else if (name == "straight_check_length_ratio") {
         if (fast_path_planner_) {
           fast_path_planner_->setStraightCheckLengthRatio(parameter.as_double());
         }
-      } else if (name == "straight_path_resolution" ||
-        ends_with(".straight_path_resolution"))
-      {
+      } else if (name == "straight_path_resolution") {
         if (fast_path_planner_) {
           fast_path_planner_->setStraightPathResolution(parameter.as_double());
         }
+      } else if (name == "near_distance_threshold") {
+        near_distance_threshold_ = parameter.as_double();
+      } else if (name == "near_yaw_threshold") {
+        near_yaw_threshold_ = parameter.as_double();
+      } else if (name == "via_heading_tolerance") {
+        via_heading_tolerance_ = parameter.as_double();
+      } else if (name == "via_heading_trim_length") {
+        via_heading_trim_length_ = parameter.as_double();
+      } else if (name == "line_rotate_goal_shift_tol") {
+        line_rotate_goal_shift_tol_ = parameter.as_double();
+        if (fast_path_planner_) {
+          fast_path_planner_->setLineRotateGoalShiftTol(line_rotate_goal_shift_tol_);
+        }
+      } else if (name == "corridor_intrusion_tol") {
+        if (fast_path_planner_) {
+          fast_path_planner_->setCorridorIntrusionTol(parameter.as_double());
+        }
+      } else if (name == "line_stretch_max") {
+        line_stretch_max_ = parameter.as_double();
+        if (fast_path_planner_) {
+          fast_path_planner_->setLineStretchMax(line_stretch_max_);
+        }
+      } else if (name == "line_stretch_goal_window") {
+        line_stretch_goal_window_ = parameter.as_double();
+        if (fast_path_planner_) {
+          fast_path_planner_->setLineStretchGoalWindow(line_stretch_goal_window_);
+        }
+      }
+    } else if (type == ParameterType::PARAMETER_INTEGER) {
+      if (name == "line_rotate_max_iters") {
+        line_rotate_max_iters_ = static_cast<int>(parameter.as_int());
+        if (fast_path_planner_) {
+          fast_path_planner_->setLineRotateMaxIters(line_rotate_max_iters_);
+        }
+      } else if (name == "planning_debug_footprint_stride") {
+        if (debug_viz_) {
+          debug_viz_->setFootprintStride(static_cast<int>(parameter.as_int()));
+        }
       }
     } else if (type == ParameterType::PARAMETER_BOOL) {
-      if (name == "enable_straight_expand" || ends_with(".enable_straight_expand")) {
+      if (name == "enable_straight_expand") {
         enable_straight_expand_ = parameter.as_bool();
+      } else if (name == "publish_planning_debug") {
+        if (debug_viz_) {
+          debug_viz_->setEnabled(parameter.as_bool());
+        }
+      } else if (name == "enable_line_rotate") {
+        enable_line_rotate_ = parameter.as_bool();
+        if (fast_path_planner_) {
+          fast_path_planner_->setEnableLineRotate(enable_line_rotate_);
+        }
+      } else if (name == "enable_line_stretch") {
+        enable_line_stretch_ = parameter.as_bool();
+        if (fast_path_planner_) {
+          fast_path_planner_->setEnableLineStretch(enable_line_stretch_);
+        }
+      } else if (name == "line_stretch_allow_extend") {
+        line_stretch_allow_extend_ = parameter.as_bool();
+        if (fast_path_planner_) {
+          fast_path_planner_->setLineStretchAllowExtend(line_stretch_allow_extend_);
+        }
+      } else if (name == "rewrite_via_yaw_to_approach") {
+        rewrite_via_yaw_to_approach_ = parameter.as_bool();
+      }
+    } else if (type == ParameterType::PARAMETER_STRING) {
+      if (name == "planning_debug_keep_mode" && debug_viz_) {
+        debug_viz_->setKeepMode(parameter.as_string());
       }
     }
   }

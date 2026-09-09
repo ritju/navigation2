@@ -21,9 +21,11 @@
 #include <queue>
 #include <functional>
 #include <utility>
+#include <atomic>
 
 #include "Eigen/Core"
 #include "nav2_smac_planner/smac_planner_hybrid.hpp"
+#include "nav2_smac_planner/hybrid_heading_hint.hpp"
 
 // #define BENCHMARK_TESTING
 
@@ -37,7 +39,76 @@ using std::placeholders::_1;
 namespace
 {
 
+std::atomic<double> g_pending_goal_heading_tolerance{-1.0};
+
+}  // namespace
+
+void setHybridPendingGoalHeadingTolerance(const double heading_tolerance_rad)
+{
+  g_pending_goal_heading_tolerance.store(heading_tolerance_rad);
+}
+
+namespace
+{
+
 constexpr double kSqrt2 = 1.4142135623730950488;
+
+double wrapPi(double a)
+{
+  return std::remainder(a, 2.0 * M_PI);
+}
+
+double pathChordYaw(const nav_msgs::msg::Path & p)
+{
+  if (p.poses.size() < 2) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  const auto & a = p.poses[p.poses.size() - 2].pose.position;
+  const auto & b = p.poses.back().pose.position;
+  return std::atan2(b.y - a.y, b.x - a.x);
+}
+
+void logHybridPathYaw(
+  const rclcpp::Logger & logger,
+  const char * stage,
+  const geometry_msgs::msg::PoseStamped & start,
+  const geometry_msgs::msg::PoseStamped & goal,
+  const nav_msgs::msg::Path & plan,
+  const char * model,
+  bool smoother_on,
+  float xy_tol_m,
+  unsigned int goal_bin,
+  double goal_bin_yaw)
+{
+  if (plan.poses.empty()) {
+    RCLCPP_INFO(
+      logger,
+      "[Hybrid] yaw %s empty model=%s smooth=%s",
+      stage, model, smoother_on ? "on" : "off");
+    return;
+  }
+  const double start_yaw = tf2::getYaw(start.pose.orientation);
+  const double goal_yaw = tf2::getYaw(goal.pose.orientation);
+  const double path_start = tf2::getYaw(plan.poses.front().pose.orientation);
+  const double path_end = tf2::getYaw(plan.poses.back().pose.orientation);
+  const double chord = pathChordYaw(plan);
+  const double xy_err = std::hypot(
+    plan.poses.back().pose.position.x - goal.pose.position.x,
+    plan.poses.back().pose.position.y - goal.pose.position.y);
+  RCLCPP_INFO(
+    logger,
+    "[Hybrid] yaw %s start=%.3f path_start=%.3f goal=%.3f path_end=%.3f chord=%.3f "
+    "d_end_goal=%.3f d_chord_goal=%.3f d_end_chord=%.3f d_start=%.3f "
+    "xy_err=%.3f tol=%.3f goal_bin=%u bin_yaw=%.3f model=%s smooth=%s poses=%zu",
+    stage,
+    start_yaw, path_start, goal_yaw, path_end, chord,
+    wrapPi(path_end - goal_yaw),
+    wrapPi(chord - goal_yaw),
+    wrapPi(path_end - chord),
+    wrapPi(path_start - start_yaw),
+    xy_err, xy_tol_m, goal_bin, goal_bin_yaw,
+    model, smoother_on ? "on" : "off", plan.poses.size());
+}
 
 inline bool roiCellTraversable(unsigned char cost, bool allow_unknown)
 {
@@ -335,10 +406,6 @@ void SmacPlannerHybrid::configure(
   _global_frame = costmap_ros->getGlobalFrameID();
   footprint_back_x_ = 0.0;
   footprint_front_x_ = 0.0;
-  _footprint_extend_back_x = 0.0;
-  _footprint_extend_front_x = 0.0;
-  _footprint_extend_y = 0.0;
-  _costmap_resulution = 0.05;
 
   RCLCPP_INFO(_logger, "Configuring %s of type SmacPlannerHybrid", name.c_str());
 
@@ -364,23 +431,12 @@ void SmacPlannerHybrid::configure(
     node, name + ".tolerance", rclcpp::ParameterValue(0.25));
   _tolerance = static_cast<float>(node->get_parameter(name + ".tolerance").as_double());
   nav2_util::declare_parameter_if_not_declared(
-    node, name + ".goal_occupied_tolerance", rclcpp::ParameterValue(0.5));
-  _goal_occupied_tolerance = static_cast<float>(node->get_parameter(name + ".goal_occupied_tolerance").as_double());
-  nav2_util::declare_parameter_if_not_declared(
-    node, name + ".goal_search_resolution", rclcpp::ParameterValue(0.1));
-  _goal_search_resolution = static_cast<float>(node->get_parameter(name + ".goal_search_resolution").as_double());
-  nav2_util::declare_parameter_if_not_declared(
-    node, name + ".goal_close_to_obstacle_distance", rclcpp::ParameterValue(0.3));
-  _goal_close_to_obstacle_distance = static_cast<float>(node->get_parameter(name + ".goal_close_to_obstacle_distance").as_double());
-  nav2_util::declare_parameter_if_not_declared(
-    node, name + ".footprint_extend_back_x", rclcpp::ParameterValue(0.0));
-  _footprint_extend_back_x = static_cast<float>(node->get_parameter(name + ".footprint_extend_back_x").as_double());
-  nav2_util::declare_parameter_if_not_declared(
-    node, name + ".footprint_extend_front_x", rclcpp::ParameterValue(0.0));
-  _footprint_extend_front_x = static_cast<float>(node->get_parameter(name + ".footprint_extend_front_x").as_double());
-  nav2_util::declare_parameter_if_not_declared(
-    node, name + ".footprint_extend_y", rclcpp::ParameterValue(0.0));
-  _footprint_extend_y = static_cast<float>(node->get_parameter(name + ".footprint_extend_y").as_double());
+    node, name + ".pending_goal_heading_tolerance", rclcpp::ParameterValue(-1.0));
+  {
+    double pending_heading = -1.0;
+    node->get_parameter(name + ".pending_goal_heading_tolerance", pending_heading);
+    g_pending_goal_heading_tolerance.store(pending_heading);
+  }
 
   nav2_util::declare_parameter_if_not_declared(
     node, name + ".allow_unknown", rclcpp::ParameterValue(true));
@@ -428,11 +484,13 @@ void SmacPlannerHybrid::configure(
   nav2_util::declare_parameter_if_not_declared(
     node, name + ".max_planning_time", rclcpp::ParameterValue(5.0));
   node->get_parameter(name + ".max_planning_time", _max_planning_time);
-
   nav2_util::declare_parameter_if_not_declared(
-    node, name + ".enable_straight_expand", rclcpp::ParameterValue(true));
-  node->get_parameter(name + ".enable_straight_expand", _enable_straight_expand);
-  _enable_straight_expand_initial = _enable_straight_expand;
+    node, name + ".tail_trim_length", rclcpp::ParameterValue(1.0));
+  node->get_parameter(name + ".tail_trim_length", _tail_trim_length);
+  if (_tail_trim_length < 0.0) {
+    _tail_trim_length = 0.0;
+  }
+
   nav2_util::declare_parameter_if_not_declared(
     node, name + ".enable_close_range_roi_budget", rclcpp::ParameterValue(false));
   node->get_parameter(name + ".enable_close_range_roi_budget", _enable_close_range_roi_budget);
@@ -835,6 +893,13 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   const geometry_msgs::msg::PoseStamped & start,
   const geometry_msgs::msg::PoseStamped & goal)
 {
+  const double pending_heading_tol = g_pending_goal_heading_tolerance.load();
+  RCLCPP_INFO(
+    _logger,
+    "[Hybrid] createPlan start=(%.3f, %.3f) goal=(%.3f, %.3f) heading_tol=%.3f",
+    start.pose.position.x, start.pose.position.y,
+    goal.pose.position.x, goal.pose.position.y,
+    pending_heading_tol);
   std::lock_guard<std::mutex> lock_reinit(_mutex);
   steady_clock::time_point a = steady_clock::now();
 
@@ -906,7 +971,6 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
     footprint_back_x_ = std::min(footprint_back_x_, static_cast<double>(footprint.x));
     footprint_front_x_ = std::max(footprint_front_x_, static_cast<double>(footprint.x));
   }
-  _costmap_resulution = costmap->getResolution();
 
   geometry_msgs::msg::Pose2D start_pose2d;
   start_pose2d.x = start.pose.position.x;
@@ -999,6 +1063,13 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
 
   _a_star->setStart(mx_s, my_s, orientation_bin_id);
   _a_star->setGoal(mx_g, my_g, goal_orientation_bin_id);
+  _a_star->setGoalHeadingTolerance(pending_heading_tol);
+  if (pending_heading_tol >= 0.0) {
+    RCLCPP_INFO(
+      _logger,
+      "[Hybrid] near heading gate on tol=%.3f rad (XY tol=%.3f m)",
+      pending_heading_tol, _tolerance);
+  }
 
   // Compute plan
   NodeHybrid::CoordinateVector path;
@@ -1011,6 +1082,9 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
       if (num_iterations < _a_star->getMaxIterations()) {
         error = std::string("no valid path found from (") + std::to_string(start_pose2d.x) + "," + std::to_string(start_pose2d.y) + ") to (" +
                 std::to_string(goal_pose2d.x) + "," + std::to_string(goal_pose2d.y) + ")";
+        if (pending_heading_tol >= 0.0) {
+          error += " (XY+heading gate)";
+        }
       } else {
         error = std::string("exceeded maximum iterations from (") + std::to_string(start_pose2d.x) + "," + std::to_string(start_pose2d.y) + ") to (" +
                 std::to_string(goal_pose2d.x) + "," + std::to_string(goal_pose2d.y) + ")";
@@ -1043,48 +1117,11 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
     plan.poses.push_back(pose);
   }
 
-  // Tail safety check for A* result:
-  // Walk backwards from the end of the path and drop colliding poses,
-  // keeping the last pose that is free. Here, when checking for collision
-  // we only treat LETHAL_OBSTACLE as collision and allow INSCRIBED_INFLATED_OBSTACLE.
-  if (!plan.poses.empty()) {
-    int last_valid_idx = static_cast<int>(plan.poses.size()) - 1;
-    bool found_valid = false;
-
-    for (int i = last_valid_idx; i >= 0; --i) {
-      if (is_free(plan.poses[i], costmap,
-                  _footprint_extend_back_x,
-                  _footprint_extend_front_x,
-                  _footprint_extend_y,
-                  /*ignore_inscribed=*/true))
-      {
-        last_valid_idx = i;
-        found_valid = true;
-        break;
-      }
-    }
-
-    if (!found_valid) {
-      // Path end is completely invalid – return empty plan so that higher-level logic can react.
-      RCLCPP_WARN(
-        _logger,
-        "%s: A* produced a path whose end poses are all in collision (LETHAL); returning empty plan.",
-        _name.c_str());
-      plan.poses.clear();
-      return plan;
-    }
-
-    if (last_valid_idx < static_cast<int>(plan.poses.size()) - 1) {
-      // Trim off the colliding tail so that the final pose is guaranteed to be LETHAL-free.
-      const std::size_t trimmed_count =
-        static_cast<std::size_t>(plan.poses.size()) - static_cast<std::size_t>(last_valid_idx + 1);
-      plan.poses.erase(plan.poses.begin() + last_valid_idx + 1, plan.poses.end());
-      RCLCPP_WARN(
-        _logger,
-        "%s: Trimmed %zu tail pose(s) from A* path due to LETHAL collisions at the endpoint.",
-        _name.c_str(), trimmed_count);
-    }
-  }
+  const double goal_bin_yaw =
+    (static_cast<double>(goal_orientation_bin_id) + 0.5) * _angle_bin_size;
+  logHybridPathYaw(
+    _logger, "raw", start, goal, plan, toString(_motion_model).c_str(),
+    static_cast<bool>(_smoother), _tolerance, goal_orientation_bin_id, goal_bin_yaw);
 
   // Publish raw path for debug
   if (_raw_plan_publisher->get_subscription_count() > 0) {
@@ -1107,6 +1144,9 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   // Smooth plan
   if (_smoother && num_iterations > 1) {
     _smoother->smooth(plan, costmap, time_remaining);
+    logHybridPathYaw(
+      _logger, "smooth", start, goal, plan, toString(_motion_model).c_str(),
+      true, _tolerance, goal_orientation_bin_id, goal_bin_yaw);
   }
 
 #ifdef BENCHMARK_TESTING
@@ -1116,75 +1156,133 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
     " milliseconds to smooth path." << std::endl;
 #endif
 
+  trimPathTail(plan, costmap);
+  logHybridPathYaw(
+    _logger, "trim", start, goal, plan, toString(_motion_model).c_str(),
+    static_cast<bool>(_smoother), _tolerance, goal_orientation_bin_id, goal_bin_yaw);
   return plan;
 }
 
-bool SmacPlannerHybrid::is_free(const geometry_msgs::msg::PoseStamped &pose,
-                                nav2_costmap_2d::Costmap2D * costmap,
-                                double footprint_extend_back_x,
-                                double footprint_extend_front_x,
-                                double footprint_extend_y,
-                                bool ignore_inscribed)
+bool SmacPlannerHybrid::is_free(
+  const geometry_msgs::msg::PoseStamped & pose,
+  nav2_costmap_2d::Costmap2D * costmap) const
 {
-        try
-        {
-                geometry_msgs::msg::Pose2D pose2d;
-                pose2d.x = pose.pose.position.x;
-                pose2d.y = pose.pose.position.y;
-                pose2d.theta = tf2::getYaw(pose.pose.orientation);
-                double cos_th = cos(pose2d.theta);
-                double sin_th = sin(pose2d.theta);
-                std::vector<double> footprint_extend{0};
-                if (footprint_extend_y != 0.0)
-                {
-                  footprint_extend.emplace_back(-footprint_extend_y);
-                  footprint_extend.emplace_back(footprint_extend_y);
-                }
-                unsigned char footprint_cost = nav2_costmap_2d::FREE_SPACE;
-                for(auto y : footprint_extend)
-                {
-                  for (double x = footprint_back_x_ + footprint_extend_back_x; x <= footprint_front_x_ + footprint_extend_front_x; x += _costmap_resulution) 
-                  {
-                          unsigned int map_x,map_y;
-                          double g_x = pose2d.x + x * cos_th - y * sin_th;
-                          double g_y = pose2d.y + x * sin_th + y * cos_th;
-                          costmap->worldToMap(g_x, g_y, map_x, map_y);
-                          footprint_cost = costmap->getCost(map_x, map_y);
-                          // Default behavior: treat both LETHAL and INSCRIBED as collision.
-                          // When ignore_inscribed == true (used for A* tail trimming), only treat LETHAL as collision.
-                          if (footprint_cost == nav2_costmap_2d::LETHAL_OBSTACLE ||
-                              (!ignore_inscribed && footprint_cost == nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE))
-                          {
-                                  RCLCPP_DEBUG(_logger, "Footprint at (%f, %f) is occupied!", g_x, g_y);
-                                  return false;
-                          }
-                  }
-                  if (footprint_cost == nav2_costmap_2d::FREE_SPACE)
-                  {
-                          return true;
-                  }
-                }
-                
-        } catch (const nav2_costmap_2d::IllegalPoseException & e) {
-                RCLCPP_ERROR(_logger, "%s", e.what());
-                return true;
-        } catch (const nav2_costmap_2d::CollisionCheckerException & e) {
-                RCLCPP_ERROR(_logger, "%s", e.what());
-                return true;
-        } catch (const std::runtime_error & e) {
-                RCLCPP_ERROR(_logger, "%s", e.what());
-                return true;
-        } catch (...) {
-                RCLCPP_ERROR(_logger, "Failed to check pose score!");
-                return true;
-        }
-                return true;
+  if (!costmap) {
+    return true;
+  }
+  unsigned int mx = 0;
+  unsigned int my = 0;
+  if (!costmap->worldToMap(pose.pose.position.x, pose.pose.position.y, mx, my)) {
+    return false;
+  }
+  const unsigned char cost = costmap->getCost(mx, my);
+  if (cost == nav2_costmap_2d::NO_INFORMATION) {
+    return true;
+  }
+  return cost < nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
+}
+
+void SmacPlannerHybrid::trimPathTail(
+  nav_msgs::msg::Path & plan,
+  nav2_costmap_2d::Costmap2D * costmap)
+{
+  const int n = static_cast<int>(plan.poses.size());
+  if (n <= 0 || !costmap) {
+    return;
+  }
+
+  std::vector<double> prefix(static_cast<size_t>(n), 0.0);
+  for (int i = 1; i < n; ++i) {
+    const auto & a = plan.poses[static_cast<size_t>(i - 1)].pose.position;
+    const auto & b = plan.poses[static_cast<size_t>(i)].pose.position;
+    prefix[static_cast<size_t>(i)] =
+      prefix[static_cast<size_t>(i - 1)] + std::hypot(b.x - a.x, b.y - a.y);
+  }
+
+  const double s_end = prefix.back();
+  const double window = std::max(_tail_trim_length, 0.0);
+  const double s_window_start = std::max(0.0, s_end - window);
+
+  int i_win = 0;
+  for (int i = 0; i < n; ++i) {
+    if (prefix[static_cast<size_t>(i)] + 1e-9 >= s_window_start) {
+      i_win = i;
+      break;
+    }
+    i_win = i;
+  }
+
+  double vehicle_length = footprint_front_x_ - footprint_back_x_;
+  if (vehicle_length < 1e-3 && _costmap_ros && _costmap_ros->getLayeredCostmap()) {
+    vehicle_length = std::max(
+      2.0 * _costmap_ros->getLayeredCostmap()->getInscribedRadius(), 0.5);
+  }
+  vehicle_length = std::max(vehicle_length, 1e-3);
+
+  std::vector<int> samples;
+  samples.push_back(i_win);
+  double last_s = prefix[static_cast<size_t>(i_win)];
+  for (int i = i_win + 1; i < n - 1; ++i) {
+    if (prefix[static_cast<size_t>(i)] + 1e-9 >= last_s + vehicle_length) {
+      samples.push_back(i);
+      last_s = prefix[static_cast<size_t>(i)];
+    }
+  }
+  if (samples.back() != n - 1) {
+    samples.push_back(n - 1);
+  }
+
+  int keep = -1;
+  for (int k = static_cast<int>(samples.size()) - 1; k >= 0; --k) {
+    const int idx = samples[static_cast<size_t>(k)];
+    if (is_free(plan.poses[static_cast<size_t>(idx)], costmap)) {
+      keep = idx;
+      break;
+    }
+  }
+
+  if (keep < 0) {
+    RCLCPP_WARN(
+      _logger,
+      "%s: tail window (%.2fm) has no centerline-free pose (cost < 253, 255 skipped); "
+      "returning empty plan.",
+      _name.c_str(), window);
+    plan.poses.clear();
+    return;
+  }
+
+  if (keep < n - 1) {
+    const std::size_t trimmed =
+      static_cast<std::size_t>(n) - static_cast<std::size_t>(keep + 1);
+    plan.poses.erase(
+      plan.poses.begin() + keep + 1, plan.poses.end());
+    RCLCPP_WARN(
+      _logger,
+      "%s: Trimmed %zu tail pose(s); last free centerline index=%d / %d.",
+      _name.c_str(), trimmed, keep, n - 1);
+  }
 }
 
 rcl_interfaces::msg::SetParametersResult
 SmacPlannerHybrid::dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters)
 {
   rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
+
+  bool needs_locked_update = false;
+  for (const auto & parameter : parameters) {
+    if (parameter.get_name() == _name + ".pending_goal_heading_tolerance") {
+      if (parameter.get_type() == ParameterType::PARAMETER_DOUBLE) {
+        g_pending_goal_heading_tolerance.store(parameter.as_double());
+      }
+    } else {
+      needs_locked_update = true;
+    }
+  }
+  if (!needs_locked_update) {
+    return result;
+  }
+
   std::lock_guard<std::mutex> lock_reinit(_mutex);
 
   bool reinit_collision_checker = false;
@@ -1208,6 +1306,8 @@ SmacPlannerHybrid::dynamicParametersCallback(std::vector<rclcpp::Parameter> para
         _close_range_max_planning_time = parameter.as_double();
       } else if (name == _name + ".tolerance") {
         _tolerance = static_cast<float>(parameter.as_double());
+      } else if (name == _name + ".tail_trim_length") {
+        _tail_trim_length = std::max(0.0, parameter.as_double());
       } else if (name == _name + ".lookup_table_size") {
         reinit_a_star = true;
         _lookup_table_size = parameter.as_double();
@@ -1244,11 +1344,6 @@ SmacPlannerHybrid::dynamicParametersCallback(std::vector<rclcpp::Parameter> para
       } else if (name == _name + ".allow_unknown") {
         reinit_a_star = true;
         _allow_unknown = parameter.as_bool();
-      } else if (name == _name + ".enable_straight_expand") {
-        _enable_straight_expand_initial = parameter.as_bool();
-        if (!_use_reeds_for_planning) {
-          _enable_straight_expand = _enable_straight_expand_initial;
-        }
       } else if (name == _name + ".enable_close_range_roi_budget") {
         _enable_close_range_roi_budget = parameter.as_bool();
       } else if (name == _name + ".cache_obstacle_heuristic") {

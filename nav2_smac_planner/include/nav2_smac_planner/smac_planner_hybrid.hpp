@@ -90,17 +90,24 @@ public:
   nav_msgs::msg::Path createPlan(
     const geometry_msgs::msg::PoseStamped & start,
     const geometry_msgs::msg::PoseStamped & goal) override;
-  
-  // When ignore_inscribed is true, treat only LETHAL_OBSTACLE as collision and allow INSCRIBED_INFLATED_OBSTACLE.
-  // In all other cases, both LETHAL_OBSTACLE and INSCRIBED_INFLATED_OBSTACLE are treated as collision.
-  bool is_free(const geometry_msgs::msg::PoseStamped &pose,
-               nav2_costmap_2d::Costmap2D * costmap,
-               double footprint_extend_back_x,
-               double footprint_extend_front_x,
-               double footprint_extend_y,
-               bool ignore_inscribed = false);
 
 private:
+  /**
+   * 路径点中心线是否可停：255 跳过；253 / 254 视为挡住（无半宽加深时中心线认 inscribed）。
+   */
+  bool is_free(
+    const geometry_msgs::msg::PoseStamped & pose,
+    nav2_costmap_2d::Costmap2D * costmap) const;
+
+  /**
+   * 仅检查路径尾段窗口：按车长从 plan 取点，剩余不足一车长则带上终点。
+   * 从终点往回找第一个中心线自由点并裁掉其后尾巴；窗口内全挡住则清空路径。
+   * 应在平滑之后调用。
+   */
+  void trimPathTail(
+    nav_msgs::msg::Path & plan,
+    nav2_costmap_2d::Costmap2D * costmap);
+
   /** /narrow_passages 话题回调，更新狭窄通道多边形列表 */
   void narrowPassagesCallback(const garage_utils_msgs::msg::Polygons::SharedPtr msg);
   /** /enable_backward 话题回调，外部指令切换倒车/前进规划模式 */
@@ -158,14 +165,10 @@ protected:
   SearchInfo _search_info;
   double _max_planning_time;
   double _lookup_table_size;
-  double _goal_occupied_tolerance;
-  double _goal_search_resolution;
-  double _goal_close_to_obstacle_distance;
-  double _footprint_extend_back_x, _footprint_extend_front_x, _footprint_extend_y, _costmap_resulution;
-  double footprint_back_x_, footprint_front_x_;
-  /** 参数仍保留，实际直线捷径改由 planner_server 决策 */
-  bool _enable_straight_expand{true};
-  bool _enable_straight_expand_initial{true};
+  double footprint_back_x_{0.0};
+  double footprint_front_x_{0.0};
+  /** 从路径终点沿弧长往回检查的窗口 (m)；只在此窗口内按车长抽点裁尾。 */
+  double _tail_trim_length{1.0};
   /** 狭窄通道 latch：进入宽松（base_link 在内），退出严格（footprint 全在外） */
   bool _latched_narrow_passage{false};
   /** 是否至少收到过一次 /narrow_passages 消息 */

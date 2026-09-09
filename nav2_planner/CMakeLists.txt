@@ -53,11 +53,19 @@ set(dependencies
 add_library(${library_name} SHARED
   src/planner_server.cpp
   src/fast_path_planner.cpp
+  src/planning_debug_viz.cpp
 )
 
 ament_target_dependencies(${library_name}
   ${dependencies}
 )
+
+# Humble's /opt/ros/.../include/nav2_smac_planner shadows the workspace plugin
+# headers. Use the sibling source include + the overlay library for the heading hint.
+target_include_directories(${library_name} PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../nav2_smac_planner/include")
+target_link_libraries(${library_name}
+  "${CMAKE_INSTALL_PREFIX}/lib/libnav2_smac_planner.so")
 
 add_executable(${executable_name}
   src/main.cpp
