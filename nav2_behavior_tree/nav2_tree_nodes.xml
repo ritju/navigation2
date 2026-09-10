@@ -103,7 +103,8 @@
       <input_port name="garbage_merge_radius_m" default="1.0">Merge detections within this radius (m) of the nearest seed into one pile</input_port>
       <input_port name="work_circle_radius_m" default="10.0">Accept new garbage only inside this radius around the robot pose when the first pile of a batch is accepted</input_port>
       <input_port name="min_garbage_obstacle_clearance_m" default="0.7">If lethal within radius, use wall-edge D-G-E insert</input_port>
-      <input_port name="wall_edge_step_m" default="2.0">Wall-edge D push step along tangent (m)</input_port>
+      <input_port name="wall_edge_d_extend_m" default="2.0">Wall-edge D push step along tangent (m)</input_port>
+      <input_port name="wall_edge_e_extend_m" default="2.0">Wall-edge G to E extend distance along tangent (m)</input_port>
       <input_port name="wall_edge_min_robot_dist_m" default="3.0">Wall-edge min |D-robot| (m)</input_port>
       <input_port name="wall_edge_sample_m" default="0.5">Wall-edge D-E sample spacing (m)</input_port>
       <input_port name="wall_edge_normal_offset_m" default="0.0">Wall-edge shift of D-G-E along obstacle-garbage normal (m)</input_port>

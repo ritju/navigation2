@@ -45,7 +45,8 @@ InsertGarbagePose::InsertGarbagePose(
   head_delete_robot_dist_m_(4.0),  // 离队头超过该距离就不删点
   max_garbage_robot_dist_m_(5.0),  // 垃圾离机器人超过该距离则忽略
   min_garbage_obstacle_clearance_m_(0.7),  // 垃圾周围该半径内有障碍则丢弃
-  wall_edge_step_m_(2.0),
+  wall_edge_d_extend_m_(2.0),
+  wall_edge_e_extend_m_(2.0),
   wall_edge_min_robot_dist_m_(3.0),
   wall_edge_sample_m_(0.5),
   wall_edge_normal_offset_m_(0.0),
@@ -65,7 +66,8 @@ InsertGarbagePose::InsertGarbagePose(
   getInput("head_delete_robot_dist_m", head_delete_robot_dist_m_);
   getInput("max_garbage_robot_dist_m", max_garbage_robot_dist_m_);
   getInput("min_garbage_obstacle_clearance_m", min_garbage_obstacle_clearance_m_);
-  getInput("wall_edge_step_m", wall_edge_step_m_);
+  getInput("wall_edge_d_extend_m", wall_edge_d_extend_m_);
+  getInput("wall_edge_e_extend_m", wall_edge_e_extend_m_);
   getInput("wall_edge_min_robot_dist_m", wall_edge_min_robot_dist_m_);
   getInput("wall_edge_sample_m", wall_edge_sample_m_);
   getInput("wall_edge_normal_offset_m", wall_edge_normal_offset_m_);
@@ -429,6 +431,29 @@ bool InsertGarbagePose::isMapPointPassableOnLocalCostmap(double x, double y) con
   const int8_t cell = costmap->data[idx];
   if (cell < 0 || cell >= 100) {
     return false;
+  }
+  return true;
+}
+
+bool InsertGarbagePose::isStraightLineClearOnLocalCostmap(
+  double x0, double y0, double x1, double y1,
+  double sample_m) const
+{
+  const double step = std::max(0.05, sample_m);
+  const double dx = x1 - x0;
+  const double dy = y1 - y0;
+  const double len = std::hypot(dx, dy);
+  if (len < 1e-9) {
+    return isMapPointPassableOnLocalCostmap(x0, y0);
+  }
+  const int n = std::max(1, static_cast<int>(std::ceil(len / step)));
+  for (int i = 0; i <= n; ++i) {
+    const double t = static_cast<double>(i) / static_cast<double>(n);
+    const double x = x0 + t * dx;
+    const double y = y0 + t * dy;
+    if (!isMapPointPassableOnLocalCostmap(x, y)) {
+      return false;
+    }
   }
   return true;
 }
@@ -3623,7 +3648,8 @@ InsertGarbagePose::WallEdgeExtendChain InsertGarbagePose::buildWallEdgeExtendCha
   const InsertInfo & info)
 {
   WallEdgeExtendChain chain;
-  getInput("wall_edge_step_m", wall_edge_step_m_);
+  getInput("wall_edge_d_extend_m", wall_edge_d_extend_m_);
+  getInput("wall_edge_e_extend_m", wall_edge_e_extend_m_);
   getInput("wall_edge_min_robot_dist_m", wall_edge_min_robot_dist_m_);
   getInput("wall_edge_sample_m", wall_edge_sample_m_);
   getInput("wall_edge_normal_offset_m", wall_edge_normal_offset_m_);
@@ -3652,7 +3678,7 @@ InsertGarbagePose::WallEdgeExtendChain InsertGarbagePose::buildWallEdgeExtendCha
   const double tx = -ny;
   const double ty = nx;
 
-  const double extend_m = std::max(std::fabs(garbage_extend_m_), wall_edge_step_m_);
+  const double extend_m = std::max(0.1, std::fabs(wall_edge_e_extend_m_));
   const double ex1 = gx0 + extend_m * tx;
   const double ey1 = gy0 + extend_m * ty;
   const double ex2 = gx0 - extend_m * tx;
@@ -3673,21 +3699,145 @@ InsertGarbagePose::WallEdgeExtendChain InsertGarbagePose::buildWallEdgeExtendCha
   e_tx = std::cos(e_yaw);
   e_ty = std::sin(e_yaw);
 
+  const double off = wall_edge_normal_offset_m_;
+  auto footClear = [&](double x, double y, double yaw, std::string * reason) {
+    return isFootprintClearAtPose(
+      x + off * nx, y + off * ny, yaw, reason);
+  };
+  // D-E 连线只采点查占用，0.1m 一步，不做 footprint
+  auto deLineClear = [&](double x0, double y0, double x1, double y1) {
+    return isStraightLineClearOnLocalCostmap(
+      x0 + off * nx, y0 + off * ny,
+      x1 + off * nx, y1 + off * ny,
+      0.1);
+  };
+
+  // E：先落点，footprint 不过则只绕当前 e_yaw 扫角，不重选切向左右
   double ex = gx0 + extend_m * e_tx;
   double ey = gy0 + extend_m * e_ty;
+  bool e_ok = false;
+  {
+    std::string e_reason;
+    if (footClear(ex, ey, e_yaw, &e_reason)) {
+      e_ok = true;
+    } else {
+      for (double step_deg = kExtendYawSweepStepDeg;
+        step_deg <= kExtendYawSweepMaxDeg + 1e-6 && !e_ok;
+        step_deg += kExtendYawSweepStepDeg)
+      {
+        for (const double sign : {1.0, -1.0}) {
+          const double yaw_try = e_yaw + sign * step_deg * M_PI / 180.0;
+          const double ex_try = gx0 + extend_m * std::cos(yaw_try);
+          const double ey_try = gy0 + extend_m * std::sin(yaw_try);
+          std::string sweep_reason;
+          if (!footClear(ex_try, ey_try, yaw_try, &sweep_reason)) {
+            continue;
+          }
+          e_yaw = yaw_try;
+          e_tx = std::cos(e_yaw);
+          e_ty = std::sin(e_yaw);
+          ex = ex_try;
+          ey = ey_try;
+          e_ok = true;
+          RCLCPP_INFO(
+            node_->get_logger(),
+            "InsertGarbagePose: wall-edge E sweep %+g deg -> (%.2f, %.2f)",
+            sign * step_deg, ex, ey);
+          break;
+        }
+      }
+      if (!e_ok) {
+        chain.invalid_reason = "E footprint fail after sweep: " + e_reason;
+        return chain;
+      }
+    }
+  }
 
-  const double d_tx = -e_tx;
-  const double d_ty = -e_ty;
-  const double step = std::max(0.1, wall_edge_step_m_);
+  // D：生成时与 E 对侧绑定；安全调整时 E 不动，只独立扫角/加长 D
+  double d_yaw = std::atan2(-e_ty, -e_tx);
+  const double step = std::max(0.1, wall_edge_d_extend_m_);
   const double gd = std::max(0.0, wall_edge_min_robot_dist_m_);
-  double d_len = step;
-  double dx = gx0 + d_len * d_tx;
-  double dy = gy0 + d_len * d_ty;
-  constexpr int kMaxDPush = 20;
-  for (int i = 0; i < kMaxDPush && std::hypot(dx - from_x, dy - from_y) < gd; ++i) {
-    d_len += step;
-    dx = gx0 + d_len * d_tx;
-    dy = gy0 + d_len * d_ty;
+  auto placeD = [&](double yaw, double len, double * ox, double * oy) {
+    *ox = gx0 + len * std::cos(yaw);
+    *oy = gy0 + len * std::sin(yaw);
+  };
+  auto pushLenForGd = [&](double yaw) {
+    double len = step;
+    double ox = 0.0;
+    double oy = 0.0;
+    placeD(yaw, len, &ox, &oy);
+    for (int i = 0; i < 20 && std::hypot(ox - from_x, oy - from_y) < gd; ++i) {
+      len += step;
+      placeD(yaw, len, &ox, &oy);
+    }
+    return len;
+  };
+
+  double d_len = pushLenForGd(d_yaw);
+  double dx = 0.0;
+  double dy = 0.0;
+  placeD(d_yaw, d_len, &dx, &dy);
+  bool d_ok = false;
+  {
+    std::string d_reason;
+    const double yaw_travel = std::atan2(gy0 - dy, gx0 - dx);
+    if (footClear(dx, dy, yaw_travel, &d_reason) && deLineClear(dx, dy, ex, ey)) {
+      d_ok = true;
+    } else {
+      for (double step_deg = kExtendYawSweepStepDeg;
+        step_deg <= kExtendYawSweepMaxDeg + 1e-6 && !d_ok;
+        step_deg += kExtendYawSweepStepDeg)
+      {
+        for (const double sign : {1.0, -1.0}) {
+          const double yaw_try = d_yaw + sign * step_deg * M_PI / 180.0;
+          const double len_try = pushLenForGd(yaw_try);
+          double dx_try = 0.0;
+          double dy_try = 0.0;
+          placeD(yaw_try, len_try, &dx_try, &dy_try);
+          const double yaw_trav = std::atan2(gy0 - dy_try, gx0 - dx_try);
+          std::string sweep_reason;
+          if (!footClear(dx_try, dy_try, yaw_trav, &sweep_reason)) {
+            continue;
+          }
+          if (!deLineClear(dx_try, dy_try, ex, ey)) {
+            continue;
+          }
+          d_yaw = yaw_try;
+          d_len = len_try;
+          dx = dx_try;
+          dy = dy_try;
+          d_ok = true;
+          RCLCPP_INFO(
+            node_->get_logger(),
+            "InsertGarbagePose: wall-edge D sweep %+g deg -> (%.2f, %.2f)",
+            sign * step_deg, dx, dy);
+          break;
+        }
+      }
+      // 扫角仍不通：沿当前 d_yaw 再多推几步试安全点
+      if (!d_ok) {
+        for (int i = 0; i < 10 && !d_ok; ++i) {
+          d_len += step;
+          placeD(d_yaw, d_len, &dx, &dy);
+          const double yaw_trav = std::atan2(gy0 - dy, gx0 - dx);
+          std::string push_reason;
+          if (footClear(dx, dy, yaw_trav, &push_reason) &&
+            deLineClear(dx, dy, ex, ey))
+          {
+            d_ok = true;
+            RCLCPP_INFO(
+              node_->get_logger(),
+              "InsertGarbagePose: wall-edge D push len=%.2f -> (%.2f, %.2f)",
+              d_len, dx, dy);
+          }
+        }
+      }
+      // 不再联扫挪 E：贴墙平行时挪 E 易把一端顶进墙；E 定稿后只独立挪 D
+      if (!d_ok) {
+        chain.invalid_reason = "D footprint/D-E line fail after D-only sweep: " + d_reason;
+        return chain;
+      }
+    }
   }
 
   const double sample = std::max(0.05, wall_edge_sample_m_);
@@ -3727,7 +3877,6 @@ InsertGarbagePose::WallEdgeExtendChain InsertGarbagePose::buildWallEdgeExtendCha
     }
   }
 
-  const double off = wall_edge_normal_offset_m_;
   for (auto & p : chain_xy) {
     p.first += off * nx;
     p.second += off * ny;

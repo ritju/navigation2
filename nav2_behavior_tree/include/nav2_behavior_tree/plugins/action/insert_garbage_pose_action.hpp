@@ -181,8 +181,11 @@ public:
         "min_garbage_obstacle_clearance_m", 0.7,
         "If lethal within this radius, use wall-edge D-G-E insert instead of normal GE"),
       BT::InputPort<double>(
-        "wall_edge_step_m", 2.0,
+        "wall_edge_d_extend_m", 2.0,
         "Wall-edge: each D push step along tangent (m)"),
+      BT::InputPort<double>(
+        "wall_edge_e_extend_m", 2.0,
+        "Wall-edge: G to E extend distance along tangent (m)"),
       BT::InputPort<double>(
         "wall_edge_min_robot_dist_m", 3.0,
         "Wall-edge: keep |D-robot| at least this (m)"),
@@ -236,6 +239,11 @@ private:
 
   /** 局部代价图该点可通行：仅 254/255 不可过，253 可通过 */
   bool isMapPointPassableOnLocalCostmap(double x, double y) const;
+
+  /** 两点连线按 sample_m 下采样，各点可通则视为线段无占用 */
+  bool isStraightLineClearOnLocalCostmap(
+    double x0, double y0, double x1, double y1,
+    double sample_m = 0.1) const;
 
   /**
    * 垃圾点周围 radius_m 内局部代价图是否有占用障碍（cell>=100）。
@@ -535,7 +543,9 @@ private:
   /** 垃圾周围该半径内有 lethal 障碍则丢弃，默认 0.7m */
   double min_garbage_obstacle_clearance_m_{0.7};
   /** 贴边：D 每次沿切向再推的步长，默认 2m */
-  double wall_edge_step_m_{2.0};
+  double wall_edge_d_extend_m_{2.0};
+  /** 贴边：G 到 E 沿切向伸出长度，默认 2m */
+  double wall_edge_e_extend_m_{2.0};
   /** 贴边：D 与车最小距离 GD，默认 3m */
   double wall_edge_min_robot_dist_m_{3.0};
   /** 贴边：D-E 插点间隔，默认 0.5m */
