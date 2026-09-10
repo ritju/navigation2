@@ -68,7 +68,7 @@ public:
   /** from 离 G 近于此则视为已到达：不用欧氏远近选侧，沿车头在 G 后方虚设来向 */
   static constexpr double kMinExtendFromDistM = 0.5;
   /** 墙切向走廊失败后，绕该切向左右各扫到此角度 */
-  static constexpr double kExtendYawSweepMaxDeg = 30.0;
+  static constexpr double kExtendYawSweepMaxDeg = 90.0;
   /** 切向扫角步长 */
   static constexpr double kExtendYawSweepStepDeg = 10.0;
 
@@ -95,6 +95,10 @@ public:
     double extend_used_m{0.0};                            // 实际采用的延伸距离，可与参数不同
     double extend_x{0.0};                                 // 实际写入 goals 的 E 点 x，墙切向后与 path_yaw 重算可能不同
     double extend_y{0.0};                                 // 实际写入 goals 的 E 点 y
+    bool wall_edge_inserted{false};                       // 本堆是否走了贴边 D-G-E
+    double wall_edge_d_x{0.0};                            // 贴边 D 点
+    double wall_edge_d_y{0.0};
+    std::vector<std::pair<double, double>> wall_edge_chain_xy;  // D…G…E 采样点（可视化）
     bool hit_mid_case{false};                             // 垂足落在段中
     bool hit_forward_case{false};                         // 前方延长线
     std::vector<std::pair<double, double>> corners_kept_xy;  // 前方延长线保留角点
@@ -116,6 +120,25 @@ public:
     std::vector<ClipRound> clip_rounds;
   };
 
+  /** 贴边延长链：D、G、E 及中间点 */
+  struct WallEdgeExtendChain
+  {
+    bool valid{false};
+    std::string invalid_reason;
+    std::vector<std::pair<double, double>> xy;
+    double dx{0.0};
+    double dy{0.0};
+    double gx{0.0};
+    double gy{0.0};
+    double ex{0.0};
+    double ey{0.0};
+    double path_yaw{0.0};
+    double extend_used_m{0.0};
+    double px{0.0};
+    double py{0.0};
+    double normal_offset_m{0.0};
+  };
+
   InsertGarbagePose(
     const std::string & xml_tag_name,
     const BT::NodeConfiguration & conf);
@@ -125,9 +148,6 @@ public:
     return {
       BT::InputPort<Goals>("input_goals", "Input goals list (e.g. {goals})"),
       BT::OutputPort<Goals>("output_goals", "Goals after inserting garbage poses"),
-      BT::OutputPort<Goals>(
-        "protected_garbage",
-        "Inserted G/E poses; RemovePassedGoals must not drop these as behind-the-robot"),
       BT::InputPort<std::string>(
         "garbage_topic", std::string("/garbage_cord1"), "Garbage detection topic"),
       BT::InputPort<std::string>(
@@ -159,7 +179,19 @@ public:
         "Accept new garbage only inside this radius around the robot pose when the first pile of a batch is accepted"),
       BT::InputPort<double>(
         "min_garbage_obstacle_clearance_m", 0.7,
-        "Discard garbage if any lethal obstacle cell is within this radius (m) on local costmap"),
+        "If lethal within this radius, use wall-edge D-G-E insert instead of normal GE"),
+      BT::InputPort<double>(
+        "wall_edge_step_m", 2.0,
+        "Wall-edge: each D push step along tangent (m)"),
+      BT::InputPort<double>(
+        "wall_edge_min_robot_dist_m", 3.0,
+        "Wall-edge: keep |D-robot| at least this (m)"),
+      BT::InputPort<double>(
+        "wall_edge_sample_m", 0.5,
+        "Wall-edge: spacing of points on D-E (m)"),
+      BT::InputPort<double>(
+        "wall_edge_normal_offset_m", 0.0,
+        "Wall-edge: shift whole D-G-E along obstacle->garbage normal (m), + away from wall"),
       BT::InputPort<std::string>(
         "local_costmap_topic", std::string("local_costmap/costmap"),
         "Local costmap OccupancyGrid topic for obstacle-info readability check"),
@@ -314,11 +346,29 @@ private:
     const geometry_msgs::msg::PoseStamped & robot_pose,
     double garbage_x, double garbage_y);
 
+  /**
+   * 若 G→yaw 与 G→机器人同侧（点积>0），翻转 yaw，避免 E 落在车同侧。
+   * 车贴 G 时不改。
+   */
+  static double preferExtendYawAwayFromRobot(
+    double gx, double gy, double yaw,
+    double robot_x, double robot_y);
+
   /** 按 goala/goalc/goald 收集待删点到 goaltotal，再一块删除 */
   Goals clipGoalsNearGarbage(InsertInfo & info);
 
   /** 插入真实垃圾、统一时间戳；接回点前残留丢掉，避免扫完折返 */
   Goals insertGarbageIntoGoals(InsertInfo & info);
+
+  /** footprint 能否落在垃圾点 */
+  bool isFootprintClearAtPose(
+    double x, double y, double yaw, std::string * reason) const;
+
+  /** 生成贴边 D、G、E 及 D-E 间隔点，含法向偏移 */
+  WallEdgeExtendChain buildWallEdgeExtendChain(const InsertInfo & info);
+
+  /** 贴墙：把延长链写入 goals */
+  Goals insertWallEdgeGarbageIntoGoals(InsertInfo & info);
 
   /**在触发了延长线删点逻辑和检查当前角点还需不需要保护 */
   void refreshCornersOnRemaining(
@@ -377,12 +427,8 @@ private:
     double robot_x, double robot_y,
     double robot_yaw);
 
-  /** 按 computeSweepOrder 重排成员 garbage_list_，使 [0] 为下一堆 */
-  void reorderGarbageListBySweep(
-    double robot_x, double robot_y, double robot_yaw);
-
   /**
-    找机器人最近的这个垃圾
+   * 最近堆优先，其余按 computeSweepOrder 扫掠重排 garbage_list_，使 [0] 为下一堆
    */
   void reorderNearestFirstThenSweep(
     double robot_x, double robot_y, double robot_yaw);
@@ -403,9 +449,6 @@ private:
 
   /** 把当前 garbage_list_ 顺序记入 last_sweep_xy_ */
   void syncLastSweepXyFromList();
-
-  /** 把已插入的 G/E 保护点写到黑板，供 RemovePassedGoals 使用 */
-  void publishProtectedGarbage();
 
   /** 点到无限直线 AB 的垂足 */
   static void projectPointToInfiniteLine(
@@ -491,6 +534,14 @@ private:
   double max_garbage_robot_dist_m_{5.0};
   /** 垃圾周围该半径内有 lethal 障碍则丢弃，默认 0.7m */
   double min_garbage_obstacle_clearance_m_{0.7};
+  /** 贴边：D 每次沿切向再推的步长，默认 2m */
+  double wall_edge_step_m_{2.0};
+  /** 贴边：D 与车最小距离 GD，默认 3m */
+  double wall_edge_min_robot_dist_m_{3.0};
+  /** 贴边：D-E 插点间隔，默认 0.5m */
+  double wall_edge_sample_m_{0.5};
+  /** 贴边：整链沿障碍→垃圾法向平移，正为离墙，默认 0 */
+  double wall_edge_normal_offset_m_{0.0};
   /** 合堆半径：到种子小于该值并为一堆，默认 1.0m */
   double garbage_merge_radius_m_{1.0};
   /**
@@ -556,6 +607,9 @@ private:
   /** 上一堆假设到达点   有 E 用 E，否则用 G，供下一堆算 E；新任务/整单重排时清空 */
   bool has_last_sweep_arrive_{false};
   std::pair<double, double> last_sweep_arrive_xy_{0.0, 0.0};
+  /** 上一堆扫向 path_yaw；到达点贴下一 G 时延续此朝向，避免退回车头导致 E∥车 */
+  bool has_last_sweep_path_yaw_{false};
+  double last_sweep_path_yaw_{0.0};
 
   mutable std::mutex special_terrain_mutex_;
   /** 禁扫区多边形 */

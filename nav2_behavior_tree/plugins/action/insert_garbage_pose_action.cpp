@@ -45,6 +45,10 @@ InsertGarbagePose::InsertGarbagePose(
   head_delete_robot_dist_m_(4.0),  // 离队头超过该距离就不删点
   max_garbage_robot_dist_m_(5.0),  // 垃圾离机器人超过该距离则忽略
   min_garbage_obstacle_clearance_m_(0.7),  // 垃圾周围该半径内有障碍则丢弃
+  wall_edge_step_m_(2.0),
+  wall_edge_min_robot_dist_m_(3.0),
+  wall_edge_sample_m_(0.5),
+  wall_edge_normal_offset_m_(0.0),
   garbage_merge_radius_m_(1.0),    // 到种子小于该距离合为一堆
   garbage_extend_m_(2.0),          // 沿扫向相对垃圾再插一点，默认 2.0m；见 GARBAGE_EXTEND_M
   work_circle_radius_m_(10.0)
@@ -61,6 +65,10 @@ InsertGarbagePose::InsertGarbagePose(
   getInput("head_delete_robot_dist_m", head_delete_robot_dist_m_);
   getInput("max_garbage_robot_dist_m", max_garbage_robot_dist_m_);
   getInput("min_garbage_obstacle_clearance_m", min_garbage_obstacle_clearance_m_);
+  getInput("wall_edge_step_m", wall_edge_step_m_);
+  getInput("wall_edge_min_robot_dist_m", wall_edge_min_robot_dist_m_);
+  getInput("wall_edge_sample_m", wall_edge_sample_m_);
+  getInput("wall_edge_normal_offset_m", wall_edge_normal_offset_m_);
   getInput("garbage_merge_radius_m", garbage_merge_radius_m_);
   getInput("work_circle_radius_m", work_circle_radius_m_);
   getInput("global_frame", global_frame_);
@@ -1308,13 +1316,6 @@ void InsertGarbagePose::reorderNearestFirstThenSweep(
     garbage_list_.size());
 }
 
-// 按下标顺序重建 garbage_list_，[0] 即下一堆（必须是离车最近的）
-void InsertGarbagePose::reorderGarbageListBySweep(
-  double robot_x, double robot_y, double robot_yaw)
-{
-  reorderNearestFirstThenSweep(robot_x, robot_y, robot_yaw);
-}
-
 void InsertGarbagePose::syncLastSweepXyFromList() // 把排好的顺序保存下来
 {
   last_sweep_xy_.clear();
@@ -1493,7 +1494,7 @@ bool InsertGarbagePose::reorderGarbageListWithNewPile(   // 新来的那一个�
   // 仅新堆：不在半路上，等当前堆扫完再插
   if (n <= 1 || nearest_is_pending) {
     if (n > 1) {
-      reorderGarbageListBySweep(robot_x, robot_y, robot_yaw);
+      reorderNearestFirstThenSweep(robot_x, robot_y, robot_yaw);
     } else {
       syncLastSweepXyFromList();
     }
@@ -1665,19 +1666,18 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
 
     // 垃圾周围 clearance 内有硬障碍：贴墙扫不了，直接丢弃，不进后续规划
     getInput("min_garbage_obstacle_clearance_m", min_garbage_obstacle_clearance_m_);
-    if (min_garbage_obstacle_clearance_m_ > 0.0 &&
-      hasObstacleWithinRadius(gx, gy, min_garbage_obstacle_clearance_m_))
-    {
+    const bool near_obstacle =
+      min_garbage_obstacle_clearance_m_ > 0.0 &&
+      hasObstacleWithinRadius(gx, gy, min_garbage_obstacle_clearance_m_);
+    if (near_obstacle) {
       RCLCPP_INFO(
         node_->get_logger(),
-        "InsertGarbagePose: 垃圾=(%.2f, %.2f), 因为太靠近障碍物(%.2fm内), 丢弃",
+        "InsertGarbagePose: 垃圾=(%.2f, %.2f), 靠近障碍物(%.2fm内), 保留待贴边插入",
         gx, gy, min_garbage_obstacle_clearance_m_);
-      eraseFromHistory(original);
-      continue;
     }
 
     // 机器人到垃圾直线走廊有 lethal 则丢弃
-    {
+    if (!near_obstacle) {
       std::string corridor_reason;
       if (!isStraightCorridorClear(robot_x, robot_y, gx, gy, &corridor_reason)) {
         RCLCPP_INFO(
@@ -1820,6 +1820,8 @@ void InsertGarbagePose::checkAndResetOnNewMission()
   last_sweep_xy_.clear();
   has_last_sweep_arrive_ = false;
   last_sweep_arrive_xy_ = {0.0, 0.0};
+  has_last_sweep_path_yaw_ = false;
+  last_sweep_path_yaw_ = 0.0;
   viz_pile_count_ = 0;
   footprint_stripped_viz_.clear();
   g_num_xy_.clear();
@@ -2332,21 +2334,6 @@ bool InsertGarbagePose::collectInProgressKeepXy(
   return !keep_xy->empty();
 }
 
-void InsertGarbagePose::publishProtectedGarbage()
-{
-  Goals protected_goals;
-  protected_goals.reserve(reached_garbage_xy_.size());
-  for (const auto & xy : reached_garbage_xy_) {
-    geometry_msgs::msg::PoseStamped pose;
-    pose.header.frame_id = global_frame_;
-    pose.pose.orientation.w = 1.0;
-    pose.pose.position.x = xy.first;
-    pose.pose.position.y = xy.second;
-    protected_goals.push_back(std::move(pose));
-  }
-  setOutput("protected_garbage", protected_goals);
-}
-
 bool InsertGarbagePose::isPendingGarbageInGoals(const Goals & goals) const
 {
   if (!has_pending_garbage_) {
@@ -2623,6 +2610,24 @@ bool InsertGarbagePose::findLastGoalWithinPathRange(
   return true;
 }
 
+double InsertGarbagePose::preferExtendYawAwayFromRobot(
+  double gx, double gy, double yaw,
+  double robot_x, double robot_y)
+{
+  const double dx = robot_x - gx;
+  const double dy = robot_y - gy;
+  if (std::hypot(dx, dy) < 1e-3) {
+    return yaw;
+  }
+  const double fx = std::cos(yaw);
+  const double fy = std::sin(yaw);
+  // G→E 与 G→车同侧：E 会落在车旁/同向，翻转到对侧
+  if (dx * fx + dy * fy > 0.0) {
+    return std::atan2(-fy, -fx);
+  }
+  return yaw;
+}
+
 // 获取插入所需的全部信息并返回
 InsertGarbagePose::InsertInfo InsertGarbagePose::gatherInsertInfo(
   const Goals & goals,
@@ -2766,16 +2771,33 @@ InsertGarbagePose::InsertInfo InsertGarbagePose::gatherInsertInfo(
   const double dx_from = gx - from_x;
   const double dy_from = gy - from_y;
   const double from_dist = std::hypot(dx_from, dy_from);
+  const double back_m = std::max(std::fabs(garbage_extend_m_), min_from_m * 2.0);
   if (from_dist < min_from_m) {
-    // 车已在 G 上：真车不能当来向。沿车头在 G 后方虚设 from，E 只向前
-    const double robot_yaw = tf2::getYaw(robot_pose.pose.orientation);
-    const double back_m = std::max(std::fabs(garbage_extend_m_), min_from_m * 2.0);
-    from_x = gx - back_m * std::cos(robot_yaw);
-    from_y = gy - back_m * std::sin(robot_yaw);
-    info.path_yaw = robot_yaw;
-    yaw_src = "on-G, forward=robot_yaw";
+    // 来向贴 G：优先延续上一堆扫向，避免退回车头导致后堆 E∥机器人
+    double yaw_fwd = tf2::getYaw(robot_pose.pose.orientation);
+    if (has_last_sweep_path_yaw_) {
+      yaw_fwd = last_sweep_path_yaw_;
+      yaw_src = "on-G, forward=last_sweep_yaw";
+    } else {
+      yaw_src = "on-G, forward=robot_yaw";
+    }
+    from_x = gx - back_m * std::cos(yaw_fwd);
+    from_y = gy - back_m * std::sin(yaw_fwd);
+    info.path_yaw = yaw_fwd;
   } else {
     info.path_yaw = std::atan2(dy_from, dx_from);
+  }
+  {
+    const double before = info.path_yaw;
+    // 用进近来向 from，不用发现时车位，避免后堆 E 按旧车位翻反
+    info.path_yaw = preferExtendYawAwayFromRobot(
+      gx, gy, info.path_yaw, from_x, from_y);
+    if (std::cos(info.path_yaw - before) < 0.0) {
+      // 翻转后保证 from 仍在 G 后方（-path_yaw 侧），墙切向选侧才一致
+      from_x = gx - back_m * std::cos(info.path_yaw);
+      from_y = gy - back_m * std::sin(info.path_yaw);
+      yaw_src = "flipped away from approach";
+    }
   }
   info.extend_from_x = from_x;
   info.extend_from_y = from_y;
@@ -3344,9 +3366,14 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
     extend_pose.pose.position.z = kGarbageSentinelPoseZ;
   };
 
+  // G 已单独做过 footprint；这里不能再跑 G→E 整段车宽走廊：
+  // G 贴墙时，朝开阔侧会把车尾打进墙，导致任意扫角在 G 处全灭。
+  // E 与 G 同标准：只要求候选 E 点 footprint 可通过。
   auto corridorClear = [&](std::string * reason) {
-    return isStraightCorridorClear(
-      gx, gy, extend_pose.pose.position.x, extend_pose.pose.position.y, reason);
+    const double ex = extend_pose.pose.position.x;
+    const double ey = extend_pose.pose.position.y;
+    const double yaw_e = std::atan2(ey - gy, ex - gx);
+    return isFootprintClearAtPose(ex, ey, yaw_e, reason);
   };
 
   auto applyExtendYaw = [&](double yaw) {
@@ -3414,6 +3441,8 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
           const double fwd_x = std::cos(info.path_yaw);
           const double fwd_y = std::sin(info.path_yaw);
           const double from_g = std::hypot(gx - from_x, gy - from_y);
+          const double to_fx = from_x - gx;
+          const double to_fy = from_y - gy;
           bool use_plus = d1 > d2;
           // from 贴着 G，或两侧几乎一样远：按扫向选前侧，避免 4cm 噪声翻面
           if (from_g < std::max(kMinExtendFromDistM, arrived_radius_) ||
@@ -3421,8 +3450,17 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
           {
             use_plus = (tx * fwd_x + ty * fwd_y) >= 0.0;
           }
+          // 禁止 E 与进近来向同侧，参照 from 而非发现时车位
+          {
+            const double sx = use_plus ? tx : -tx;
+            const double sy = use_plus ? ty : -ty;
+            if (to_fx * sx + to_fy * sy > 0.0) {
+              use_plus = !use_plus;
+            }
+          }
 
-          const double yaw = use_plus ? std::atan2(ty, tx) : std::atan2(-ty, -tx);
+          double yaw = use_plus ? std::atan2(ty, tx) : std::atan2(-ty, -tx);
+          yaw = preferExtendYawAwayFromRobot(gx, gy, yaw, from_x, from_y);
           setExtendPose(yaw, extend_m);
           std::string side_reason;
           if (corridorClear(&side_reason)) {
@@ -3436,7 +3474,9 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
               extend_pose.pose.position.x, extend_pose.pose.position.y,
               from_x, from_y);
           } else {
-            // 切向 0° 不通：只绕这一侧 ±10/±20/±30° 小范围再找 E
+            // 切向 0° 不通：绕该侧按步长扫到 ±kExtendYawSweepMaxDeg 再找 E。
+            // 注意：扫角内不要再 preferExtendYawAwayFromRobot——那会把朝开阔侧
+            // （常与来车同侧）的候选翻成朝墙，导致 ±90° 一半扇区从未真正试过。
             for (double step = kExtendYawSweepStepDeg;
               step <= kExtendYawSweepMaxDeg + 1e-6 && !add_extend;
               step += kExtendYawSweepStepDeg)
@@ -3461,7 +3501,10 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
               }
             }
             if (!add_extend) {
-              skipE("远端墙切向走廊(" + side_reason + ")，±30deg 仍不通");
+              skipE(
+                "远端墙切向走廊(" + side_reason + ")，±" +
+                std::to_string(static_cast<int>(kExtendYawSweepMaxDeg)) +
+                "deg 仍不通");
             }
           }
         }
@@ -3480,6 +3523,8 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
     last_sweep_arrive_xy_ = {gx, gy};
   }
   has_last_sweep_arrive_ = true;
+  last_sweep_path_yaw_ = info.path_yaw;
+  has_last_sweep_path_yaw_ = true;
 
   Goals suffix;
   suffix.assign(
@@ -3562,6 +3607,360 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
     "(mid=%d forward=%d far=%d)",
     resume_from, out.size(),
     info.hit_mid_case ? 1 : 0, info.hit_forward_case ? 1 : 0, far_from_head ? 1 : 0);
+
+  return out;
+}
+
+bool InsertGarbagePose::isFootprintClearAtPose(
+  double x, double y, double yaw, std::string * reason) const
+{
+  const double ex = x + 0.05 * std::cos(yaw);
+  const double ey = y + 0.05 * std::sin(yaw);
+  return isStraightCorridorClear(x, y, ex, ey, reason);
+}
+
+InsertGarbagePose::WallEdgeExtendChain InsertGarbagePose::buildWallEdgeExtendChain(
+  const InsertInfo & info)
+{
+  WallEdgeExtendChain chain;
+  getInput("wall_edge_step_m", wall_edge_step_m_);
+  getInput("wall_edge_min_robot_dist_m", wall_edge_min_robot_dist_m_);
+  getInput("wall_edge_sample_m", wall_edge_sample_m_);
+  getInput("wall_edge_normal_offset_m", wall_edge_normal_offset_m_);
+
+  const double gx0 = info.garbage.pose.pose.position.x;
+  const double gy0 = info.garbage.pose.pose.position.y;
+  const double from_x = info.extend_from_x;
+  const double from_y = info.extend_from_y;
+
+  double px = 0.0;
+  double py = 0.0;
+  if (!findNearestObstaclePixel(gx0, gy0, &px, &py)) {
+    chain.invalid_reason = "no obstacle P";
+    return chain;
+  }
+
+  double nx = gx0 - px;
+  double ny = gy0 - py;
+  const double nlen = std::hypot(nx, ny);
+  if (nlen < 1e-6) {
+    chain.invalid_reason = "P coincides G";
+    return chain;
+  }
+  nx /= nlen;
+  ny /= nlen;
+  const double tx = -ny;
+  const double ty = nx;
+
+  const double extend_m = std::max(std::fabs(garbage_extend_m_), wall_edge_step_m_);
+  const double ex1 = gx0 + extend_m * tx;
+  const double ey1 = gy0 + extend_m * ty;
+  const double ex2 = gx0 - extend_m * tx;
+  const double ey2 = gy0 - extend_m * ty;
+  const double d1 = std::hypot(ex1 - from_x, ey1 - from_y);
+  const double d2 = std::hypot(ex2 - from_x, ey2 - from_y);
+  bool e_plus = d1 > d2;
+  const double fwd_x = std::cos(info.path_yaw);
+  const double fwd_y = std::sin(info.path_yaw);
+  if (std::fabs(d1 - d2) < 0.3) {
+    e_plus = (tx * fwd_x + ty * fwd_y) >= 0.0;
+  }
+  double e_tx = e_plus ? tx : -tx;
+  double e_ty = e_plus ? ty : -ty;
+  double e_yaw = std::atan2(e_ty, e_tx);
+  // 贴边 E/D 也只相对进近 from，避免后堆按发现时车位翻反
+  e_yaw = preferExtendYawAwayFromRobot(gx0, gy0, e_yaw, from_x, from_y);
+  e_tx = std::cos(e_yaw);
+  e_ty = std::sin(e_yaw);
+
+  double ex = gx0 + extend_m * e_tx;
+  double ey = gy0 + extend_m * e_ty;
+
+  const double d_tx = -e_tx;
+  const double d_ty = -e_ty;
+  const double step = std::max(0.1, wall_edge_step_m_);
+  const double gd = std::max(0.0, wall_edge_min_robot_dist_m_);
+  double d_len = step;
+  double dx = gx0 + d_len * d_tx;
+  double dy = gy0 + d_len * d_ty;
+  constexpr int kMaxDPush = 20;
+  for (int i = 0; i < kMaxDPush && std::hypot(dx - from_x, dy - from_y) < gd; ++i) {
+    d_len += step;
+    dx = gx0 + d_len * d_tx;
+    dy = gy0 + d_len * d_ty;
+  }
+
+  const double sample = std::max(0.05, wall_edge_sample_m_);
+  const double chain_len = std::hypot(ex - dx, ey - dy);
+  std::vector<std::pair<double, double>> chain_xy;
+  if (chain_len < 1e-6) {
+    chain_xy.push_back({gx0, gy0});
+  } else {
+    const double ux = (ex - dx) / chain_len;
+    const double uy = (ey - dy) / chain_len;
+    const int n_seg = std::max(1, static_cast<int>(std::ceil(chain_len / sample)));
+    chain_xy.reserve(static_cast<std::size_t>(n_seg) + 3u);
+    for (int i = 0; i <= n_seg; ++i) {
+      const double s = chain_len * static_cast<double>(i) / static_cast<double>(n_seg);
+      chain_xy.emplace_back(dx + ux * s, dy + uy * s);
+    }
+    bool g_on_chain = false;
+    for (const auto & p : chain_xy) {
+      if (squaredDistanceXY(p.first, p.second, gx0, gy0) < 0.01) {
+        g_on_chain = true;
+        break;
+      }
+    }
+    if (!g_on_chain) {
+      const double sg = (gx0 - dx) * ux + (gy0 - dy) * uy;
+      std::size_t insert_at = chain_xy.size();
+      for (std::size_t i = 0; i < chain_xy.size(); ++i) {
+        const double si =
+          (chain_xy[i].first - dx) * ux + (chain_xy[i].second - dy) * uy;
+        if (si > sg) {
+          insert_at = i;
+          break;
+        }
+      }
+      chain_xy.insert(
+        chain_xy.begin() + static_cast<std::ptrdiff_t>(insert_at), {gx0, gy0});
+    }
+  }
+
+  const double off = wall_edge_normal_offset_m_;
+  for (auto & p : chain_xy) {
+    p.first += off * nx;
+    p.second += off * ny;
+  }
+  dx += off * nx;
+  dy += off * ny;
+  ex += off * nx;
+  ey += off * ny;
+  const double gx = gx0 + off * nx;
+  const double gy = gy0 + off * ny;
+
+  chain.valid = true;
+  chain.xy = std::move(chain_xy);
+  chain.dx = dx;
+  chain.dy = dy;
+  chain.gx = gx;
+  chain.gy = gy;
+  chain.ex = ex;
+  chain.ey = ey;
+  chain.path_yaw = e_yaw;
+  chain.extend_used_m = extend_m;
+  chain.px = px;
+  chain.py = py;
+  chain.normal_offset_m = off;
+
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "InsertGarbagePose: wall-edge chain D=(%.2f, %.2f) G=(%.2f, %.2f) E=(%.2f, %.2f) "
+    "n=%zu offset=%.2f P=(%.2f, %.2f)",
+    dx, dy, gx, gy, ex, ey, chain.xy.size(), off, px, py);
+  return chain;
+}
+
+InsertGarbagePose::Goals InsertGarbagePose::insertWallEdgeGarbageIntoGoals(
+  InsertInfo & info)
+{
+  const WallEdgeExtendChain chain = buildWallEdgeExtendChain(info);
+  if (!chain.valid) {
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: wall-edge fallback normal insert (%s) near (%.2f, %.2f)",
+      chain.invalid_reason.c_str(),
+      info.garbage.pose.pose.position.x, info.garbage.pose.pose.position.y);
+    return insertGarbageIntoGoals(info);
+  }
+
+  const double gx = chain.gx;
+  const double gy = chain.gy;
+  const double ex = chain.ex;
+  const double ey = chain.ey;
+  const double e_yaw = chain.path_yaw;
+  const auto & chain_xy = chain.xy;
+
+  info.garbage.pose.pose.position.x = gx;
+  info.garbage.pose.pose.position.y = gy;
+  info.path_yaw = e_yaw;
+  info.extend_x = ex;
+  info.extend_y = ey;
+  info.extend_inserted = true;
+  info.extend_used_m = chain.extend_used_m;
+  info.wall_edge_inserted = true;
+  info.wall_edge_d_x = chain.dx;
+  info.wall_edge_d_y = chain.dy;
+  info.wall_edge_chain_xy = chain_xy;
+
+  // 以下与普通插入相同的前缀裁剪与接回
+  Goals prefix;
+  Goals path;
+  int last_protected = -1;
+  for (std::size_t i = 0; i < info.goals.size(); ++i) {
+    if (isProtectedGarbageXy(
+        info.goals[i].pose.position.x, info.goals[i].pose.position.y))
+    {
+      last_protected = static_cast<int>(i);
+    }
+  }
+  if (last_protected >= 0) {
+    prefix.assign(
+      info.goals.begin(),
+      info.goals.begin() + static_cast<std::ptrdiff_t>(last_protected) + 1);
+    path.assign(
+      info.goals.begin() + static_cast<std::ptrdiff_t>(last_protected) + 1,
+      info.goals.end());
+  } else {
+    path = info.goals;
+  }
+
+  const double saved_yaw = info.path_yaw;
+  const auto saved_garbage = info.garbage;
+  Goals out;
+  if (!prefix.empty() && path.size() >= 2) {
+    InsertInfo path_info = gatherInsertInfo(
+      path, info.robot_pose, gx, gy);
+    if (path_info.valid) {
+      path_info.path_yaw = saved_yaw;
+      path_info.garbage = saved_garbage;
+      out = clipGoalsNearGarbage(path_info);
+      info.goala = path_info.goala;
+      info.goalc = path_info.goalc;
+      info.goalc_idx = path_info.goalc_idx;
+      info.goald_x = path_info.goald_x;
+      info.goald_y = path_info.goald_y;
+      info.hit_mid_case = path_info.hit_mid_case;
+      info.hit_forward_case = path_info.hit_forward_case;
+      info.corners_kept_xy = std::move(path_info.corners_kept_xy);
+      info.clip_rounds = std::move(path_info.clip_rounds);
+      info.goaltotal = std::move(path_info.goaltotal);
+    } else {
+      out = std::move(path);
+    }
+  } else if (path.size() >= 2) {
+    out = clipGoalsNearGarbage(info);
+  } else {
+    out = std::move(path);
+  }
+  info.path_yaw = saved_yaw;
+  info.garbage = saved_garbage;
+
+  getInput("head_delete_robot_dist_m", head_delete_robot_dist_m_);
+  double ac_foot_x = 0.0;
+  double ac_foot_y = 0.0;
+  projectPointToInfiniteLine(
+    info.robot_pose.pose.position.x, info.robot_pose.pose.position.y,
+    info.goala.pose.position.x, info.goala.pose.position.y,
+    info.goalc.pose.position.x, info.goalc.pose.position.y,
+    ac_foot_x, ac_foot_y);
+  const double dist_to_ac_line = std::sqrt(squaredDistanceXY(
+    info.robot_pose.pose.position.x, info.robot_pose.pose.position.y,
+    ac_foot_x, ac_foot_y));
+  const bool far_from_head = (dist_to_ac_line > head_delete_robot_dist_m_);
+
+  std::size_t insert_anchor = 0;
+  constexpr double kMatchTol = 0.08;
+  constexpr double kMatchTol2 = kMatchTol * kMatchTol;
+  bool have_insert_after = false;
+  if (far_from_head) {
+    insert_anchor = 0;
+  } else if (info.hit_mid_case) {
+    const double ax = info.goala.pose.position.x;
+    const double ay = info.goala.pose.position.y;
+    for (std::size_t j = 0; j < out.size(); ++j) {
+      const double ddx = out[j].pose.position.x - ax;
+      const double ddy = out[j].pose.position.y - ay;
+      if (ddx * ddx + ddy * ddy < kMatchTol2) {
+        insert_anchor = j + 1;
+        have_insert_after = true;
+        break;
+      }
+    }
+  } else if (info.hit_forward_case && !info.corners_kept_xy.empty()) {
+    for (auto it = info.corners_kept_xy.rbegin(); it != info.corners_kept_xy.rend(); ++it) {
+      for (std::size_t j = 0; j < out.size(); ++j) {
+        const double ddx = out[j].pose.position.x - it->first;
+        const double ddy = out[j].pose.position.y - it->second;
+        if (ddx * ddx + ddy * ddy < kMatchTol2) {
+          insert_anchor = j + 1;
+          have_insert_after = true;
+          break;
+        }
+      }
+      if (insert_anchor != 0) {
+        break;
+      }
+    }
+  }
+
+  std::size_t resume_from = insert_anchor;
+  if (info.hit_forward_case && have_insert_after && insert_anchor > 0) {
+    resume_from = insert_anchor - 1;
+  }
+  if (resume_from > out.size()) {
+    resume_from = out.size();
+  }
+  if (resume_from > 0) {
+    info.goaltotal.insert(
+      info.goaltotal.end(), out.begin(), out.begin() + static_cast<std::ptrdiff_t>(resume_from));
+  }
+
+  Goals suffix;
+  suffix.assign(
+    out.begin() + static_cast<std::ptrdiff_t>(resume_from), out.end());
+
+  // 不用 E 再全量 clip 进近段，只接回 suffix
+  std::string frame_id = global_frame_;
+  if (!out.empty() && !out.front().header.frame_id.empty()) {
+    frame_id = out.front().header.frame_id;
+  } else if (!info.goals.empty() && !info.goals.front().header.frame_id.empty()) {
+    frame_id = info.goals.front().header.frame_id;
+  }
+
+  const auto orient = nav2_util::geometry_utils::orientationAroundZAxis(e_yaw);
+  Goals chain_poses;
+  chain_poses.reserve(chain_xy.size());
+  for (std::size_t i = 0; i < chain_xy.size(); ++i) {
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header.frame_id = frame_id;
+    pose.pose.position.x = chain_xy[i].first;
+    pose.pose.position.y = chain_xy[i].second;
+    pose.pose.position.z = 0.0;
+    pose.pose.orientation = orient;
+    const bool is_g = squaredDistanceXY(
+        chain_xy[i].first, chain_xy[i].second, gx, gy) < 0.01;
+    const bool is_e = squaredDistanceXY(
+        chain_xy[i].first, chain_xy[i].second, ex, ey) < 0.01;
+    if (is_g || is_e) {
+      pose.pose.position.z = kGarbageSentinelPoseZ;
+    }
+    chain_poses.push_back(pose);
+  }
+
+  Goals rebuilt;
+  rebuilt.reserve(prefix.size() + chain_poses.size() + suffix.size());
+  rebuilt.insert(rebuilt.end(), prefix.begin(), prefix.end());
+  rebuilt.insert(rebuilt.end(), chain_poses.begin(), chain_poses.end());
+  rebuilt.insert(rebuilt.end(), suffix.begin(), suffix.end());
+  out = std::move(rebuilt);
+
+  const rclcpp::Time stamp_now = node_->now();
+  for (auto & pose : out) {
+    pose.header.stamp = stamp_now;
+  }
+  mission_stamp_record_ = stamp_now;
+  has_mission_stamp_ = true;
+
+  last_sweep_arrive_xy_ = {ex, ey};
+  has_last_sweep_arrive_ = true;
+  last_sweep_path_yaw_ = e_yaw;
+  has_last_sweep_path_yaw_ = true;
+
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "InsertGarbagePose: wall-edge insert chain=%zu resume_from=%zu remain=%zu",
+    chain_poses.size(), resume_from, out.size());
 
   return out;
 }
@@ -3977,6 +4376,65 @@ void InsertGarbagePose::publishVisualization(
       setColor(te, 0.15f, 0.40f, 0.95f);
       arr.markers.push_back(te);
     }
+
+    // 贴边：D 蓝点+D标签（无虚线）；中间采样点纯蓝点（无文字、无虚线）
+    if (info.wall_edge_inserted) {
+      constexpr float kBlueR = 0.15f;
+      constexpr float kBlueG = 0.40f;
+      constexpr float kBlueB = 0.95f;
+      constexpr double kMidDotSizeM = 0.07;
+      constexpr int kWallEdgeIdBase = 8000;
+      constexpr int kWallEdgeIdSpan = 128;
+      const int wbase = kWallEdgeIdBase + pile_idx * kWallEdgeIdSpan;
+      int wid = 0;
+
+      {
+        auto d_dot = makeBase("wall_edge_pts", wbase + wid++, visualization_msgs::msg::Marker::SPHERE);
+        d_dot.pose.position.x = info.wall_edge_d_x;
+        d_dot.pose.position.y = info.wall_edge_d_y;
+        d_dot.pose.position.z = kGarbageDotZM;
+        d_dot.scale.x = kGarbageDotSizeM;
+        d_dot.scale.y = kGarbageDotSizeM;
+        d_dot.scale.z = kGarbageDotSizeM;
+        setColor(d_dot, kBlueR, kBlueG, kBlueB, 1.0f);
+        arr.markers.push_back(d_dot);
+      }
+      auto td = makeBase(
+        "wall_edge_pts", wbase + wid++, visualization_msgs::msg::Marker::TEXT_VIEW_FACING);
+      td.pose.position.x = info.wall_edge_d_x;
+      td.pose.position.y = info.wall_edge_d_y;
+      td.pose.position.z = 0.40;
+      td.scale.z = 0.22;
+      {
+        std::ostringstream oss;
+        oss << "D" << pile_num;
+        td.text = oss.str();
+      }
+      setColor(td, kBlueR, kBlueG, kBlueB);
+      arr.markers.push_back(td);
+
+      for (const auto & p : info.wall_edge_chain_xy) {
+        if (wid >= kWallEdgeIdSpan) {
+          break;
+        }
+        if (squaredDistanceXY(p.first, p.second, info.wall_edge_d_x, info.wall_edge_d_y) < 0.01 ||
+          squaredDistanceXY(p.first, p.second, gx, gy) < 0.01 ||
+          (info.extend_inserted &&
+          squaredDistanceXY(p.first, p.second, info.extend_x, info.extend_y) < 0.01))
+        {
+          continue;
+        }
+        auto mid = makeBase("wall_edge_pts", wbase + wid++, visualization_msgs::msg::Marker::SPHERE);
+        mid.pose.position.x = p.first;
+        mid.pose.position.y = p.second;
+        mid.pose.position.z = kGarbageDotZM;
+        mid.scale.x = kMidDotSizeM;
+        mid.scale.y = kMidDotSizeM;
+        mid.scale.z = kMidDotSizeM;
+        setColor(mid, kBlueR, kBlueG, kBlueB, 1.0f);
+        arr.markers.push_back(mid);
+      }
+    }
   }
 
   if (viz_deleted_goals) {
@@ -4137,7 +4595,6 @@ BT::NodeStatus InsertGarbagePose::tick()
     {
       publishRangeCircles(robot_pose.pose.position.x, robot_pose.pose.position.y);
     }
-    publishProtectedGarbage();
     return BT::NodeStatus::SUCCESS;
   }
 
@@ -4145,7 +4602,6 @@ BT::NodeStatus InsertGarbagePose::tick()
   if (!nav2_util::getCurrentPose(
       robot_pose, *tf_, global_frame_, robot_base_frame_, transform_tolerance_))
   {
-    publishProtectedGarbage();
     return BT::NodeStatus::SUCCESS;
   }
 
@@ -4442,6 +4898,8 @@ BT::NodeStatus InsertGarbagePose::tick()
           order_yaw = std::atan2(dy, dx);
         }
       }
+      last_sweep_path_yaw_ = order_yaw;
+      has_last_sweep_path_yaw_ = true;
     }
 
     GarbageList incoming = std::move(garbage_list_);
@@ -4479,13 +4937,13 @@ BT::NodeStatus InsertGarbagePose::tick()
 
     (void)new_idx;
     if (garbage_list_.size() > 1) {
-      reorderGarbageListBySweep(order_x, order_y, order_yaw);
+      reorderNearestFirstThenSweep(order_x, order_y, order_yaw);
     } else if (garbage_list_.size() == 1) {
       syncLastSweepXyFromList();
     }
     logSweepOrder();
   } else if (garbage_list_.size() > 1 && last_sweep_xy_.empty()) {
-    reorderGarbageListBySweep(rx, ry, robot_yaw);
+    reorderNearestFirstThenSweep(rx, ry, robot_yaw);
     logSweepOrder();
   } else if (garbage_list_.size() == 1 && last_sweep_xy_.empty()) {
     syncLastSweepXyFromList();
@@ -4495,7 +4953,6 @@ BT::NodeStatus InsertGarbagePose::tick()
     if (goals_dirty) {
       emitOutputGoals(goals_now, "strip_z_neg1");
     }
-    publishProtectedGarbage();
     return BT::NodeStatus::SUCCESS;
   }
 
@@ -4535,14 +4992,34 @@ BT::NodeStatus InsertGarbagePose::tick()
     }
     info.dist_label = assignStableGNum(gx, gy);
     const std::size_t goals_before_pile = goals_now.size();
-    goals_now = insertGarbageIntoGoals(info);
+    std::string fp_reason;
+    const bool footprint_ok = isFootprintClearAtPose(
+      gx, gy, info.path_yaw, &fp_reason);
+    getInput("min_garbage_obstacle_clearance_m", min_garbage_obstacle_clearance_m_);
+    const bool near_obstacle =
+      min_garbage_obstacle_clearance_m_ > 0.0 &&
+      hasObstacleWithinRadius(gx, gy, min_garbage_obstacle_clearance_m_);
+    // 近障已标记待贴边：即使 G footprint 勉强过，也走 D-G-E，避免只插 G、E 全灭
+    if (footprint_ok && !near_obstacle) {
+      goals_now = insertGarbageIntoGoals(info);
+    } else {
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "InsertGarbagePose: %s at G (%.2f, %.2f)%s, wall-edge insert",
+        footprint_ok ? "near-obstacle" : "footprint fail",
+        gx, gy,
+        footprint_ok ? "" : (std::string(": ") + fp_reason).c_str());
+      goals_now = insertWallEdgeGarbageIntoGoals(info);
+    }
     const std::size_t pile_deleted = info.goaltotal.size();
     deleted_goals_total += pile_deleted;
     RCLCPP_INFO(
       node_->get_logger(),
       "InsertGarbagePose: insert G%d (%.2f, %.2f) extend=%d, deleted %zu path goals, "
       "goals %zu -> %zu",
-      info.dist_label, gx, gy, info.extend_inserted ? 1 : 0,
+      info.dist_label,
+      info.garbage.pose.pose.position.x, info.garbage.pose.pose.position.y,
+      info.extend_inserted ? 1 : 0,
       pile_deleted, goals_before_pile, goals_now.size());
     RCLCPP_INFO(
       node_->get_logger(),
@@ -4561,6 +5038,17 @@ BT::NodeStatus InsertGarbagePose::tick()
     last_viz_time_ = viz_now;
     has_last_viz_time_ = true;
     addProtectedGarbageXy(gx, gy);
+    addProtectedGarbageXy(
+      info.garbage.pose.pose.position.x, info.garbage.pose.pose.position.y);
+    if (info.dist_label > 0 &&
+      squaredDistanceXY(
+        gx, gy,
+        info.garbage.pose.pose.position.x, info.garbage.pose.pose.position.y) > 1e-6)
+    {
+      g_num_xy_.push_back({
+        {info.garbage.pose.pose.position.x, info.garbage.pose.pose.position.y},
+        info.dist_label});
+    }
     if (info.extend_inserted) {
       addProtectedGarbageXy(info.extend_x, info.extend_y);
       registerStableENum(info.extend_x, info.extend_y, info.dist_label);
@@ -4619,7 +5107,6 @@ BT::NodeStatus InsertGarbagePose::tick()
     const char * reason = (inserted_count > 0) ? "batch_insert" : "strip_z_neg1";
     emitOutputGoals(goals_now, reason);
   }
-  publishProtectedGarbage();
   return BT::NodeStatus::SUCCESS;
 }
 

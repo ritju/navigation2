@@ -89,9 +89,36 @@
       <output_port name="path">Path created by ComputePathToPose node</output_port>
     </Action>
 
+    <Action ID="InsertGarbagePose">
+      <input_port name="input_goals">Input goals list (e.g. {goals})</input_port>
+      <output_port name="output_goals">Goals after inserting garbage poses</output_port>
+      <input_port name="garbage_topic" default="/garbage_cord1">Garbage detection topic</input_port>
+      <input_port name="special_terrain_topic" default="/cleaning_tool_retraction_areas">Special / retraction area polygons topic</input_port>
+      <input_port name="footprint_topic" default="local_costmap/published_footprint">Robot footprint topic</input_port>
+      <input_port name="clip_extend_m" default="1.0">After garbage foot on path, delete goals for this distance (m)</input_port>
+      <input_port name="corner_angle_deg" default="30.0">Goals with turn angle above this are corners (deg)</input_port>
+      <input_port name="goaltotal_range_m" default="10.0">If no corner ahead, use last goal within this path distance as goalc (m)</input_port>
+      <input_port name="head_delete_robot_dist_m" default="4.0">Only delete from goals head forward when robot is within this distance (m) of goals[0]</input_port>
+      <input_port name="max_garbage_robot_dist_m" default="5.0">Ignore garbage farther than this distance (m) from robot (anti false-detect)</input_port>
+      <input_port name="garbage_merge_radius_m" default="1.0">Merge detections within this radius (m) of the nearest seed into one pile</input_port>
+      <input_port name="work_circle_radius_m" default="10.0">Accept new garbage only inside this radius around the robot pose when the first pile of a batch is accepted</input_port>
+      <input_port name="min_garbage_obstacle_clearance_m" default="0.7">If lethal within radius, use wall-edge D-G-E insert</input_port>
+      <input_port name="wall_edge_step_m" default="2.0">Wall-edge D push step along tangent (m)</input_port>
+      <input_port name="wall_edge_min_robot_dist_m" default="3.0">Wall-edge min |D-robot| (m)</input_port>
+      <input_port name="wall_edge_sample_m" default="0.5">Wall-edge D-E sample spacing (m)</input_port>
+      <input_port name="wall_edge_normal_offset_m" default="0.0">Wall-edge shift of D-G-E along obstacle-garbage normal (m)</input_port>
+      <input_port name="local_costmap_topic" default="local_costmap/costmap">Local costmap OccupancyGrid topic for obstacle-info readability check</input_port>
+      <input_port name="enable_visualization" default="true">Publish insert/clip markers to RViz</input_port>
+      <input_port name="viz_accepted_garbage" default="true">Show accepted garbage after filtering</input_port>
+      <input_port name="viz_deleted_goals" default="true">Show deleted goals as hollow black rings</input_port>
+      <input_port name="viz_ac_points" default="true">Show A/C points and labels each clip round</input_port>
+      <input_port name="visualization_topic" default="insert_garbage_pose/markers">MarkerArray topic for insert visualization</input_port>
+      <input_port name="global_frame" default="map">Global frame</input_port>
+      <input_port name="robot_base_frame" default="base_link">Robot base frame</input_port>
+    </Action>
+
     <Action ID="RemovePassedGoals">
       <input_port name="input_goals">Mission goals from the navigate action (full list; internal state holds pruned mission)</input_port>
-      <input_port name="protected_garbage">Inserted G/E from InsertGarbagePose; do not drop as behind-the-robot on reload</input_port>
       <input_port name="radius">Radius tolerance on a goal to consider it passed</input_port>
       <input_port name="pass_check_max_search_dist_m">Search distance window for passed-goal judgement; skip if no near point found</input_port>
       <input_port name="pass_behind_tol_m">In base_link: if goal x exceeds this value the goal is treated as ahead (not passed/recorded). Use 0 for strict: x&gt;0 skips the goal.</input_port>
