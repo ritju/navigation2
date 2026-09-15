@@ -240,7 +240,10 @@ private:
   /** 局部代价图该点可通行：仅 254/255 不可过，253 可通过 */
   bool isMapPointPassableOnLocalCostmap(double x, double y) const;
 
-  /** 两点连线按 sample_m 下采样，各点可通则视为线段无占用 */
+  /**
+   * 从 (x0,y0) 朝 (x1,y1) 按 sample_m 固定步长下采样查占用。
+   * 起点必采；终点不强制采样。任一点不可通则 false。
+   */
   bool isStraightLineClearOnLocalCostmap(
     double x0, double y0, double x1, double y1,
     double sample_m = 0.1) const;

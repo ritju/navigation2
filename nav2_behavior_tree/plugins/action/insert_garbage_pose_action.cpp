@@ -439,19 +439,23 @@ bool InsertGarbagePose::isStraightLineClearOnLocalCostmap(
   double x0, double y0, double x1, double y1,
   double sample_m) const
 {
+  // 从起点固定步长朝终点采点；起点必查，终点不强制落在采样上
   const double step = std::max(0.05, sample_m);
   const double dx = x1 - x0;
   const double dy = y1 - y0;
   const double len = std::hypot(dx, dy);
-  if (len < 1e-9) {
-    return isMapPointPassableOnLocalCostmap(x0, y0);
+
+  if (!isMapPointPassableOnLocalCostmap(x0, y0)) {
+    return false;
   }
-  const int n = std::max(1, static_cast<int>(std::ceil(len / step)));
-  for (int i = 0; i <= n; ++i) {
-    const double t = static_cast<double>(i) / static_cast<double>(n);
-    const double x = x0 + t * dx;
-    const double y = y0 + t * dy;
-    if (!isMapPointPassableOnLocalCostmap(x, y)) {
+  if (len < 1e-9) {
+    return true;
+  }
+
+  const double ux = dx / len;
+  const double uy = dy / len;
+  for (double s = step; s < len - 1e-9; s += step) {
+    if (!isMapPointPassableOnLocalCostmap(x0 + ux * s, y0 + uy * s)) {
       return false;
     }
   }
@@ -1701,14 +1705,12 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
         gx, gy, min_garbage_obstacle_clearance_m_);
     }
 
-    // 机器人到垃圾直线走廊有 lethal 则丢弃
     if (!near_obstacle) {
-      std::string corridor_reason;
-      if (!isStraightCorridorClear(robot_x, robot_y, gx, gy, &corridor_reason)) {
+      if (!isStraightLineClearOnLocalCostmap(gx, gy, robot_x, robot_y, 0.1)) {
         RCLCPP_INFO(
           node_->get_logger(),
-          "InsertGarbagePose: 垃圾=(%.2f, %.2f), 因为走廊不通(%s), 丢弃",
-          gx, gy, corridor_reason.c_str());
+          "InsertGarbagePose: 垃圾=(%.2f, %.2f), 因为到机器人连线有障碍, 丢弃",
+          gx, gy);
         eraseFromHistory(original);
         continue;
       }
