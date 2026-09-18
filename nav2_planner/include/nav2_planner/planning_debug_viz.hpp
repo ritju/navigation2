@@ -100,6 +100,19 @@ public:
     bool blocked,
     const geometry_msgs::msg::PoseStamped & hit_pose);
 
+  /**
+   * 角点扫掠矩形（body 系：后 x_rear、前 x_front、左 y_left、右 y_right）。
+   * pose.orientation 为入边 yaw；out_yaw 有限时再画一套出边矩形。
+   */
+  void publishCornerSweep(
+    const geometry_msgs::msg::PoseStamped & pose,
+    double x_rear,
+    double x_front,
+    double y_left,
+    double y_right,
+    double k,
+    double out_yaw);
+
   void publishStraightCandidate(
     const geometry_msgs::msg::PoseStamped & start,
     const geometry_msgs::msg::PoseStamped & goal,
@@ -151,6 +164,12 @@ private:
     const std::string & ns, int id,
     const geometry_msgs::msg::PoseStamped & pose,
     const std_msgs::msg::ColorRGBA & color) const;
+  Marker orientedRectStrip(
+    const std::string & ns, int id,
+    const geometry_msgs::msg::PoseStamped & pose,
+    double x_rear, double x_front, double y_left, double y_right,
+    const std_msgs::msg::ColorRGBA & color,
+    double line_width) const;
   Marker pathStrip(
     const std::string & ns, int id,
     const nav_msgs::msg::Path & path,

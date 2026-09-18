@@ -11,6 +11,7 @@ namespace nav2_smac_planner
 
 /** Per-call A* heading gate (rad). Negative disables XY-only early return. */
 void setHybridPendingGoalHeadingTolerance(double heading_tolerance_rad);
+double getHybridPendingGoalHeadingTolerance();
 
 }  // namespace nav2_smac_planner
 

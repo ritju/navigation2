@@ -96,9 +96,7 @@ public:
     const geometry_msgs::msg::PoseStamped & start,
     const geometry_msgs::msg::PoseStamped & goal,
     const std::string & planner_id,
-    bool allow_stretch = false,
-    bool allow_rotate = false,
-    bool strict_goal_footprint = false,
+    const FastPlanOptions & options,
     GetPlanMeta * meta = nullptr);
 
 protected:
@@ -275,6 +273,13 @@ protected:
     const geometry_msgs::msg::PoseStamped & goal,
     bool is_terminal) const;
 
+  FastPlanOptions makeBaseFastOptions(
+    const geometry_msgs::msg::PoseStamped & start,
+    const geometry_msgs::msg::PoseStamped & goal,
+    bool allow_stretch,
+    bool allow_rotate,
+    bool is_terminal);
+
   // Dynamic parameters handler
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;
   std::mutex dynamic_params_lock_;
@@ -324,6 +329,13 @@ protected:
   bool rewrite_via_yaw_to_approach_{true};
   double via_heading_tolerance_{0.35};
   double via_heading_trim_length_{1.0};
+  int via_angle_span_{2};
+  double edge_colinear_angle_deg_{135.0};
+  double corner_angle_deg_{135.0};
+  double short_edge_length_{2.0};
+  double corner_sweep_scale_{1.2};
+  double corner_snap_tolerance_{1.5};
+  bool corner_snap_enable_{true};
 
   std::unique_ptr<FastPathPlanner> fast_path_planner_;
   std::shared_ptr<PlanningDebugViz> debug_viz_;

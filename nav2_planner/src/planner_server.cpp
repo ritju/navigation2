@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iomanip>
@@ -123,6 +124,150 @@ double pathEndYaw(const nav_msgs::msg::Path & p)
     return std::numeric_limits<double>::quiet_NaN();
   }
   return tf2::getYaw(p.poses.back().pose.orientation);
+}
+
+enum class ViaRole
+{
+  LongInterior = 0,
+  Short,
+  Corner,
+  Last
+};
+
+const char * viaRoleName(const ViaRole role)
+{
+  switch (role) {
+    case ViaRole::Short: return "short";
+    case ViaRole::Corner: return "corner";
+    case ViaRole::Last: return "last";
+    case ViaRole::LongInterior:
+    default:
+      return "long";
+  }
+}
+
+struct ViaClass
+{
+  ViaRole role{ViaRole::LongInterior};
+  double vertex_ang{180.0};
+  double edge_len{0.0};
+  double out_yaw{std::numeric_limits<double>::quiet_NaN()};
+};
+
+double polylineVertexAngleDeg(
+  const std::vector<geometry_msgs::msg::PoseStamped> & plan,
+  const int idx,
+  const int span)
+{
+  const int n = static_cast<int>(plan.size());
+  const int ia = idx - span;
+  const int ic = idx + span;
+  if (span < 1 || ia < 0 || ic >= n || idx < 0 || idx >= n) {
+    return 180.0;
+  }
+  const auto & p0 = plan[static_cast<size_t>(idx)].pose.position;
+  const auto & p1 = plan[static_cast<size_t>(ia)].pose.position;
+  const auto & p2 = plan[static_cast<size_t>(ic)].pose.position;
+  const double dx_a = p0.x - p1.x;
+  const double dy_a = p0.y - p1.y;
+  const double dx_b = p2.x - p0.x;
+  const double dy_b = p2.y - p0.y;
+  const double dx_c = p2.x - p1.x;
+  const double dy_c = p2.y - p1.y;
+  const double length_a = std::sqrt(dx_a * dx_a + dy_a * dy_a);
+  const double length_b = std::sqrt(dx_b * dx_b + dy_b * dy_b);
+  const double length_c = std::sqrt(dx_c * dx_c + dy_c * dy_c);
+  constexpr double min_segment_length = 1e-6;
+  if (length_a < min_segment_length || length_b < min_segment_length) {
+    return 180.0;
+  }
+  double cos_theta =
+    (length_a * length_a + length_b * length_b - length_c * length_c) /
+    (2.0 * length_a * length_b);
+  cos_theta = std::max(-1.0, std::min(1.0, cos_theta));
+  return std::acos(cos_theta) * 180.0 / M_PI;
+}
+
+std::vector<ViaClass> classifyViaRoles(
+  const std::vector<geometry_msgs::msg::PoseStamped> & goals,
+  int span,
+  double theta_colinear_deg,
+  double theta_corner_deg,
+  double L_short,
+  double L_footprint)
+{
+  const int n = static_cast<int>(goals.size());
+  std::vector<ViaClass> roles(static_cast<size_t>(std::max(0, n)));
+  if (n <= 0) {
+    return roles;
+  }
+  span = std::max(1, span);
+  for (int i = 0; i < n; ++i) {
+    roles[static_cast<size_t>(i)].vertex_ang = polylineVertexAngleDeg(goals, i, span);
+    if (i + 1 < n) {
+      const auto & a = goals[static_cast<size_t>(i)].pose.position;
+      const auto & b = goals[static_cast<size_t>(i + 1)].pose.position;
+      roles[static_cast<size_t>(i)].out_yaw = std::atan2(b.y - a.y, b.x - a.x);
+    }
+  }
+
+  struct Edge
+  {
+    int start{0};
+    int end{0};
+    double length{0.0};
+    bool short_edge{false};
+  };
+  std::vector<Edge> edges;
+  int s = 0;
+  while (s < n - 1) {
+    int e = s;
+    double length = std::hypot(
+      goals[static_cast<size_t>(s + 1)].pose.position.x -
+      goals[static_cast<size_t>(s)].pose.position.x,
+      goals[static_cast<size_t>(s + 1)].pose.position.y -
+      goals[static_cast<size_t>(s)].pose.position.y);
+    while (e + 1 < n - 1 &&
+      roles[static_cast<size_t>(e + 1)].vertex_ang >= theta_colinear_deg)
+    {
+      e += 1;
+      length += std::hypot(
+        goals[static_cast<size_t>(e + 1)].pose.position.x -
+        goals[static_cast<size_t>(e)].pose.position.x,
+        goals[static_cast<size_t>(e + 1)].pose.position.y -
+        goals[static_cast<size_t>(e)].pose.position.y);
+    }
+    edges.push_back({s, e + 1, length, false});
+    s = e + 1;
+  }
+
+  for (auto & E : edges) {
+    bool short_edge = E.length < L_short;
+    if (E.length < L_footprint) {
+      const bool left_corner = (E.start > 0) &&
+        (roles[static_cast<size_t>(E.start)].vertex_ang < theta_corner_deg);
+      const bool right_corner = (E.end < n - 1) &&
+        (roles[static_cast<size_t>(E.end)].vertex_ang < theta_corner_deg);
+      if (left_corner || right_corner || E.end == n - 1) {
+        short_edge = true;
+      }
+    }
+    E.short_edge = short_edge;
+    for (int i = E.start; i <= E.end; ++i) {
+      roles[static_cast<size_t>(i)].edge_len = E.length;
+      if (short_edge) {
+        roles[static_cast<size_t>(i)].role = ViaRole::Short;
+      }
+    }
+  }
+
+  for (int i = 1; i <= n - 2; ++i) {
+    if (roles[static_cast<size_t>(i)].vertex_ang < theta_corner_deg) {
+      roles[static_cast<size_t>(i)].role = ViaRole::Corner;
+    }
+  }
+  roles[static_cast<size_t>(n - 1)].role = ViaRole::Last;
+  return roles;
 }
 
 enum class HeadingTrimKind
@@ -278,6 +423,13 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
   declare_parameter("rewrite_via_yaw_to_approach", true);
   declare_parameter("via_heading_tolerance", 0.35);
   declare_parameter("via_heading_trim_length", 1.0);
+  declare_parameter("via_angle_span", 2);
+  declare_parameter("edge_colinear_angle_deg", 135.0);
+  declare_parameter("corner_angle_deg", 135.0);
+  declare_parameter("short_edge_length", 2.0);
+  declare_parameter("corner_sweep_scale", 1.2);
+  declare_parameter("corner_snap_tolerance", 1.5);
+  declare_parameter("corner_snap_enable", true);
 
   get_parameter("planner_plugins", planner_ids_);
   get_parameter("goal_occupied_tolerance", _goal_occupied_tolerance);
@@ -295,6 +447,13 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
   get_parameter("rewrite_via_yaw_to_approach", rewrite_via_yaw_to_approach_);
   get_parameter("via_heading_tolerance", via_heading_tolerance_);
   get_parameter("via_heading_trim_length", via_heading_trim_length_);
+  get_parameter("via_angle_span", via_angle_span_);
+  get_parameter("edge_colinear_angle_deg", edge_colinear_angle_deg_);
+  get_parameter("corner_angle_deg", corner_angle_deg_);
+  get_parameter("short_edge_length", short_edge_length_);
+  get_parameter("corner_sweep_scale", corner_sweep_scale_);
+  get_parameter("corner_snap_tolerance", corner_snap_tolerance_);
+  get_parameter("corner_snap_enable", corner_snap_enable_);
 
   if (planner_ids_ == default_ids_) {
     for (size_t i = 0; i < default_ids_.size(); ++i) {
@@ -367,6 +526,9 @@ PlannerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   fast_path_planner_ = std::make_unique<FastPathPlanner>();
   fast_path_planner_->configure(
     node, costmap_ros_, footprint_collision_checker_, planner_ids_);
+  fast_path_planner_->setCornerSweepScale(corner_sweep_scale_);
+  fast_path_planner_->setCornerSnapTolerance(corner_snap_tolerance_);
+  fast_path_planner_->setCornerSnapEnable(corner_snap_enable_);
 
   debug_viz_ = std::make_shared<PlanningDebugViz>();
   debug_viz_->configure(node, costmap_ros_);
@@ -376,11 +538,16 @@ PlannerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
     get_logger(),
     "Planner Server has %s planners available. enable_straight_expand=%s "
     "near_dist=%.2f near_yaw=%.2f via_heading_tol=%.2f via_trim_len=%.2f "
+    "via_span=%d colinear_deg=%.1f corner_deg=%.1f short_edge=%.2f "
+    "sweep_k=%.2f corner_snap_tol=%.2f corner_snap=%s "
     "stretch=%s rotate=%s debug=%s",
     planner_ids_concat_.c_str(),
     enable_straight_expand_ ? "true" : "false",
     near_distance_threshold_, near_yaw_threshold_,
     via_heading_tolerance_, via_heading_trim_length_,
+    via_angle_span_, edge_colinear_angle_deg_, corner_angle_deg_,
+    short_edge_length_, corner_sweep_scale_, corner_snap_tolerance_,
+    corner_snap_enable_ ? "true" : "false",
     enable_line_stretch_ ? "true" : "false",
     enable_line_rotate_ ? "true" : "false",
     (debug_viz_ && debug_viz_->enabled()) ? "true" : "false");
@@ -741,6 +908,20 @@ PlannerServer::computePlanThroughPoses()
       tf2::getYaw(start.pose.orientation), goal_poses.size(),
       enable_straight_expand_ ? "true" : "false");
 
+    double L_fp = 0.5;
+    if (costmap_ros_) {
+      double xmin = 0.0;
+      double xmax = 0.0;
+      for (const auto & pt : costmap_ros_->getRobotFootprint()) {
+        xmin = std::min(xmin, static_cast<double>(pt.x));
+        xmax = std::max(xmax, static_cast<double>(pt.x));
+      }
+      L_fp = std::max(0.1, xmax - xmin);
+    }
+    const std::vector<ViaClass> via_roles = classifyViaRoles(
+      goal_poses, via_angle_span_, edge_colinear_angle_deg_, corner_angle_deg_,
+      short_edge_length_, L_fp);
+
     // Get consecutive paths through these points
     geometry_msgs::msg::PoseStamped curr_start, curr_goal;
     for (unsigned int i = 0; i != goal_poses.size(); i++) {
@@ -779,11 +960,33 @@ PlannerServer::computePlanThroughPoses()
       const bool rewrite_yaw = shouldRewriteGoalYawToApproach(
         curr_start, curr_goal, is_last);
 
+      const ViaClass via_cls = (i < via_roles.size()) ?
+        via_roles[i] : ViaClass{};
+      FastPlanOptions plan_opt = makeBaseFastOptions(
+        curr_start, curr_goal, near || is_last, near, is_last);
+      if (corner_snap_enable_) {
+        if (via_cls.role == ViaRole::Corner) {
+          plan_opt.strict_goal_footprint = true;
+          plan_opt.use_corner_sweep = true;
+          plan_opt.allow_intrusion_exempt = false;
+          plan_opt.allow_stretch = false;
+          plan_opt.out_yaw = via_cls.out_yaw;
+          plan_opt.snap_tolerance = corner_snap_tolerance_;
+        } else if (via_cls.role == ViaRole::Short) {
+          plan_opt.strict_goal_footprint = true;
+          plan_opt.use_corner_sweep = true;
+          plan_opt.allow_intrusion_exempt = false;
+          plan_opt.allow_stretch = false;
+          plan_opt.out_yaw = via_cls.out_yaw;
+          plan_opt.snap_tolerance = corner_snap_tolerance_;
+        }
+      }
+
       RCLCPP_INFO(
         get_logger(),
         "[ThroughPoses] via=%u/%zu start=(%.3f, %.3f, yaw=%.3f) goal=(%.3f, %.3f, yaw=%.3f) "
         "dist=%.3f near=%s last=%s rewrite_yaw=%s stretch=%s rotate=%s "
-        "footprint_corridor=%s concat_poses=%zu",
+        "footprint_corridor=%s role=%s ang=%.1f edge_len=%.2f sweep=%s concat_poses=%zu",
         i, goal_poses.size(),
         curr_start.pose.position.x, curr_start.pose.position.y,
         tf2::getYaw(curr_start.pose.orientation),
@@ -795,9 +998,11 @@ PlannerServer::computePlanThroughPoses()
         near ? "true" : "false",
         is_last ? "true" : "false",
         rewrite_yaw ? "true" : "false",
-        (near || is_last) ? "true" : "false",
-        near ? "true" : "false",
-        is_last ? "true" : "false",
+        plan_opt.allow_stretch ? "true" : "false",
+        plan_opt.allow_rotate ? "true" : "false",
+        plan_opt.strict_goal_footprint ? "true" : "false",
+        viaRoleName(via_cls.role), via_cls.vertex_ang, via_cls.edge_len,
+        plan_opt.use_corner_sweep ? "true" : "false",
         concat_path.poses.size());
 
       if (debug_viz_) {
@@ -823,8 +1028,7 @@ PlannerServer::computePlanThroughPoses()
 
         try {
           curr_path = getPlan(
-            curr_start, curr_goal, goal->planner_id,
-            near || is_last, near, is_last, &last_meta);
+            curr_start, curr_goal, goal->planner_id, plan_opt, &last_meta);
           break;  // planned (or at least returned something for validation)
         } catch (const std::runtime_error & ex) {
           RCLCPP_WARN(
@@ -1021,7 +1225,9 @@ PlannerServer::computePlan()
     stats.n_goals = 1;
     GetPlanMeta meta;
     const auto t_goal = this->now();
-    result->path = getPlan(start, goal_pose, goal->planner_id, true, near, true, &meta);
+    result->path = getPlan(
+      start, goal_pose, goal->planner_id,
+      makeBaseFastOptions(start, goal_pose, true, near, true), &meta);
     stats.recordKind(meta.kind, (this->now() - t_goal).seconds());
     if (debug_viz_) {
       debug_viz_->endSession();
@@ -1164,14 +1370,35 @@ PlannerServer::shouldRewriteGoalYawToApproach(
   return isNearByDistance(start, goal);
 }
 
+FastPlanOptions
+PlannerServer::makeBaseFastOptions(
+  const geometry_msgs::msg::PoseStamped & start,
+  const geometry_msgs::msg::PoseStamped & goal,
+  bool allow_stretch,
+  bool allow_rotate,
+  bool is_terminal)
+{
+  FastPlanOptions options;
+  options.allow_straight = allowStraightExpand(start, goal);
+  if (fast_path_planner_) {
+    options.allow_reverse =
+      fast_path_planner_->isBackwardActive() ||
+      fast_path_planner_->isNarrowActive(start, goal);
+  }
+  options.allow_stretch = allow_stretch && enable_line_stretch_;
+  options.allow_rotate = allow_rotate && enable_line_rotate_;
+  options.strict_goal_footprint = is_terminal;
+  options.rewrite_goal_yaw_to_approach = shouldRewriteGoalYawToApproach(
+    start, goal, is_terminal);
+  return options;
+}
+
 nav_msgs::msg::Path
 PlannerServer::getPlan(
   const geometry_msgs::msg::PoseStamped & start,
   const geometry_msgs::msg::PoseStamped & goal,
   const std::string & planner_id,
-  bool allow_stretch,
-  bool allow_rotate,
-  bool strict_goal_footprint,
+  const FastPlanOptions & options,
   GetPlanMeta * meta)
 {
   if (meta) {
@@ -1185,16 +1412,6 @@ PlannerServer::getPlan(
 
   geometry_msgs::msg::PoseStamped snapped_goal = goal;
   if (fast_path_planner_) {
-    FastPlanOptions options;
-    options.allow_straight = allowStraightExpand(start, goal);
-    options.allow_reverse =
-      fast_path_planner_->isBackwardActive() ||
-      fast_path_planner_->isNarrowActive(start, goal);
-    options.allow_stretch = allow_stretch && enable_line_stretch_;
-    options.allow_rotate = allow_rotate && enable_line_rotate_;
-    options.strict_goal_footprint = strict_goal_footprint;
-    options.rewrite_goal_yaw_to_approach = shouldRewriteGoalYawToApproach(
-      start, goal, strict_goal_footprint);
     const FastPlanResult fast_result =
       fast_path_planner_->compute(start, goal, options);
     snapped_goal = fast_result.snapped_goal;
@@ -1242,7 +1459,7 @@ PlannerServer::getPlan(
 
   const bool near_by_dist = isNearByDistance(start, goal);
   const double search_heading_tol =
-    (near_by_dist && !strict_goal_footprint) ? via_heading_tolerance_ : -1.0;
+    (near_by_dist && !options.strict_goal_footprint) ? via_heading_tolerance_ : -1.0;
 
   nav2_core::GlobalPlanner::Ptr planner;
   if (planners_.find(planner_id) != planners_.end()) {
@@ -1268,7 +1485,7 @@ PlannerServer::getPlan(
       get_logger(),
       "[getPlan] createPlan heading_search=%s last=%s near_dist=%s tol=%.3f",
       search_heading_tol >= 0.0 ? "on" : "off",
-      strict_goal_footprint ? "true" : "false",
+      options.strict_goal_footprint ? "true" : "false",
       near_by_dist ? "true" : "false",
       search_heading_tol);
     plugin_path = planner->createPlan(start, snapped_goal);
@@ -1318,9 +1535,9 @@ PlannerServer::getPlan(
         wrapPi(pathEndYaw(plugin_path) - goal_yaw),
         via_heading_trim_length_,
         near_by_dist ? "true" : "false",
-        strict_goal_footprint ? "true" : "false");
+        options.strict_goal_footprint ? "true" : "false");
     } else if (trim_kind == HeadingTrimKind::Failed) {
-      if (near_by_dist && !strict_goal_footprint) {
+      if (near_by_dist && !options.strict_goal_footprint) {
         RCLCPP_INFO(
           get_logger(),
           "[getPlan] heading trim failed, drop intermediate via goal=(%.3f, %.3f) "
@@ -1472,6 +1689,22 @@ PlannerServer::dynamicParametersCallback(std::vector<rclcpp::Parameter> paramete
         via_heading_tolerance_ = parameter.as_double();
       } else if (name == "via_heading_trim_length") {
         via_heading_trim_length_ = parameter.as_double();
+      } else if (name == "edge_colinear_angle_deg") {
+        edge_colinear_angle_deg_ = parameter.as_double();
+      } else if (name == "corner_angle_deg") {
+        corner_angle_deg_ = parameter.as_double();
+      } else if (name == "short_edge_length") {
+        short_edge_length_ = parameter.as_double();
+      } else if (name == "corner_sweep_scale") {
+        corner_sweep_scale_ = parameter.as_double();
+        if (fast_path_planner_) {
+          fast_path_planner_->setCornerSweepScale(corner_sweep_scale_);
+        }
+      } else if (name == "corner_snap_tolerance") {
+        corner_snap_tolerance_ = parameter.as_double();
+        if (fast_path_planner_) {
+          fast_path_planner_->setCornerSnapTolerance(corner_snap_tolerance_);
+        }
       } else if (name == "line_rotate_goal_shift_tol") {
         line_rotate_goal_shift_tol_ = parameter.as_double();
         if (fast_path_planner_) {
@@ -1498,6 +1731,8 @@ PlannerServer::dynamicParametersCallback(std::vector<rclcpp::Parameter> paramete
         if (fast_path_planner_) {
           fast_path_planner_->setLineRotateMaxIters(line_rotate_max_iters_);
         }
+      } else if (name == "via_angle_span") {
+        via_angle_span_ = static_cast<int>(parameter.as_int());
       } else if (name == "planning_debug_footprint_stride") {
         if (debug_viz_) {
           debug_viz_->setFootprintStride(static_cast<int>(parameter.as_int()));
@@ -1527,6 +1762,11 @@ PlannerServer::dynamicParametersCallback(std::vector<rclcpp::Parameter> paramete
         }
       } else if (name == "rewrite_via_yaw_to_approach") {
         rewrite_via_yaw_to_approach_ = parameter.as_bool();
+      } else if (name == "corner_snap_enable") {
+        corner_snap_enable_ = parameter.as_bool();
+        if (fast_path_planner_) {
+          fast_path_planner_->setCornerSnapEnable(corner_snap_enable_);
+        }
       }
     } else if (type == ParameterType::PARAMETER_STRING) {
       if (name == "planning_debug_keep_mode" && debug_viz_) {

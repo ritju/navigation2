@@ -17,6 +17,13 @@ planner_server:
     near_yaw_threshold: 0.35           # 近段转线/伸缩用的航向差 (rad)；不用于 Hybrid 到达/裁尾
     via_heading_tolerance: 0.35        # Hybrid 近段中间 via 到达与航向裁尾的 |Δψ| (rad)；单点/最后一段不开搜索门禁
     via_heading_trim_length: 1.0       # 航向裁尾最大累计弧长 (m)；从终点往回，超出不再裁
+    via_angle_span: 2                  # 折线内角用的前后下标间隔
+    edge_colinear_angle_deg: 135.0     # 内角 >= 此值并入同一条覆盖边
+    corner_angle_deg: 120.0            # 内角 < 此值标为角点
+    short_edge_length: 2.0             # 边长小于则短边 (m)
+    corner_sweep_scale: 1.2            # 角点/短边扫掠矩形缩放 k
+    corner_snap_tolerance: 1.5         # 角点/短边占用环搜半径 (m)
+    corner_snap_enable: true           # 角点/短边扫掠 snap + 关浅侵入豁免；false 则只打角色日志
     enable_line_stretch: true          # 终点邻域 254 时沿射线缩短 G；最后一段远距离也允许
     line_stretch_max: 0.4
     line_stretch_goal_window: 0.8

@@ -21,7 +21,6 @@
 #include <queue>
 #include <functional>
 #include <utility>
-#include <atomic>
 
 #include "Eigen/Core"
 #include "nav2_smac_planner/smac_planner_hybrid.hpp"
@@ -35,18 +34,6 @@ namespace nav2_smac_planner
 using namespace std::chrono;  // NOLINT
 using rcl_interfaces::msg::ParameterType;
 using std::placeholders::_1;
-
-namespace
-{
-
-std::atomic<double> g_pending_goal_heading_tolerance{-1.0};
-
-}  // namespace
-
-void setHybridPendingGoalHeadingTolerance(const double heading_tolerance_rad)
-{
-  g_pending_goal_heading_tolerance.store(heading_tolerance_rad);
-}
 
 namespace
 {
@@ -435,7 +422,7 @@ void SmacPlannerHybrid::configure(
   {
     double pending_heading = -1.0;
     node->get_parameter(name + ".pending_goal_heading_tolerance", pending_heading);
-    g_pending_goal_heading_tolerance.store(pending_heading);
+    setHybridPendingGoalHeadingTolerance(pending_heading);
   }
 
   nav2_util::declare_parameter_if_not_declared(
@@ -893,7 +880,7 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   const geometry_msgs::msg::PoseStamped & start,
   const geometry_msgs::msg::PoseStamped & goal)
 {
-  const double pending_heading_tol = g_pending_goal_heading_tolerance.load();
+  const double pending_heading_tol = getHybridPendingGoalHeadingTolerance();
   RCLCPP_INFO(
     _logger,
     "[Hybrid] createPlan start=(%.3f, %.3f) goal=(%.3f, %.3f) heading_tol=%.3f",
@@ -1273,7 +1260,7 @@ SmacPlannerHybrid::dynamicParametersCallback(std::vector<rclcpp::Parameter> para
   for (const auto & parameter : parameters) {
     if (parameter.get_name() == _name + ".pending_goal_heading_tolerance") {
       if (parameter.get_type() == ParameterType::PARAMETER_DOUBLE) {
-        g_pending_goal_heading_tolerance.store(parameter.as_double());
+        setHybridPendingGoalHeadingTolerance(parameter.as_double());
       }
     } else {
       needs_locked_update = true;

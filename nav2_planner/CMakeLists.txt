@@ -60,12 +60,15 @@ ament_target_dependencies(${library_name}
   ${dependencies}
 )
 
-# Humble's /opt/ros/.../include/nav2_smac_planner shadows the workspace plugin
-# headers. Use the sibling source include + the overlay library for the heading hint.
+# Humble's /opt/ros/.../include/nav2_smac_planner shadows workspace headers.
+# Link only the non-plugin hints library — never libnav2_smac_planner.so.
+# Linking the plugin .so into this composable node makes class_loader treat it as a
+# non-pure plugin library, so pluginlib factories (StaticLayer, SmacPlannerHybrid)
+# are not registered in component_container_isolated.
 target_include_directories(${library_name} PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/../nav2_smac_planner/include")
 target_link_libraries(${library_name}
-  "${CMAKE_INSTALL_PREFIX}/lib/libnav2_smac_planner.so")
+  "${CMAKE_INSTALL_PREFIX}/lib/libnav2_smac_planner_hints.so")
 
 add_executable(${executable_name}
   src/main.cpp

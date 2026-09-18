@@ -143,8 +143,8 @@ Hybrid 插件内部仍可用自己的 footprint 代价；走廊 254 通了不会
 
 实现分两级（$R_{ins}$ = 全局图 `getInscribedRadius()`，$w$ = 半宽）：
 
-1. **中心线粗检**（仅当 $R_{ins} \ge w$）：沿 $S \to G$ 按分辨率读中心线。全部 $<253$（255 跳过）→ 走廊通过，**不扫边线**。代价为 253 或 254 才进入加深。
-2. **窗口加深**：只认 254。以触发点为中心沿轨前后各扩 $\max(R_{ins} + res, s_{half})$，其中 $s_{half}$ 为半车长步长；扫垂直半宽截面；$s=0$ 不否决。窗口没有不可豁免的 254 则仍出直线（中心线 253 只是膨胀晕）。单侧浅侵入见下。
+1. **中心线粗检**（仅当 $R_{ins} \ge w$）：沿 $S \to G$ 按分辨率读中心线。全部 $<253$（255 跳过）→ 走廊通过，**不扫边线**。中线格子为 **254（或出图）→ 立即否决**，不豁免、不转线。代价为 **253** 才进入该点的窗口加深；**每一处** 253 都开窗，不是只处理第一处。
+2. **窗口加深**：只认 254。以该 253 为中心沿轨前后各扩 $\max(R_{ins} + res, s_{half})$，其中 $s_{half}$ 为半车长步长；扫垂直半宽截面；$s=0$ 边线贴 254 不否决。窗口没有不可豁免的 254 则继续沿中心线找下一处 253。单侧浅侵入见下。已扫过的窗口内不再重复开窗，但中线 254 仍逐格检查。
 3. 若 $R_{ins} < w$，退回整段截面扫描（同样跳过 $s=0$）。
 
 中线 254（$abs(d_y) \approx 0$）不转线、不豁免。转角用碰撞处余量除以 $s$，不是 `atan2(d_y, s)`，也不是除以 $L$。
@@ -238,11 +238,11 @@ $abs(G^{\prime} - G_{original}) \le d_{stretch}$，否则不伸。默认不伸�
 
 | 项 | 约定 |
 |---|---|
-| 中心线粗检 | $R_{ins} \ge w$ 时沿 $S \to G$ 读中心线；全部 $<253$ 即通过，不扫边线；253/254 才加深；255 跳过 |
+| 中心线粗检 | $R_{ins} \ge w$ 时沿整段 $S \to G$ 读中心线；全部 $<253$ 即通过，不扫边线；**中线 254 立即否决**；**每一处 253** 开窗口加深；255 跳过 |
 | 加深 | 窗口内半宽截面，只认 254；$s=0$ 不否决；单侧碰撞点做法向净空探针，浅侵入且净空够则继续扫；硬否决（中线/两侧/净空不够）立即返回；侵入大于 $\delta$ 且净空够则作为转线输入（若后面还有硬否决，硬否决优先） |
 | 净空探针 | 仅碰撞点；从 254 沿反法向搜 $W+2\delta$；先跨致死再计连续非 254；$L_{free} \ge W$ 为够 |
 | 转线步长 | $(w + res - abs(d_y)) / \max(s, s_{min})$，杠杆臂用碰撞点弧长；仅净空够时转 |
-| 中间 via | 中心线通过 → 直线；否则窗口加深。不加前后悬 |
+| 中间 via | 中心线全 $<253$ → 直线；中线 254 失败；每一处 253 开窗加深。不加前后悬 |
 | 最后一段 | 中心线通过 → 再扫 $G$ 前悬半宽带；$S$ 后悬不否决 |
 | 退化 | $R_{ins} < w$ 时整段半宽扫描（最后一段含前悬） |
 | Marker | session 下 `publishMarkers` 只入缓存；**仅 `endSession` 整包发出**（Hybrid 各段异色）。不要每 via flush |
@@ -433,7 +433,7 @@ $R$ 沿用 Hybrid 的 `minimum_turning_radius`。
 1. **调试可视化骨架（已落地）**  
    `PlanningDebugViz` + 走廊矩形 `ns=corridor` + 直线/snap/Hybrid 原始路径。
 2. **FastPath 254 走廊（已落地）**  
-   中间 via：中心线粗检 + 窗口内半宽加深（只认 254）+ 单侧碰撞点净空探针。浅侵入且净空够接受原直线；近段仅净空够且侵入大于 $\delta$ 才转线。最后一段 / NavigateToPose：中心线通过后补前悬；snap 仍用完整 footprint。近段缩短；远段中间 via 不转线；倒车只改路径 yaw。session Marker 延后 flush。
+   中间 via：中心线粗检（中线 254 立即失败；每一处 253 开窗口半宽加深，只认 254）+ 单侧碰撞点净空探针。浅侵入且净空够接受原直线；近段仅净空够且侵入大于 $\delta$ 才转线。最后一段 / NavigateToPose：中心线通过后补前悬；snap 仍用完整 footprint。近段缩短；远段中间 via 不转线；倒车只改路径 yaw。session Marker 延后 flush。
 3. **Hybrid 近段航向门禁 + 航向裁尾（本期已落地）**  
    仅近段中间 via：A\* 要 XY 容差 + `via_heading_tolerance` 才提前返回。单点 / 最后一段不加搜索门禁。随后按 `via_heading_trim_length` 裁尾。近段中间裁不掉丢 via；远段裁不了保留；最后一段不丢。
 4. **`path_untangle` + 单测**（未落地）
@@ -456,6 +456,8 @@ $R$ 沿用 Hybrid 的 `minimum_turning_radius`。
 | 远段单侧侵入大于 $\delta$ 即使净空够 | 不转线 → Hybrid |
 | 近段两侧夹住 | 不转线 → Hybrid → 裁圈；仍结则丢中间点 |
 | 中段撞障 | 不把 $G$ 缩到障碍前冒充成功 |
+| 中心线多处 253 | 每一处都开窗口加深，不因第一处豁免就放过后段 |
+| 中心线 254 | 立即失败 → Hybrid，不豁免、不转线 |
 | 短距大航向差（旧打结日志形态） | 来向 yaw + 裁自交，不把圈拼进 concat |
 | 绕矩形障碍 / U 臂 | 不自交，远段保留，不丢点 |
 | 折线锯齿 | $L_{min}$ 挡住，不裁 |
@@ -548,6 +550,7 @@ RViz 各加一个 Path Display，颜色自定。这些话题**只保留当前段
 | `goal_snapped` | ARROW + TEXT `G_snap` | 紫 | 占用环搜后的目标 |
 | `goal_adjusted` | ARROW + TEXT `G' stretch\|rotate\|push` | 绿 | 伸缩、转线或远段推开后的 $G^{\prime}$ |
 | `collision` | ARROW + footprint + SPHERE + TEXT | 红 / 橙 | 箭头和多边形是发生碰撞时的 **base_footprint**；红球是该位姿下踩到的 254 格 |
+| `corner_sweep` | LINE_STRIP 矩形 + ARROW + TEXT | 品红=入边 / 青=出边 | 角点扫掠矩形（`k=` `corner_sweep_scale`），画在 snap 后的 \(G\)；snap 失败则画在原 \(G\) |
 | `straight_iter` | TEXT + 起终点 footprint | 黄 | 当前直线迭代轮次（`forward/reverse/stretch/rotate`） |
 | `footprint_straight` | LINE_STRIP 多边形 | 橙 | 成功直线上的 footprint（stride 控制密度） |
 | `footprint_rotated` | LINE_STRIP | 橙 | 转线后路径上的 footprint |
@@ -601,6 +604,7 @@ RViz 各加一个 Path Display，颜色自定。这些话题**只保留当前段
 |---|---|
 | `beginSession` / `setSegmentContext` | 已接 through-poses 与单点规划 |
 | `publishStart` / `publishOriginalGoal` / `publishSnappedGoal` | 已接 FastPath |
+| `publishCornerSweep` | 已接 FastPath；`use_corner_sweep` 的 Corner/Short via |
 | `publishStraightCandidate` / `publishCollision` / `publishStraightPath` / `publishCorridor` | 已接 FastPath 走廊 / 伸缩 / 转线 |
 | `publishHybridRaw` | 已接 `getPlan` 插件返回 |
 | `publishRotatedPath` / `publishAdjustedGoal` | 已接转线/缩短成功 |

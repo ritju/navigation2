@@ -136,6 +136,9 @@ void FastPathPlanner::configure(
   line_rotate_goal_shift_tol_ = getDoubleParam(node, "line_rotate_goal_shift_tol", 0.5);
   corridor_intrusion_tol_ = std::max(
     0.0, getDoubleParam(node, "corridor_intrusion_tol", 0.08));
+  corner_sweep_scale_ = std::max(0.05, getDoubleParam(node, "corner_sweep_scale", 1.2));
+  corner_snap_tolerance_ = std::max(0.0, getDoubleParam(node, "corner_snap_tolerance", 1.5));
+  corner_snap_enable_ = getBoolParam(node, "corner_snap_enable", true);
 
   using std::placeholders::_1;
   narrow_passages_sub_ = node->create_subscription<garage_utils_msgs::msg::Polygons>(
@@ -152,12 +155,15 @@ void FastPathPlanner::configure(
     "[FastPath] configured: goal_occupied_tolerance=%.2f "
     "goal_search_resolution=%.2f "
     "straight_check_length_ratio=%.2f straight_path_resolution=%.2f "
-    "stretch=%s rotate=%s corridor_intrusion_tol=%.3f planner_ids=%zu",
+    "stretch=%s rotate=%s corridor_intrusion_tol=%.3f "
+    "corner_sweep_scale=%.2f corner_snap_tol=%.2f corner_snap=%s planner_ids=%zu",
     _goal_occupied_tolerance, _goal_search_resolution,
     _straight_check_length_ratio, _straight_path_resolution,
     enable_line_stretch_ ? "true" : "false",
     enable_line_rotate_ ? "true" : "false",
     corridor_intrusion_tol_,
+    corner_sweep_scale_, corner_snap_tolerance_,
+    corner_snap_enable_ ? "true" : "false",
     planner_ids.size());
 }
 
@@ -194,7 +200,7 @@ FastPlanResult FastPathPlanner::compute(
     logger_,
     "[FastPath] compute start=(%.3f, %.3f, yaw=%.3f) goal=(%.3f, %.3f, yaw=%.3f) "
     "approach=%.3f rewrite_yaw=%s straight=%s reverse=%s stretch=%s rotate=%s "
-    "footprint_corridor=%s",
+    "footprint_corridor=%s sweep=%s exempt=%s",
     start.pose.position.x, start.pose.position.y, tf2::getYaw(start.pose.orientation),
     goal.pose.position.x, goal.pose.position.y, tf2::getYaw(goal.pose.orientation),
     approach_yaw,
@@ -203,7 +209,9 @@ FastPlanResult FastPathPlanner::compute(
     options.allow_reverse ? "true" : "false",
     options.allow_stretch ? "true" : "false",
     options.allow_rotate ? "true" : "false",
-    options.strict_goal_footprint ? "true" : "false");
+    options.strict_goal_footprint ? "true" : "false",
+    options.use_corner_sweep ? "true" : "false",
+    options.allow_intrusion_exempt ? "true" : "false");
 
   if (debug_viz_) {
     debug_viz_->publishStart(start);
@@ -218,17 +226,30 @@ FastPlanResult FastPathPlanner::compute(
   std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*(costmap_->getMutex()));
   updateFootprintExtents();
 
-  if (!snapOccupiedGoal(
-      start, result.snapped_goal, options.strict_goal_footprint,
-      options.rewrite_goal_yaw_to_approach)) {
+  if (!snapOccupiedGoal(start, result.snapped_goal, options)) {
+    if (debug_viz_ && options.use_corner_sweep) {
+      double xf = 0.0, xr = 0.0, yl = 0.0, yr = 0.0;
+      computeCornerSweepBounds(xf, xr, yl, yr);
+      debug_viz_->publishCornerSweep(
+        result.snapped_goal, xr, xf, yl, yr, corner_sweep_scale_, options.out_yaw);
+    }
     result.reason = FastPlanReason::GoalUnreachable;
+    const double snap_r = options.snap_tolerance >= 0.0 ?
+      options.snap_tolerance : _goal_occupied_tolerance;
     RCLCPP_WARN(
       logger_,
       "[FastPath] GoalUnreachable: original goal (%.3f, %.3f) occupied (254), "
       "no free pose within tolerance=%.2f res=%.2f",
       goal.pose.position.x, goal.pose.position.y,
-      _goal_occupied_tolerance, _goal_search_resolution);
+      snap_r, _goal_search_resolution);
     return result;
+  }
+
+  if (debug_viz_ && options.use_corner_sweep) {
+    double xf = 0.0, xr = 0.0, yl = 0.0, yr = 0.0;
+    computeCornerSweepBounds(xf, xr, yl, yr);
+    debug_viz_->publishCornerSweep(
+      result.snapped_goal, xr, xf, yl, yr, corner_sweep_scale_, options.out_yaw);
   }
 
   if (std::hypot(
@@ -279,7 +300,8 @@ FastPlanResult FastPathPlanner::compute(
   };
 
   const bool use_fp = options.strict_goal_footprint;
-  CorridorHit hit = checkCorridor(start, result.snapped_goal, use_fp);
+  const bool allow_exempt = options.allow_intrusion_exempt;
+  CorridorHit hit = checkCorridor(start, result.snapped_goal, use_fp, allow_exempt);
   if (debug_viz_) {
     debug_viz_->publishCorridor(
       start, result.snapped_goal, halfWidth(), hit.blocked, hit.pose);
@@ -303,9 +325,10 @@ FastPlanResult FastPathPlanner::compute(
     debug_viz_->publishCollision(hit.pose, 0.0, hit.dy, hit.s, hit.L);
   }
 
-  const bool can_stretch = options.allow_stretch && enable_line_stretch_;
+  const bool can_stretch =
+    options.allow_stretch && enable_line_stretch_ && !options.use_corner_sweep;
   if (can_stretch && tryStretchGoal(start, original_goal, result.snapped_goal, hit)) {
-    hit = checkCorridor(start, result.snapped_goal, use_fp);
+    hit = checkCorridor(start, result.snapped_goal, use_fp, allow_exempt);
     if (debug_viz_) {
       debug_viz_->publishCorridor(
         start, result.snapped_goal, halfWidth(), hit.blocked, hit.pose);
@@ -323,7 +346,7 @@ FastPlanResult FastPathPlanner::compute(
 
   const bool can_rotate = options.allow_rotate && enable_line_rotate_;
   if (can_rotate && tryRotateGoal(
-      start, original_goal, result.snapped_goal, hit, use_fp))
+      start, original_goal, result.snapped_goal, hit, use_fp, allow_exempt))
   {
     finish_straight("rotate");
     return result;
@@ -488,6 +511,59 @@ void FastPathPlanner::updateFootprintExtents()
   }
 }
 
+void FastPathPlanner::computeCornerSweepBounds(
+  double & x_front, double & x_rear, double & y_left, double & y_right) const
+{
+  const nav2_costmap_2d::Footprint footprint = costmap_ros_->getRobotFootprint();
+  bool have_fl = false;
+  bool have_fr = false;
+  bool have_rl = false;
+  bool have_rr = false;
+  double xf_l = 0.0, yf_l = 0.0;
+  double xf_r = 0.0, yf_r = 0.0;
+  double xb_l = 0.0, yb_l = 0.0;
+  double xb_r = 0.0, yb_r = 0.0;
+  for (const auto & pt : footprint) {
+    const double px = static_cast<double>(pt.x);
+    const double py = static_cast<double>(pt.y);
+    if (py >= 0.0) {
+      if (!have_fl || px > xf_l) {
+        xf_l = px;
+        yf_l = py;
+        have_fl = true;
+      }
+      if (!have_rl || px < xb_l) {
+        xb_l = px;
+        yb_l = py;
+        have_rl = true;
+      }
+    } else {
+      if (!have_fr || px > xf_r) {
+        xf_r = px;
+        yf_r = py;
+        have_fr = true;
+      }
+      if (!have_rr || px < xb_r) {
+        xb_r = px;
+        yb_r = py;
+        have_rr = true;
+      }
+    }
+  }
+  const double r_fl = have_fl ? std::hypot(xf_l, yf_l) : 0.0;
+  const double r_fr = have_fr ? std::hypot(xf_r, yf_r) : 0.0;
+  const double r_rl = have_rl ? std::hypot(xb_l, yb_l) : 0.0;
+  const double r_rr = have_rr ? std::hypot(xb_r, yb_r) : 0.0;
+  const double k = corner_sweep_scale_;
+  x_front = k * std::max(r_fl, r_fr);
+  if (x_front < footprint_front_x_) {
+    x_front = footprint_front_x_;
+  }
+  x_rear = footprint_back_x_;
+  y_left = k * (have_rl ? r_rl : std::max(0.0, footprint_y_max_));
+  y_right = k * (have_rr ? r_rr : std::max(0.0, -footprint_y_min_));
+}
+
 double FastPathPlanner::straightCheckStep() const
 {
   const double resolution = costmap_->getResolution();
@@ -592,6 +668,100 @@ bool FastPathPlanner::isCrossSectionFree(double x, double y, double yaw) const
   return true;
 }
 
+bool FastPathPlanner::orientedRectHitsLethal(
+  double x, double y, double yaw,
+  double x0, double x1, double y0, double y1) const
+{
+  if (x1 < x0) {
+    std::swap(x0, x1);
+  }
+  if (y1 < y0) {
+    std::swap(y0, y1);
+  }
+  const double res = costmap_->getResolution();
+  const double c = std::cos(yaw);
+  const double s = std::sin(yaw);
+  for (double fx = x0; ; fx += res) {
+    const double sample_fx = std::min(fx, x1);
+    for (double fy = y0; ; fy += res) {
+      const double sample_fy = std::min(fy, y1);
+      const double wx = x + sample_fx * c - sample_fy * s;
+      const double wy = y + sample_fx * s + sample_fy * c;
+      if (isLethalWorld(wx, wy)) {
+        return true;
+      }
+      if (sample_fy >= y1 - 1e-9) {
+        break;
+      }
+    }
+    if (sample_fx >= x1 - 1e-9) {
+      break;
+    }
+  }
+  return false;
+}
+
+bool FastPathPlanner::cornerSweepHitsLethal(double x, double y, double yaw) const
+{
+  double xf = 0.0, xr = 0.0, yl = 0.0, yr = 0.0;
+  computeCornerSweepBounds(xf, xr, yl, yr);
+  return orientedRectHitsLethal(x, y, yaw, xr, xf, -yr, yl);
+}
+
+bool FastPathPlanner::poseFreeForSnap(
+  const FastPlanOptions & options,
+  double x, double y, double in_yaw) const
+{
+  if (options.use_corner_sweep) {
+    if (cornerSweepHitsLethal(x, y, in_yaw)) {
+      return false;
+    }
+    if (std::isfinite(options.out_yaw) &&
+      cornerSweepHitsLethal(x, y, options.out_yaw))
+    {
+      return false;
+    }
+    return true;
+  }
+  if (options.strict_goal_footprint) {
+    double fx = 0.0, fy = 0.0, wx = 0.0, wy = 0.0;
+    return !footprintHitsLethal(x, y, in_yaw, 0.0, false, fx, fy, wx, wy);
+  }
+  return isCrossSectionFree(x, y, in_yaw);
+}
+
+bool FastPathPlanner::tailWindowHitsLethal(
+  const geometry_msgs::msg::PoseStamped & start,
+  const geometry_msgs::msg::PoseStamped & goal,
+  const FastPlanOptions & options) const
+{
+  const double ax = start.pose.position.x;
+  const double ay = start.pose.position.y;
+  const double bx = goal.pose.position.x;
+  const double by = goal.pose.position.y;
+  const double L = std::hypot(bx - ax, by - ay);
+  if (L < 1e-3) {
+    return false;
+  }
+  const double ux = (bx - ax) / L;
+  const double uy = (by - ay) / L;
+  const double yaw = std::atan2(by - ay, bx - ax);
+  const double robot_len = std::max(0.0, footprint_front_x_ - footprint_back_x_);
+  const double window = std::max(robot_len, 1e-3);
+  const double res = costmap_->getResolution();
+  const double s0 = std::max(res, L - window);
+  for (double s = s0; ; s += res) {
+    const double sample_s = std::min(s, L);
+    if (poseFreeForSnap(options, ax + ux * sample_s, ay + uy * sample_s, yaw) == false) {
+      return true;
+    }
+    if (sample_s >= L - 1e-9) {
+      break;
+    }
+  }
+  return false;
+}
+
 bool FastPathPlanner::footprintHitsLethal(
   double x, double y, double yaw,
   double path_s,
@@ -639,10 +809,15 @@ bool FastPathPlanner::footprintHitsLethal(
 }
 
 bool FastPathPlanner::findCenterlineTrigger(
-  double ax, double ay, double ux, double uy, double L, double & s_out) const
+  double ax, double ay, double ux, double uy,
+  double s_begin, double L,
+  double & s_out, unsigned char & cost_out) const
 {
+  if (s_begin > L + 1e-9) {
+    return false;
+  }
   const double res = costmap_->getResolution();
-  for (double s = 0.0; ; s += res) {
+  for (double s = s_begin; ; s += res) {
     const double sample_s = std::min(s, L);
     const double wx = ax + ux * sample_s;
     const double wy = ay + uy * sample_s;
@@ -650,6 +825,7 @@ bool FastPathPlanner::findCenterlineTrigger(
     unsigned int my = 0;
     if (!costmap_->worldToMap(wx, wy, mx, my)) {
       s_out = sample_s;
+      cost_out = nav2_costmap_2d::LETHAL_OBSTACLE;
       return true;
     }
     const unsigned char cost = costmap_->getCost(mx, my);
@@ -657,6 +833,7 @@ bool FastPathPlanner::findCenterlineTrigger(
       cost == nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
     {
       s_out = sample_s;
+      cost_out = cost;
       return true;
     }
     if (sample_s >= L - 1e-9) {
@@ -669,7 +846,9 @@ bool FastPathPlanner::findCenterlineTrigger(
 FastPathPlanner::CorridorHit FastPathPlanner::scanHalfWidthBand(
   const geometry_msgs::msg::PoseStamped & start,
   double ax, double ay, double ux, double uy, double yaw, double L,
-  double s_begin, double s_end) const
+  double s_begin, double s_end,
+  bool allow_exempt,
+  bool log_accept) const
 {
   CorridorHit hit;
   hit.L = L;
@@ -744,6 +923,7 @@ FastPathPlanner::CorridorHit FastPathPlanner::scanHalfWidthBand(
       fill_pose(cur, sample_s, px, py);
 
       if (both || centerline) {
+        cur.n_exempt = n_exempt;
         RCLCPP_INFO(
           logger_,
           "[FastPath] corridor hard block s=%.3f dy=%.3f both=%s centerline=%s",
@@ -752,9 +932,19 @@ FastPathPlanner::CorridorHit FastPathPlanner::scanHalfWidthBand(
         return cur;
       }
 
+      if (!allow_exempt) {
+        cur.n_exempt = n_exempt;
+        RCLCPP_INFO(
+          logger_,
+          "[FastPath] corridor 254 (no exempt) s=%.3f dy=%.3f",
+          sample_s, best_dy);
+        return cur;
+      }
+
       cur.clearance_len = measureOppositeFreeLength(px, py, nx, ny, best_dy);
       cur.clearance_ok = cur.clearance_len + 1e-9 >= width;
       if (!cur.clearance_ok) {
+        cur.n_exempt = n_exempt;
         RCLCPP_INFO(
           logger_,
           "[FastPath] corridor clearance fail s=%.3f dy=%.3f intrusion=%.3f "
@@ -782,6 +972,7 @@ FastPathPlanner::CorridorHit FastPathPlanner::scanHalfWidthBand(
   }
 
   if (have_rotate) {
+    rotate_hit.n_exempt = n_exempt;
     RCLCPP_INFO(
       logger_,
       "[FastPath] corridor rotate candidate s=%.3f dy=%.3f intrusion=%.3f "
@@ -791,7 +982,8 @@ FastPathPlanner::CorridorHit FastPathPlanner::scanHalfWidthBand(
     return rotate_hit;
   }
 
-  if (n_exempt > 0) {
+  hit.n_exempt = n_exempt;
+  if (log_accept && n_exempt > 0) {
     RCLCPP_INFO(
       logger_,
       "[FastPath] corridor accepted with %d exempted same-side 254 slice(s) "
@@ -804,7 +996,8 @@ FastPathPlanner::CorridorHit FastPathPlanner::scanHalfWidthBand(
 FastPathPlanner::CorridorHit FastPathPlanner::checkBandCorridor(
   const geometry_msgs::msg::PoseStamped & start,
   const geometry_msgs::msg::PoseStamped & goal,
-  double front_overhang) const
+  double front_overhang,
+  bool allow_exempt) const
 {
   CorridorHit hit;
   const double ax = start.pose.position.x;
@@ -820,11 +1013,42 @@ FastPathPlanner::CorridorHit FastPathPlanner::checkBandCorridor(
   const double res = costmap_->getResolution();
 
   if (centerlinePrecheckReliable()) {
+    const double W = std::max(
+      inscribedRadius() + res,
+      straightCheckStep());
+    double s_cursor = 0.0;
+    double scanned_until = -1.0;
+    int n_exempt_all = 0;
     double s_trig = 0.0;
-    if (findCenterlineTrigger(ax, ay, ux, uy, hit.L, s_trig)) {
-      const double W = std::max(
-        inscribedRadius() + res,
-        straightCheckStep());
+    unsigned char trig_cost = 0;
+
+    while (findCenterlineTrigger(
+        ax, ay, ux, uy, s_cursor, hit.L, s_trig, trig_cost))
+    {
+      if (trig_cost == nav2_costmap_2d::LETHAL_OBSTACLE) {
+        hit.blocked = true;
+        hit.s = s_trig;
+        hit.dy = 0.0;
+        hit.intrusion = halfWidth();
+        hit.n_exempt = n_exempt_all;
+        hit.pose.header = start.header;
+        hit.pose.pose.position.x = ax + ux * s_trig;
+        hit.pose.pose.position.y = ay + uy * s_trig;
+        hit.pose.pose.position.z = 0.0;
+        hit.pose.pose.orientation = yawToQuaternion(yaw);
+        RCLCPP_INFO(
+          logger_,
+          "[FastPath] corridor hard block centerline 254 s=%.3f / %.3f",
+          s_trig, hit.L);
+        return hit;
+      }
+
+      // 253：已在先前窗口内扫过半宽则不再重复开窗，但中线 254 上面已先判过。
+      if (s_trig <= scanned_until + 1e-9) {
+        s_cursor = s_trig + res;
+        continue;
+      }
+
       const double s0 = std::max(0.0, s_trig - W);
       double s1 = std::min(s_limit, s_trig + W);
       if (front > 1e-6 && s_trig + W >= hit.L) {
@@ -832,17 +1056,38 @@ FastPathPlanner::CorridorHit FastPathPlanner::checkBandCorridor(
       }
       RCLCPP_DEBUG(
         logger_,
-        "[FastPath] centerline trigger s=%.3f / %.3f window=[%.3f, %.3f] front=%.3f",
+        "[FastPath] centerline 253 s=%.3f / %.3f window=[%.3f, %.3f] front=%.3f",
         s_trig, hit.L, s0, s1, front);
-      CorridorHit deep = scanHalfWidthBand(start, ax, ay, ux, uy, yaw, hit.L, s0, s1);
+      CorridorHit deep = scanHalfWidthBand(
+        start, ax, ay, ux, uy, yaw, hit.L, s0, s1, allow_exempt, false);
       if (deep.blocked) {
+        deep.n_exempt += n_exempt_all;
         return deep;
       }
-      return hit;
+      n_exempt_all += deep.n_exempt;
+      scanned_until = s1;
+      s_cursor = s_trig + res;
     }
-    if (front > 1e-6) {
-      return scanHalfWidthBand(start, ax, ay, ux, uy, yaw, hit.L, hit.L, s_limit);
+
+    if (front > 1e-6 && scanned_until + 1e-9 < s_limit) {
+      const double nose0 = std::max(hit.L, scanned_until);
+      CorridorHit nose = scanHalfWidthBand(
+        start, ax, ay, ux, uy, yaw, hit.L, nose0, s_limit, allow_exempt, false);
+      if (nose.blocked) {
+        nose.n_exempt += n_exempt_all;
+        return nose;
+      }
+      n_exempt_all += nose.n_exempt;
     }
+
+    if (n_exempt_all > 0) {
+      RCLCPP_INFO(
+        logger_,
+        "[FastPath] corridor accepted with %d exempted same-side 254 slice(s) "
+        "intrusion_tol=%.3f",
+        n_exempt_all, corridor_intrusion_tol_);
+    }
+    hit.n_exempt = n_exempt_all;
     return hit;
   }
 
@@ -850,32 +1095,34 @@ FastPathPlanner::CorridorHit FastPathPlanner::checkBandCorridor(
     logger_,
     "[FastPath] inscribed=%.3f < halfWidth=%.3f, full band [0, %.3f]",
     inscribedRadius(), halfWidth(), s_limit);
-  return scanHalfWidthBand(start, ax, ay, ux, uy, yaw, hit.L, 0.0, s_limit);
+  return scanHalfWidthBand(
+    start, ax, ay, ux, uy, yaw, hit.L, 0.0, s_limit, allow_exempt);
 }
 
 FastPathPlanner::CorridorHit FastPathPlanner::checkCorridor(
   const geometry_msgs::msg::PoseStamped & start,
   const geometry_msgs::msg::PoseStamped & goal,
-  bool use_footprint_corridor) const
+  bool use_footprint_corridor,
+  bool allow_exempt) const
 {
   if (use_footprint_corridor) {
-    return checkFootprintCorridor(start, goal);
+    return checkBandCorridor(start, goal, footprint_front_x_, allow_exempt);
   }
-  return checkHalfWidthCorridor(start, goal);
+  return checkBandCorridor(start, goal, 0.0, allow_exempt);
 }
 
 FastPathPlanner::CorridorHit FastPathPlanner::checkFootprintCorridor(
   const geometry_msgs::msg::PoseStamped & start,
   const geometry_msgs::msg::PoseStamped & goal) const
 {
-  return checkBandCorridor(start, goal, footprint_front_x_);
+  return checkBandCorridor(start, goal, footprint_front_x_, true);
 }
 
 FastPathPlanner::CorridorHit FastPathPlanner::checkHalfWidthCorridor(
   const geometry_msgs::msg::PoseStamped & start,
   const geometry_msgs::msg::PoseStamped & goal) const
 {
-  return checkBandCorridor(start, goal, 0.0);
+  return checkBandCorridor(start, goal, 0.0, true);
 }
 
 nav_msgs::msg::Path FastPathPlanner::buildStraightPath(
@@ -972,7 +1219,8 @@ bool FastPathPlanner::tryRotateGoal(
   const geometry_msgs::msg::PoseStamped & original_goal,
   geometry_msgs::msg::PoseStamped & goal,
   CorridorHit & hit,
-  bool use_footprint_corridor)
+  bool use_footprint_corridor,
+  bool allow_exempt)
 {
   if (!hit.blocked || hit.both_sides || !hit.clearance_ok) {
     RCLCPP_INFO(
@@ -1042,7 +1290,8 @@ bool FastPathPlanner::tryRotateGoal(
       debug_viz_->publishStraightCandidate(start, rotated, iter, "rotate");
     }
 
-    CorridorHit again = checkCorridor(start, rotated, use_footprint_corridor);
+    CorridorHit again = checkCorridor(
+      start, rotated, use_footprint_corridor, allow_exempt);
     RCLCPP_INFO(
       logger_,
       "[LineRotate] iter=%d d_alpha=%.4f s_arm=%.3f need=%.3f alpha=%.3f "
@@ -1082,45 +1331,65 @@ bool FastPathPlanner::tryRotateGoal(
 bool FastPathPlanner::snapOccupiedGoal(
   const geometry_msgs::msg::PoseStamped & start,
   geometry_msgs::msg::PoseStamped & goal,
-  bool use_footprint,
-  bool rewrite_yaw_to_approach)
+  const FastPlanOptions & options)
 {
   const double approach_yaw = std::atan2(
     goal.pose.position.y - start.pose.position.y,
     goal.pose.position.x - start.pose.position.x);
-  const double plan_yaw = rewrite_yaw_to_approach ?
+  const double plan_yaw = options.rewrite_goal_yaw_to_approach ?
     approach_yaw : tf2::getYaw(goal.pose.orientation);
-  if (rewrite_yaw_to_approach) {
+  if (options.rewrite_goal_yaw_to_approach) {
     goal.pose.orientation = yawToQuaternion(approach_yaw);
   }
 
-  auto pose_free = [&](double x, double y, double yaw) {
-    if (use_footprint) {
-      double fx = 0.0, fy = 0.0, wx = 0.0, wy = 0.0;
-      return !footprintHitsLethal(x, y, yaw, 0.0, false, fx, fy, wx, wy);
-    }
-    return isCrossSectionFree(x, y, yaw);
-  };
+  const char * snap_mode = options.use_corner_sweep ? "sweep" :
+    (options.strict_goal_footprint ? "footprint" : "halfwidth");
+  const double snap_r = options.snap_tolerance >= 0.0 ?
+    options.snap_tolerance : _goal_occupied_tolerance;
 
-  if (pose_free(goal.pose.position.x, goal.pose.position.y, plan_yaw)) {
+  bool origin_free = poseFreeForSnap(
+    options, goal.pose.position.x, goal.pose.position.y, plan_yaw);
+  if (origin_free && (options.use_corner_sweep || options.strict_goal_footprint) &&
+    tailWindowHitsLethal(start, goal, options))
+  {
+    origin_free = false;
+    RCLCPP_INFO(
+      logger_,
+      "[FastPath] goal (%.3f, %.3f) origin free but tail window 254, force snap mode=%s",
+      goal.pose.position.x, goal.pose.position.y, snap_mode);
+  }
+  if (origin_free) {
     RCLCPP_DEBUG(
       logger_,
       "[FastPath] goal (%.3f, %.3f) 254-clear snap_mode=%s, no snap",
-      goal.pose.position.x, goal.pose.position.y,
-      use_footprint ? "footprint" : "halfwidth");
+      goal.pose.position.x, goal.pose.position.y, snap_mode);
     return true;
   }
 
   const double res = std::max(_goal_search_resolution, 1e-3);
-  const int max_ring = static_cast<int>(std::ceil(_goal_occupied_tolerance / res));
+  const int max_ring = std::max(1, static_cast<int>(std::ceil(snap_r / res)));
   const double ux = std::cos(approach_yaw);
   const double uy = std::sin(approach_yaw);
+  double bx = 0.0;
+  double by = 0.0;
+  if (std::isfinite(options.out_yaw)) {
+    bx = std::cos(approach_yaw) + std::cos(options.out_yaw);
+    by = std::sin(approach_yaw) + std::sin(options.out_yaw);
+    const double bn = std::hypot(bx, by);
+    if (bn > 1e-6) {
+      bx /= bn;
+      by /= bn;
+    } else {
+      bx = 0.0;
+      by = 0.0;
+    }
+  }
   RCLCPP_INFO(
     logger_,
-    "[FastPath] goal (%.3f, %.3f) 254 occupied snap_mode=%s, ring search tolerance=%.2f res=%.2f",
-    goal.pose.position.x, goal.pose.position.y,
-    use_footprint ? "footprint" : "halfwidth",
-    _goal_occupied_tolerance, res);
+    "[FastPath] goal (%.3f, %.3f) 254 occupied snap_mode=%s, ring search "
+    "tolerance=%.2f res=%.2f k=%.2f",
+    goal.pose.position.x, goal.pose.position.y, snap_mode, snap_r, res,
+    options.use_corner_sweep ? corner_sweep_scale_ : 0.0);
 
   const auto original = goal;
   for (int ring = 1; ring <= max_ring; ++ring) {
@@ -1132,7 +1401,7 @@ bool FastPathPlanner::snapOccupiedGoal(
       const double dx = static_cast<double>(ix) * res;
       const double dy = static_cast<double>(iy) * res;
       const double dist = std::hypot(dx, dy);
-      if (dist > _goal_occupied_tolerance + 1e-6) {
+      if (dist > snap_r + 1e-6) {
         return;
       }
       auto search_goal = original;
@@ -1140,7 +1409,7 @@ bool FastPathPlanner::snapOccupiedGoal(
       search_goal.pose.position.y += dy;
       const double along = dx * ux + dy * uy;
       const double cross = ux * dy - uy * dx;
-      if (rewrite_yaw_to_approach) {
+      if (options.rewrite_goal_yaw_to_approach) {
         search_goal.pose.orientation = yawToQuaternion(
           std::atan2(
             search_goal.pose.position.y - start.pose.position.y,
@@ -1148,14 +1417,18 @@ bool FastPathPlanner::snapOccupiedGoal(
       } else {
         search_goal.pose.orientation = yawToQuaternion(plan_yaw);
       }
-      if (!pose_free(
-          search_goal.pose.position.x, search_goal.pose.position.y,
-          tf2::getYaw(search_goal.pose.orientation)))
+      const double check_yaw = tf2::getYaw(search_goal.pose.orientation);
+      if (!poseFreeForSnap(
+          options, search_goal.pose.position.x, search_goal.pose.position.y, check_yaw))
       {
         return;
       }
       found_in_ring = true;
-      const double score = dist + 0.25 * std::fabs(cross) + 0.05 * std::fabs(along);
+      double score = dist + 0.25 * std::fabs(cross) + 0.05 * std::fabs(along);
+      if (options.use_corner_sweep && (bx * bx + by * by) > 1e-12) {
+        const double inward = dx * bx + dy * by;
+        score += 0.20 * std::max(0.0, -inward);
+      }
       if (score < best_score) {
         best_score = score;
         best_goal = search_goal;
@@ -1175,9 +1448,9 @@ bool FastPathPlanner::snapOccupiedGoal(
       goal = best_goal;
       RCLCPP_INFO(
         logger_,
-        "[FastPath] snapped goal (%.3f, %.3f) -> (%.3f, %.3f) score=%.3f ring=%d",
+        "[FastPath] snapped goal (%.3f, %.3f) -> (%.3f, %.3f) score=%.3f ring=%d mode=%s",
         original.pose.position.x, original.pose.position.y,
-        goal.pose.position.x, goal.pose.position.y, best_score, ring);
+        goal.pose.position.x, goal.pose.position.y, best_score, ring, snap_mode);
       if (debug_viz_) {
         debug_viz_->publishSnappedGoal(original, goal);
       }

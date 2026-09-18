@@ -7,6 +7,8 @@
 #define NAV2_PLANNER__FAST_PATH_PLANNER_HPP_
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -68,6 +70,14 @@ struct FastPlanOptions
   bool strict_goal_footprint{false};
   /** true：snap / NeedAstar 的 G 写成 S→G 来向；false：保留传入的 goal yaw。由 server 按段决定。 */
   bool rewrite_goal_yaw_to_approach{true};
+  /** Corner / Short：占用/snap 用扫掠矩形，入/出 yaw 都要自由。 */
+  bool use_corner_sweep{false};
+  /** false：半宽走廊碰到 254 立即否决（短边/角点关闭浅侵入豁免）。 */
+  bool allow_intrusion_exempt{true};
+  /** 原始折线出边 yaw；非有限则角点只查入边。 */
+  double out_yaw{std::numeric_limits<double>::quiet_NaN()};
+  /** 环搜半径；<0 则用 goal_occupied_tolerance。Corner/Short 用 corner_snap_tolerance。 */
+  double snap_tolerance{-1.0};
 };
 
 /**
@@ -104,7 +114,8 @@ public:
 
   /**
    * @brief 先 snap，再走廊直线；近段可缩短/转线。
-   * 中间 via：中心线粗检 + 半宽走廊。最后一段 / NavigateToPose：中心线通过后补前悬（放过 S 后悬）。
+   * 中间 via：中心线整段粗检（254 立即失败，每一处 253 开窗口半宽加深）。
+   * 最后一段 / NavigateToPose：中心线通过后补前悬（放过 S 后悬）。
    * 不修改 start 的 yaw。路径点 yaw 为来向（倒车时 +π）。
    */
   FastPlanResult compute(
@@ -148,6 +159,9 @@ public:
   {
     corridor_intrusion_tol_ = std::max(0.0, value);
   }
+  void setCornerSweepScale(double value) {corner_sweep_scale_ = std::max(0.05, value);}
+  void setCornerSnapTolerance(double value) {corner_snap_tolerance_ = std::max(0.0, value);}
+  void setCornerSnapEnable(bool value) {corner_snap_enable_ = value;}
 
   /** @brief 绑定调试可视化（可为空）。 */
   void setDebugViz(const std::shared_ptr<PlanningDebugViz> & viz) {debug_viz_ = viz;}
@@ -188,6 +202,8 @@ private:
     double clearance_len{0.0};
     /** 发生碰撞时的 base_footprint 位姿（沿 S→G 的 s），不是 254 格子中心。 */
     geometry_msgs::msg::PoseStamped pose;
+    /** 本段/本窗口豁免的同侧 254 切片数。 */
+    int n_exempt{0};
   };
 
   double halfWidth() const;
@@ -207,20 +223,39 @@ private:
     double & hit_fy,
     double & hit_wx,
     double & hit_wy) const;
+  bool orientedRectHitsLethal(
+    double x, double y, double yaw,
+    double x0, double x1, double y0, double y1) const;
+  void computeCornerSweepBounds(
+    double & x_front, double & x_rear, double & y_left, double & y_right) const;
+  bool cornerSweepHitsLethal(double x, double y, double yaw) const;
+  bool poseFreeForSnap(
+    const FastPlanOptions & options,
+    double x, double y, double in_yaw) const;
+  bool tailWindowHitsLethal(
+    const geometry_msgs::msg::PoseStamped & start,
+    const geometry_msgs::msg::PoseStamped & goal,
+    const FastPlanOptions & options) const;
   bool findCenterlineTrigger(
-    double ax, double ay, double ux, double uy, double L, double & s_out) const;
+    double ax, double ay, double ux, double uy,
+    double s_begin, double L,
+    double & s_out, unsigned char & cost_out) const;
   CorridorHit scanHalfWidthBand(
     const geometry_msgs::msg::PoseStamped & start,
     double ax, double ay, double ux, double uy, double yaw, double L,
-    double s_begin, double s_end) const;
+    double s_begin, double s_end,
+    bool allow_exempt,
+    bool log_accept = true) const;
   CorridorHit checkBandCorridor(
     const geometry_msgs::msg::PoseStamped & start,
     const geometry_msgs::msg::PoseStamped & goal,
-    double front_overhang) const;
+    double front_overhang,
+    bool allow_exempt) const;
   CorridorHit checkCorridor(
     const geometry_msgs::msg::PoseStamped & start,
     const geometry_msgs::msg::PoseStamped & goal,
-    bool use_footprint_corridor) const;
+    bool use_footprint_corridor,
+    bool allow_exempt = true) const;
   CorridorHit checkHalfWidthCorridor(
     const geometry_msgs::msg::PoseStamped & start,
     const geometry_msgs::msg::PoseStamped & goal) const;
@@ -230,8 +265,7 @@ private:
   bool snapOccupiedGoal(
     const geometry_msgs::msg::PoseStamped & start,
     geometry_msgs::msg::PoseStamped & goal,
-    bool use_footprint,
-    bool rewrite_yaw_to_approach);
+    const FastPlanOptions & options);
   nav_msgs::msg::Path buildStraightPath(
     const geometry_msgs::msg::PoseStamped & start,
     const geometry_msgs::msg::PoseStamped & goal,
@@ -246,7 +280,8 @@ private:
     const geometry_msgs::msg::PoseStamped & original_goal,
     geometry_msgs::msg::PoseStamped & goal,
     CorridorHit & hit,
-    bool use_footprint_corridor);
+    bool use_footprint_corridor,
+    bool allow_exempt);
 
   /** 从 original 沿 original→edge 方向前进距离 d 的点。 */
   bool findPose(
@@ -280,6 +315,9 @@ private:
   int line_rotate_max_iters_{5};
   double line_rotate_goal_shift_tol_{0.5};
   double corridor_intrusion_tol_{0.08};
+  double corner_sweep_scale_{1.2};
+  double corner_snap_tolerance_{1.5};
+  bool corner_snap_enable_{true};
 
   rclcpp::Subscription<garage_utils_msgs::msg::Polygons>::SharedPtr narrow_passages_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr enable_backward_sub_;

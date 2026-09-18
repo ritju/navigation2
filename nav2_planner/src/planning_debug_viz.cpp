@@ -357,6 +357,43 @@ visualization_msgs::msg::Marker PlanningDebugViz::footprintStrip(
   return m;
 }
 
+visualization_msgs::msg::Marker PlanningDebugViz::orientedRectStrip(
+  const std::string & ns, int id,
+  const geometry_msgs::msg::PoseStamped & pose,
+  double x_rear, double x_front, double y_left, double y_right,
+  const std_msgs::msg::ColorRGBA & color,
+  double line_width) const
+{
+  Marker m;
+  m.header.frame_id = pose.header.frame_id.empty() ? frame() : pose.header.frame_id;
+  m.header.stamp = now();
+  m.ns = ns;
+  m.id = id;
+  m.type = Marker::LINE_STRIP;
+  m.action = Marker::ADD;
+  m.pose.orientation.w = 1.0;
+  m.scale.x = line_width;
+  m.color = color;
+  m.lifetime = rclcpp::Duration(0, 0);
+
+  const double yaw = tf2::getYaw(pose.pose.orientation);
+  const double c = std::cos(yaw);
+  const double s = std::sin(yaw);
+  auto corner = [&](double fx, double fy) {
+    geometry_msgs::msg::Point p;
+    p.x = pose.pose.position.x + fx * c - fy * s;
+    p.y = pose.pose.position.y + fx * s + fy * c;
+    p.z = kZ;
+    return p;
+  };
+  m.points.push_back(corner(x_front, y_left));
+  m.points.push_back(corner(x_front, -y_right));
+  m.points.push_back(corner(x_rear, -y_right));
+  m.points.push_back(corner(x_rear, y_left));
+  m.points.push_back(m.points.front());
+  return m;
+}
+
 visualization_msgs::msg::Marker PlanningDebugViz::pathStrip(
   const std::string & ns, int id,
   const nav_msgs::msg::Path & path,
@@ -627,6 +664,53 @@ void PlanningDebugViz::publishCorridor(
   arr.markers.push_back(poseText(
       "corridor", markerId(1), blocked ? hit_pose : start, ss.str(),
       blocked ? rgba(1.0f, 0.4f, 0.4f) : rgba(0.2f, 0.9f, 0.3f)));
+  publishMarkers(arr);
+}
+
+void PlanningDebugViz::publishCornerSweep(
+  const geometry_msgs::msg::PoseStamped & pose,
+  double x_rear,
+  double x_front,
+  double y_left,
+  double y_right,
+  double k,
+  double out_yaw)
+{
+  if (!canPublish()) {
+    return;
+  }
+  MarkerArray arr;
+  arr.markers.push_back(orientedRectStrip(
+      "corner_sweep", markerId(0), pose,
+      x_rear, x_front, y_left, y_right,
+      rgba(1.0f, 0.15f, 0.85f, 0.95f), 0.05));
+  arr.markers.push_back(poseArrow("corner_sweep", markerId(1), pose, rgba(1.0f, 0.15f, 0.85f)));
+  std::ostringstream ss;
+  ss << "v" << via_index_ << " sweep in k=" << std::fixed << std::setprecision(2) << k
+     << " xf=" << std::setprecision(2) << x_front
+     << " xr=" << x_rear
+     << " yl=" << y_left << " yr=" << y_right;
+  arr.markers.push_back(poseText(
+      "corner_sweep", markerId(2), pose, ss.str(), rgba(1.0f, 0.45f, 0.95f)));
+
+  if (std::isfinite(out_yaw)) {
+    auto out_pose = pose;
+    tf2::Quaternion q;
+    q.setRPY(0.0, 0.0, out_yaw);
+    out_pose.pose.orientation = tf2::toMsg(q);
+    arr.markers.push_back(orientedRectStrip(
+        "corner_sweep", markerId(3), out_pose,
+        x_rear, x_front, y_left, y_right,
+        rgba(0.05f, 0.95f, 0.95f, 0.95f), 0.035));
+    arr.markers.push_back(poseArrow(
+        "corner_sweep", markerId(4), out_pose, rgba(0.05f, 0.85f, 0.95f)));
+    auto text_pose = out_pose;
+    text_pose.pose.position.x += 0.12;
+    std::ostringstream so;
+    so << "v" << via_index_ << " sweep out";
+    arr.markers.push_back(poseText(
+        "corner_sweep", markerId(5), text_pose, so.str(), rgba(0.4f, 1.0f, 1.0f)));
+  }
   publishMarkers(arr);
 }
 
