@@ -50,7 +50,7 @@ InsertGarbagePose::InsertGarbagePose(
   wall_edge_min_robot_dist_m_(3.0),
   wall_edge_sample_m_(0.5),
   wall_edge_normal_offset_m_(0.0),
-  garbage_merge_radius_m_(1.0),    // 到种子小于该距离合为一堆
+  garbage_merge_radius_m_(1.0),    // 离种子小于该距离才来判断；还须离堆里最远点小于该距离才并入
   garbage_extend_m_(2.0),          // 沿扫向相对垃圾再插一点，默认 2.0m；见 GARBAGE_EXTEND_M
   work_circle_radius_m_(10.0)
 {
@@ -1055,13 +1055,18 @@ bool InsertGarbagePose::tryInsertPreferCloserToRobot(
   return true;
 }
 
-// 距机器人最近的点当种子，到种子小于 merge_radius 的并入同一堆；返回各堆代表点
+// 距机器人最近的点当种子。离种子小于半径的才来判断；
+// 判断时离堆里离种子最远的那个点也小于半径，才并入
 InsertGarbagePose::GarbageList InsertGarbagePose::mergeGarbagePiles(
   const GarbageList & candidates,
   double robot_x, double robot_y,
-  double merge_radius_m)
+  double merge_radius_m,
+  std::vector<std::vector<std::size_t>> * member_indices)
 {
   GarbageList merged_garbage_list;
+  if (member_indices) {
+    member_indices->clear();
+  }
   if (candidates.empty()) {
     return merged_garbage_list;
   }
@@ -1093,9 +1098,11 @@ InsertGarbagePose::GarbageList InsertGarbagePose::mergeGarbagePiles(
     const double sy = candidates[seed_idx].pose.pose.position.y;
     merged_garbage_list.push_back(candidates[seed_idx]);
 
-    // 到种子距离 < 半径的算本堆已消化，否则留到下一轮
-    std::vector<std::size_t> next;
-    next.reserve(remaining.size());
+    std::vector<std::size_t> pile;
+    pile.push_back(seed_idx);
+    // 先试离种子近的。离种子小于半径的才判断，还须离堆里离种子最远的点也小于半径才并入
+    std::vector<std::pair<double, std::size_t>> others;
+    others.reserve(remaining.size());
     for (std::size_t p = 0; p < remaining.size(); ++p) {
       if (p == seed_pos) {
         continue;
@@ -1105,9 +1112,45 @@ InsertGarbagePose::GarbageList InsertGarbagePose::mergeGarbagePiles(
         candidates[idx].pose.pose.position.x,
         candidates[idx].pose.pose.position.y,
         sx, sy);
-      if (d2 >= radius2) {
+      others.emplace_back(d2, idx);
+    }
+    std::sort(others.begin(), others.end());
+
+    std::vector<std::size_t> next;
+    next.reserve(others.size());
+    for (const auto & item : others) {
+      const std::size_t idx = item.second;
+      // 离种子不小于半径的不进这堆的判断，留给下一堆
+      if (item.first >= radius2) {
+        next.push_back(idx);
+        continue;
+      }
+      // 堆里离种子最远的那个点；只有种子时就是种子自己
+      std::size_t far_idx = seed_idx;
+      double far_from_seed2 = 0.0;
+      for (const std::size_t member : pile) {
+        const double d2 = squaredDistanceXY(
+          candidates[member].pose.pose.position.x,
+          candidates[member].pose.pose.position.y,
+          sx, sy);
+        if (d2 > far_from_seed2) {
+          far_from_seed2 = d2;
+          far_idx = member;
+        }
+      }
+      const double to_far2 = squaredDistanceXY(
+        candidates[idx].pose.pose.position.x,
+        candidates[idx].pose.pose.position.y,
+        candidates[far_idx].pose.pose.position.x,
+        candidates[far_idx].pose.pose.position.y);
+      if (to_far2 < radius2) {
+        pile.push_back(idx);
+      } else {
         next.push_back(idx);
       }
+    }
+    if (member_indices) {
+      member_indices->push_back(std::move(pile));
     }
     remaining = std::move(next);
   }
@@ -1736,23 +1779,12 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
       }
     };
 
-  // 清掉合进该代表点的那一堆在 history 里的原始检测
-  auto erasePileAroundSeed =
-    [&](const capella_ros_msg::msg::GarbageDetect & seed,
-      const GarbageList & map_pts,
-      const std::vector<capella_ros_msg::msg::GarbageDetect> & originals)
-    {
-      const double sx = seed.pose.pose.position.x;
-      const double sy = seed.pose.pose.position.y;
-      const double radius2 = std::max(0.0, garbage_merge_radius_m_) *
-        std::max(0.0, garbage_merge_radius_m_);
-      for (std::size_t i = 0; i < map_pts.size(); ++i) {
-        const double d2 = squaredDistanceXY(
-          map_pts[i].pose.pose.position.x, map_pts[i].pose.pose.position.y,
-          sx, sy);
-        // 种子自身 d2==0，半径为 0 时也要清掉
-        if (d2 < radius2 || d2 < 1e-12) {
-          eraseFromHistory(originals[i]);
+  // 只清真正并进该代表点的原始检测。不能再按到种子的距离清，否则没并入的点会被删掉。
+  auto erasePileMembers =
+    [&](const std::vector<std::size_t> & member_indices) {
+      for (const std::size_t i : member_indices) {
+        if (i < candidate_originals.size()) {
+          eraseFromHistory(candidate_originals[i]);
         }
       }
     };
@@ -1872,10 +1904,12 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
   }
 
   // 合堆后的代表点，再写入成员 garbage_list_
+  std::vector<std::vector<std::size_t>> pile_members;
   GarbageList merged_garbage_list = mergeGarbagePiles(
-    candidates, robot_x, robot_y, garbage_merge_radius_m_);
+    candidates, robot_x, robot_y, garbage_merge_radius_m_, &pile_members);
 
-  for (auto & seed : merged_garbage_list) {
+  for (std::size_t pile_i = 0; pile_i < merged_garbage_list.size(); ++pile_i) {
+    auto & seed = merged_garbage_list[pile_i];
     const double sx = seed.pose.pose.position.x;
     const double sy = seed.pose.pose.position.y;
 
@@ -1893,7 +1927,7 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
       RCLCPP_INFO(
         node_->get_logger(),
         "InsertGarbagePose: 垃圾=(%.2f, %.2f), 因为已到达/已插入过, 丢弃", sx, sy);
-      erasePileAroundSeed(seed, candidates, candidate_originals);
+      erasePileMembers(pile_i < pile_members.size() ? pile_members[pile_i] : std::vector<std::size_t>{});
       continue;
     }
 
@@ -1901,7 +1935,7 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
       RCLCPP_INFO(
         node_->get_logger(),
         "InsertGarbagePose: 垃圾=(%.2f, %.2f), 因为与已规划堆重复, 丢弃", sx, sy);
-      erasePileAroundSeed(seed, candidates, candidate_originals);
+      erasePileMembers(pile_i < pile_members.size() ? pile_members[pile_i] : std::vector<std::size_t>{});
       continue;
     }
 
@@ -1909,7 +1943,7 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
       RCLCPP_INFO(
         node_->get_logger(),
         "InsertGarbagePose: 垃圾=(%.2f, %.2f), 进入清扫规划", sx, sy);
-      erasePileAroundSeed(seed, candidates, candidate_originals);
+      erasePileMembers(pile_i < pile_members.size() ? pile_members[pile_i] : std::vector<std::size_t>{});
     } else {
       RCLCPP_INFO(
         node_->get_logger(),

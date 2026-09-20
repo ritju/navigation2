@@ -173,7 +173,7 @@ public:
         "Ignore garbage farther than this distance (m) from robot (anti false-detect)"),
       BT::InputPort<double>(
         "garbage_merge_radius_m", 1.0,
-        "Merge detections within this radius (m) of the nearest seed into one pile"),
+        "Points within this distance (m) of the seed are judged; a point joins only if it is also within this distance of the pile point farthest from the seed"),
       BT::InputPort<double>(
         "work_circle_radius_m", 10.0,
         "Accept new garbage only inside this radius around the robot pose when the first pile of a batch is accepted"),
@@ -203,7 +203,7 @@ public:
       BT::InputPort<bool>(
         "viz_accepted_garbage", true, "Show accepted garbage after filtering"),
       BT::InputPort<double>(
-        "confirm_match_dist_m", 0.20,
+        "confirm_match_dist_m", 1.0,
         "Garbage and nearest-obstacle must match again within this distance (m); <=0 disables"),
       BT::InputPort<std::string>(
         "visualization_topic", std::string("insert_garbage_pose/markers"),
@@ -423,11 +423,16 @@ private:
     capella_ros_msg::msg::GarbageDetect garbage,
     double robot_x, double robot_y);
 
-  /** 合堆：距机器人最近的点当种子，到种子小于半径的并入，返回各堆代表点 */
+  /**
+   * 合堆：距机器人最近的点当种子。离种子小于半径的才来判断，
+   * 且离堆里离种子最远的那个点也小于半径才并入。
+   * member_indices 与返回的代表点一一对应，元素是 candidates 的下标。
+   */
   static GarbageList mergeGarbagePiles(
     const GarbageList & candidates,
     double robot_x, double robot_y,
-    double merge_radius_m);
+    double merge_radius_m,
+    std::vector<std::vector<std::size_t>> * member_indices = nullptr);
 
   /**
    * 多堆清扫顺序
@@ -555,10 +560,10 @@ private:
   double wall_edge_sample_m_{0.5};
   /** 贴边：整链沿障碍→垃圾法向平移，正为离墙，默认 0 */
   double wall_edge_normal_offset_m_{0.0};
-  /** 合堆半径：到种子小于该值并为一堆，默认 1.0m */
+  /** 合堆半径：离种子小于该值才判断，还须离堆里最远点小于该值才并入，默认 1.0m */
   double garbage_merge_radius_m_{1.0};
-  /** 垃圾/最近障碍二次确认距离，默认 0.20m；<=0 关闭确认 */
-  double confirm_match_dist_m_{0.20};
+  /** 垃圾/最近障碍二次确认距离，默认 1.0m；<=0 关闭确认 */
+  double confirm_match_dist_m_{1.0};
   /**
    * 沿 path_yaw 相对垃圾再插一点的距离，环境变量 GARBAGE_EXTEND_M。
    * 默认 2.0；

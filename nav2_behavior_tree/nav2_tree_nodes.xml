@@ -100,7 +100,7 @@
       <input_port name="goaltotal_range_m" default="10.0">If no corner ahead, use last goal within this path distance as goalc (m)</input_port>
       <input_port name="head_delete_robot_dist_m" default="4.0">Only delete from goals head forward when robot is within this distance (m) of goals[0]</input_port>
       <input_port name="max_garbage_robot_dist_m" default="5.0">Ignore garbage farther than this distance (m) from robot (anti false-detect)</input_port>
-      <input_port name="garbage_merge_radius_m" default="1.0">Merge detections within this radius (m) of the nearest seed into one pile</input_port>
+      <input_port name="garbage_merge_radius_m" default="1.0">Points within this distance (m) of the seed are judged; a point joins only if it is also within this distance of the pile point farthest from the seed</input_port>
       <input_port name="work_circle_radius_m" default="10.0">Accept new garbage only inside this radius around the robot pose when the first pile of a batch is accepted</input_port>
       <input_port name="min_garbage_obstacle_clearance_m" default="0.7">If lethal within radius, use wall-edge D-G-E insert</input_port>
       <input_port name="wall_edge_d_extend_m" default="2.0">Wall-edge D push step along tangent (m)</input_port>
