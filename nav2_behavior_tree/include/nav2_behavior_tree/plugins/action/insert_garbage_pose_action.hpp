@@ -63,8 +63,6 @@ public:
   static constexpr double kGarbageSentinelPoseZ = -1.0;
   /** 未再次匹配的待确认垃圾最长保留秒数 */
   static constexpr double kConfirmHoldSec = 1.0;
-  /** base_link 下距原点小于此值的检测视为无效 */
-  static constexpr double kInvalidGarbageOriginRadiusM = 0.3;
   /** from 离 G 近于此则视为已到达：不用欧氏远近选侧，沿车头在 G 后方虚设来向 */
   static constexpr double kMinExtendFromDistM = 0.5;
   /** 墙切向走廊失败后，绕该切向左右各扫到此角度 */
@@ -173,13 +171,13 @@ public:
         "Ignore garbage farther than this distance (m) from robot (anti false-detect)"),
       BT::InputPort<double>(
         "garbage_merge_radius_m", 1.0,
-        "Points within this distance (m) of the seed are judged; a point joins only if it is also within this distance of the pile point farthest from the seed"),
+        "Merge detections within this radius (m) of the nearest seed into one pile"),
       BT::InputPort<double>(
         "work_circle_radius_m", 10.0,
         "Accept new garbage only inside this radius around the robot pose when the first pile of a batch is accepted"),
       BT::InputPort<double>(
         "min_garbage_obstacle_clearance_m", 0.7,
-        "If lethal within this radius, use wall-edge D-G-E insert instead of normal GE"),
+        "If lethal within this radius, prefer wall-edge D-G-E"),
       BT::InputPort<double>(
         "wall_edge_d_extend_m", 2.0,
         "Wall-edge: each D push step along tangent (m)"),
@@ -204,7 +202,7 @@ public:
         "viz_accepted_garbage", true, "Show accepted garbage after filtering"),
       BT::InputPort<double>(
         "confirm_match_dist_m", 1.0,
-        "Garbage and nearest-obstacle must match again within this distance (m); <=0 disables"),
+        "Garbage must match again within this distance (m) before accepted; <=0 disables"),
       BT::InputPort<std::string>(
         "visualization_topic", std::string("insert_garbage_pose/markers"),
         "MarkerArray topic for insert visualization"),
@@ -227,13 +225,18 @@ private:
   /** footprint 话题回调 */
   void footprintCallback(const geometry_msgs::msg::PolygonStamped::SharedPtr msg);
 
+  /** 加锁取最新 footprint */
+  geometry_msgs::msg::PolygonStamped::SharedPtr getFootprintSnapshot(
+    std::string & source_frame) const;
+
   /** 局部代价图话题回调 */
   void localCostmapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
 
+  /** 加锁取最新局部代价图*/
+  nav_msgs::msg::OccupancyGrid::SharedPtr getLocalCostmapSnapshot() const;
+
   /**
-   * 障碍物情况可读：点落在局部代价图内，且格子不是 unknown。
-   * 失败时 reason 写入原因（可为 nullptr）。
-   */
+   * 障碍物情况可读：点落在局部代价图内*/
   bool isObstacleInfoReadable(double x, double y, std::string * reason) const;
 
   /** 局部代价图该点可通行：仅 254/255 不可过，253 可通过 */
@@ -248,16 +251,13 @@ private:
     double sample_m = 0.1) const;
 
   /**
-   * 垃圾点周围 radius_m 内局部代价图是否有占用障碍（cell>=100）。
-   * 有则视为贴墙扫不了，筛选阶段直接丢弃。
+   * 垃圾点周围 radius_m 内局部代价图是否有占用障碍
+
    */
   bool hasObstacleWithinRadius(double x, double y, double radius_m) const;
 
   /**
-   * 在局部代价图上找离 (x,y) 最近的障碍格。
-   * 原方向 E 进墙时用：G 与该格连线做法向，垂线方向再伸 E。
-   * 只认占用格（cell>=100）；搜索半径为延伸距离再加 0.5m，不是把 E 伸那么远。
-   * 成功时 ox/oy 为该格中心的 map 坐标。
+   * 在局部代价图上找离 (x,y) 最近的障碍格
    */
   bool findNearestObstaclePixel(double x, double y, double * ox, double * oy);
 
@@ -275,6 +275,12 @@ private:
 
   /** 对比 goals 时间戳，外部重发任务时清空 history 和 garbage */
   void checkAndResetOnNewMission();
+
+  /** 取机器人当前位姿*/
+  bool getRobotPose(geometry_msgs::msg::PoseStamped & pose) const;
+
+  /** 取机器人当前位姿的 xy*/
+  bool getRobotPoseXY(double & x, double & y, double * yaw = nullptr) const;
 
   /** 获取机器人当前 footprint，并转到 map */
   bool getRobotFootprintInMap(
@@ -424,15 +430,13 @@ private:
     double robot_x, double robot_y);
 
   /**
-   * 合堆：距机器人最近的点当种子。离种子小于半径的才来判断，
-   * 且离堆里离种子最远的那个点也小于半径才并入。
-   * member_indices 与返回的代表点一一对应，元素是 candidates 的下标。
+   * 合堆,一次性能扫掉的
    */
   static GarbageList mergeGarbagePiles(
     const GarbageList & candidates,
     double robot_x, double robot_y,
     double merge_radius_m,
-    std::vector<std::vector<std::size_t>> * member_indices = nullptr);
+    std::vector<std::vector<std::size_t>> * groups_out = nullptr);
 
   /**
    * 多堆清扫顺序
@@ -504,23 +508,18 @@ private:
   /** 打印 garbage_list_ 当前内容，reason 为更新原因 */
   void logGarbageListState(const char * reason) const;
 
-  /** 按开关往 RViz 发 Marker；同一任务内累加，新任务再清 */
+  /** 按开关往 RViz 发 Marker；同一个工作圈内累加，工作圈取消时整体清除 */
   void publishVisualization(
     const InsertInfo & info,
     bool enable = true,
     bool viz_accepted_garbage = true);
 
-  /** footprint/近障连续两次且最近障碍 P 也重合，才允许贴边并信这个 P */
-  bool confirmWallEdgeObstacle(double gx, double gy);
-
-  /** 新导航任务时清空本话题上全部 Marker */
+  /** 清空本话题上全部 Marker */
   void clearMissionVisualization();
-  void publishWorkCircle();
-  void clearWorkCircle();
   /** 深绿工作圈 + 浅绿识别距离圈 */
   void publishRangeCircles(double robot_x, double robot_y);
-  /** footprint 主动删点：黑圈 + 标签，与 clip 删点区分 */
-  void publishFootprintStrippedMarkers();
+  /** footprint 检查不通过时，把当时检查用的 footprint 框画在检查位置上 */
+  void publishFootprintCheckBox(double x, double y, double yaw);
 
   rclcpp::Node::SharedPtr node_;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
@@ -560,9 +559,9 @@ private:
   double wall_edge_sample_m_{0.5};
   /** 贴边：整链沿障碍→垃圾法向平移，正为离墙，默认 0 */
   double wall_edge_normal_offset_m_{0.0};
-  /** 合堆半径：离种子小于该值才判断，还须离堆里最远点小于该值才并入，默认 1.0m */
+  /** 合堆半径：到种子小于该值并为一堆，默认 1.0m */
   double garbage_merge_radius_m_{1.0};
-  /** 垃圾/最近障碍二次确认距离，默认 1.0m；<=0 关闭确认 */
+  /** 二次确认距离：第二帧落在此距离内才算确认，默认 1.0m；<=0 关闭 */
   double confirm_match_dist_m_{1.0};
   /**
    * 沿 path_yaw 相对垃圾再插一点的距离，环境变量 GARBAGE_EXTEND_M。
@@ -591,13 +590,6 @@ private:
   std::deque<capella_ros_msg::msg::GarbageDetect> history_list_;
   /** 只出现过一帧、尚未确认的垃圾 */
   std::deque<capella_ros_msg::msg::GarbageDetect> confirm_wait_list_;
-  bool has_obstacle_confirm_{false};
-  double obstacle_confirm_gx_{0.0};
-  double obstacle_confirm_gy_{0.0};
-  int obstacle_confirm_fails_{0};
-  bool obstacle_confirm_has_p_{false};
-  double obstacle_confirm_px_{0.0};
-  double obstacle_confirm_py_{0.0};
   /** 后处理结果列表 */
   GarbageList garbage_list_;
   /** 已插入且 goals 里尚未扫过的堆；中途新堆只重排其中尚未开始的，正在扫的不重插 */
@@ -609,14 +601,8 @@ private:
   std::vector<std::pair<double, double>> reached_garbage_xy_;
   /** 本任务内已发布可视化的堆数 */
   int viz_pile_count_{0};
-  /** footprint 删点位置，任务内累加，新任务清空 */
-  struct FootprintStrippedVizPoint
-  {
-    double x{0.0};
-    double y{0.0};
-    std::string label;
-  };
-  std::vector<FootprintStrippedVizPoint> footprint_stripped_viz_;
+  /** 已画出的 footprint 检查失败框数量 */
+  std::size_t viz_footprint_fail_count_{0};
   /** 本任务内各堆稳定 G 编号，避免删点全显示成 G1 */
   std::vector<std::pair<std::pair<double, double>, int>> g_num_xy_;
   /** E 点坐标 -> 所属 G 编号 */

@@ -111,7 +111,6 @@
       <input_port name="local_costmap_topic" default="local_costmap/costmap">Local costmap OccupancyGrid topic for obstacle-info readability check</input_port>
       <input_port name="enable_visualization" default="true">Publish insert/clip markers to RViz</input_port>
       <input_port name="viz_accepted_garbage" default="true">Show accepted garbage after filtering</input_port>
-      <input_port name="viz_ac_points" default="true">Show A/C points and labels each clip round</input_port>
       <input_port name="visualization_topic" default="insert_garbage_pose/markers">MarkerArray topic for insert visualization</input_port>
       <input_port name="global_frame" default="map">Global frame</input_port>
       <input_port name="robot_base_frame" default="base_link">Robot base frame</input_port>
