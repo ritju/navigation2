@@ -191,7 +191,8 @@ void InsertGarbagePose::garbageDetectCallback(
   getInput("confirm_match_dist_m", confirm_match_dist_m_);
   const double merge_r = std::max(0.0, garbage_merge_radius_m_);
   const double merge_r2 = merge_r * merge_r;
-  const double confirm_r = confirm_match_dist_m_;
+  // 两帧确认：第二帧落在 confirm_match_dist_m 内才收下。
+  const double confirm_r = std::max(0.0, confirm_match_dist_m_);
   const double confirm_r2 = confirm_r * confirm_r;
 
   auto near_xy = [&](double x, double y, double r2) {
@@ -5141,11 +5142,23 @@ BT::NodeStatus InsertGarbagePose::tick()
     const bool near_obstacle =
       min_garbage_obstacle_clearance_m_ > 0.0 &&
       hasObstacleWithinRadius(gx, gy, min_garbage_obstacle_clearance_m_);
-    // 近障已标记待贴边：即使 G footprint 勉强过，也走 D-G-E，避免只插 G、E 全灭
+    // 贴墙或 G 的 footprint 不通：暂不生成 DEG，直接跳过。原贴边插入已注释保留。
     if (footprint_ok && !near_obstacle) {
       has_obstacle_confirm_ = false;
       goals_now = insertGarbageIntoGoals(info);
     } else {
+      // DEG（贴墙 D-G-E）先不测：一旦要走这条且通不过，直接跳过这堆垃圾。
+      // 原贴边插入留在下面，以后再开。
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "InsertGarbagePose: skip garbage (%.2f, %.2f), DEG 不通，不生成 (%s)",
+        gx, gy,
+        footprint_ok ? "near-obstacle" : fp_reason.c_str());
+      has_obstacle_confirm_ = false;
+      addProtectedGarbageXy(gx, gy);
+      garbage_list_.erase(garbage_list_.begin());
+      continue;
+      /*
       if (!confirmWallEdgeObstacle(gx, gy)) {
         break;
       }
@@ -5156,6 +5169,7 @@ BT::NodeStatus InsertGarbagePose::tick()
         gx, gy,
         footprint_ok ? "" : (std::string(": ") + fp_reason).c_str());
       goals_now = insertWallEdgeGarbageIntoGoals(info);
+      */
     }
     const std::size_t pile_deleted = info.goaltotal.size();
     deleted_goals_total += pile_deleted;
