@@ -72,6 +72,7 @@ InsertGarbagePose::InsertGarbagePose(
   getInput("wall_edge_sample_m", wall_edge_sample_m_);
   getInput("wall_edge_normal_offset_m", wall_edge_normal_offset_m_);
   getInput("garbage_merge_radius_m", garbage_merge_radius_m_);
+  getInput("confirm_match_dist_m", confirm_match_dist_m_);
   getInput("work_circle_radius_m", work_circle_radius_m_);
   getInput("global_frame", global_frame_);
   getInput("robot_base_frame", robot_base_frame_);
@@ -187,34 +188,77 @@ void InsertGarbagePose::garbageDetectCallback(
 
   const double gx = item.pose.pose.position.x;
   const double gy = item.pose.pose.position.y;
+  getInput("confirm_match_dist_m", confirm_match_dist_m_);
   const double merge_r = std::max(0.0, garbage_merge_radius_m_);
   const double merge_r2 = merge_r * merge_r;
+  const double confirm_r = confirm_match_dist_m_;
+  const double confirm_r2 = confirm_r * confirm_r;
 
-  auto near_xy = [&](double x, double y) {
-    return squaredDistanceXY(gx, gy, x, y) < merge_r2;
+  auto near_xy = [&](double x, double y, double r2) {
+    return squaredDistanceXY(gx, gy, x, y) < r2;
   };
 
   for (const auto & reached : reached_garbage_xy_) {
-    if (near_xy(reached.first, reached.second)) {
+    if (near_xy(reached.first, reached.second, merge_r2)) {
       return;
     }
   }
   for (const auto & kept : garbage_list_) {
-    if (near_xy(kept.pose.pose.position.x, kept.pose.pose.position.y)) {
+    if (near_xy(kept.pose.pose.position.x, kept.pose.pose.position.y, merge_r2)) {
       return;
     }
   }
 
   std::lock_guard<std::mutex> lock(history_mutex_);
   for (const auto & existing : history_list_) {
-    if (near_xy(existing.pose.pose.position.x, existing.pose.pose.position.y)) {
+    if (near_xy(
+        existing.pose.pose.position.x, existing.pose.pose.position.y, merge_r2))
+    {
       return;
     }
   }
 
+  const rclcpp::Time now = node_->now();
+  for (auto it = confirm_wait_list_.begin(); it != confirm_wait_list_.end(); ) {
+    const auto age = (now - rclcpp::Time(it->pose.header.stamp)).seconds();
+    if (age > kConfirmHoldSec) {
+      it = confirm_wait_list_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  if (confirm_r > 1e-6) {
+    std::size_t match_i = confirm_wait_list_.size();
+    for (std::size_t i = 0; i < confirm_wait_list_.size(); ++i) {
+      if (near_xy(
+          confirm_wait_list_[i].pose.pose.position.x,
+          confirm_wait_list_[i].pose.pose.position.y, confirm_r2))
+      {
+        match_i = i;
+        break;
+      }
+    }
+    if (match_i >= confirm_wait_list_.size()) {
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "InsertGarbagePose: 垃圾待确认 坐标=(%.2f, %.2f)", gx, gy);
+      item.pose.header.stamp = now;
+      confirm_wait_list_.push_back(item);
+      return;
+    }
+    const double px = confirm_wait_list_[match_i].pose.pose.position.x;
+    const double py = confirm_wait_list_[match_i].pose.pose.position.y;
+    item.pose.pose.position.x = 0.5 * (px + gx);
+    item.pose.pose.position.y = 0.5 * (py + gy);
+    confirm_wait_list_.erase(
+      confirm_wait_list_.begin() + static_cast<std::ptrdiff_t>(match_i));
+  }
+
   RCLCPP_INFO(
     node_->get_logger(),
-    "InsertGarbagePose: 新发现一堆垃圾, 坐标=(%.2f, %.2f)", gx, gy);
+    "InsertGarbagePose: 新发现一堆垃圾, 坐标=(%.2f, %.2f)",
+    item.pose.pose.position.x, item.pose.pose.position.y);
 
   history_list_.push_back(std::move(item));
   while (history_list_.size() > kMaxHistorySize) {
@@ -670,6 +714,80 @@ bool InsertGarbagePose::findNearestObstaclePixel(
       return false;
     }
   }
+  return true;
+}
+
+bool InsertGarbagePose::confirmWallEdgeObstacle(double gx, double gy)
+{
+  getInput("confirm_match_dist_m", confirm_match_dist_m_);
+  if (confirm_match_dist_m_ <= 1e-6) {
+    has_obstacle_confirm_ = false;
+    return true;
+  }
+
+  const double match2 = confirm_match_dist_m_ * confirm_match_dist_m_;
+  double px = 0.0;
+  double py = 0.0;
+  const bool have_p = findNearestObstaclePixel(gx, gy, &px, &py);
+  const bool same_pile = has_obstacle_confirm_ &&
+    squaredDistanceXY(gx, gy, obstacle_confirm_gx_, obstacle_confirm_gy_) < match2;
+
+  if (!same_pile) {
+    has_obstacle_confirm_ = true;
+    obstacle_confirm_gx_ = gx;
+    obstacle_confirm_gy_ = gy;
+    obstacle_confirm_fails_ = 1;
+    obstacle_confirm_has_p_ = have_p;
+    obstacle_confirm_px_ = px;
+    obstacle_confirm_py_ = py;
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: 障碍待确认 G=(%.2f, %.2f) P=%s(%.2f, %.2f)",
+      gx, gy, have_p ? "yes" : "no", px, py);
+    return false;
+  }
+
+  obstacle_confirm_fails_ += 1;
+  const bool p_match = have_p && obstacle_confirm_has_p_ &&
+    squaredDistanceXY(px, py, obstacle_confirm_px_, obstacle_confirm_py_) < match2;
+  if (have_p) {
+    obstacle_confirm_px_ = px;
+    obstacle_confirm_py_ = py;
+    obstacle_confirm_has_p_ = true;
+  }
+
+  if (obstacle_confirm_fails_ < 2) {
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: 障碍再确认 G=(%.2f, %.2f) fail=%d P_match=%d",
+      gx, gy, obstacle_confirm_fails_, p_match ? 1 : 0);
+    return false;
+  }
+  if (obstacle_confirm_has_p_ && have_p && !p_match) {
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: 障碍再确认 G=(%.2f, %.2f) fail=%d P_match=0",
+      gx, gy, obstacle_confirm_fails_);
+    return false;
+  }
+
+  {
+    bool already = false;
+    for (auto & xy : viz_obstacle_pixels_) {
+      if (squaredDistanceXY(xy.x, xy.y, px, py) < 0.04) {
+        already = true;
+        break;
+      }
+    }
+    if (!already && have_p) {
+      viz_obstacle_pixels_.push_back(VizObstaclePixel{px, py, 0});
+    }
+  }
+  has_obstacle_confirm_ = false;
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "InsertGarbagePose: 障碍已确认 G=(%.2f, %.2f) P=(%.2f, %.2f)",
+    gx, gy, px, py);
   return true;
 }
 
@@ -1725,6 +1843,9 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
           node_->get_logger(),
           "InsertGarbagePose: 生成工作圈 圆心=(%.2f, %.2f) 半径=%.2f m",
           work_circle_x_, work_circle_y_, work_circle_radius_m_);
+        clearMissionVisualization();
+        viz_pile_count_ = 0;
+        publishFootprintStrippedMarkers();
         publishRangeCircles(robot_x, robot_y);
       }
       if (has_work_circle_) {
@@ -1835,7 +1956,11 @@ void InsertGarbagePose::checkAndResetOnNewMission()
   {
     std::lock_guard<std::mutex> lock(history_mutex_);
     history_list_.clear();
+    confirm_wait_list_.clear();
   }
+  has_obstacle_confirm_ = false;
+  obstacle_confirm_fails_ = 0;
+  obstacle_confirm_has_p_ = false;
   garbage_list_.clear();
   logGarbageListState("new mission clear");
   active_piles_.clear();
@@ -1854,7 +1979,6 @@ void InsertGarbagePose::checkAndResetOnNewMission()
   g_num_xy_.clear();
   e_num_xy_.clear();
   next_g_num_ = 1;
-  has_last_viz_time_ = false;
   has_work_circle_ = false;
   mission_stamp_record_ = current_stamp;
   clearMissionVisualization();
@@ -2785,14 +2909,22 @@ InsertGarbagePose::InsertInfo InsertGarbagePose::gatherInsertInfo(
     info.goalc.pose.position.x, info.goalc.pose.position.y,
     info.goald_x, info.goald_y);
 
-  // 插入朝向 / 默认伸 E：首堆用当前车；其后用上一堆到达点
+  // 插入朝向 / 默认伸 E：车会先到上一离开点，才用它当来向。
+  // 上一堆 E 失败、或那点比这堆更远（车先扫这堆），继续用当前车，避免 E 朝车。
   double from_x = rx;
   double from_y = ry;
   const char * yaw_src = "robot->G";
   if (has_last_sweep_arrive_) {
-    from_x = last_sweep_arrive_xy_.first;
-    from_y = last_sweep_arrive_xy_.second;
-    yaw_src = "arrive->G";
+    const double arrive_d = std::hypot(
+      last_sweep_arrive_xy_.first - rx, last_sweep_arrive_xy_.second - ry);
+    const double g_d = std::hypot(gx - rx, gy - ry);
+    if (arrive_d + 0.3 < g_d) {
+      from_x = last_sweep_arrive_xy_.first;
+      from_y = last_sweep_arrive_xy_.second;
+      yaw_src = "arrive->G";
+    } else {
+      yaw_src = "robot->G, prev not on approach";
+    }
   }
   const double min_from_m = std::max(kMinExtendFromDistM, arrived_radius_);
   const double dx_from = gx - from_x;
@@ -3446,7 +3578,7 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
               break;
             }
           }
-          if (!already) {
+          if (!already && confirm_match_dist_m_ <= 1e-6) {
             viz_obstacle_pixels_.push_back(
               VizObstaclePixel{px, py, pile_num});
           }
@@ -3544,14 +3676,13 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
   if (add_extend) {
     info.extend_x = extend_pose.pose.position.x;
     info.extend_y = extend_pose.pose.position.y;
+    // 只有真正离开的 E 才能当下一堆来向。E 失败时沿用上一个成功点或当前车。
     last_sweep_arrive_xy_ = {info.extend_x, info.extend_y};
+    has_last_sweep_arrive_ = true;
+    last_sweep_path_yaw_ = info.path_yaw;
+    has_last_sweep_path_yaw_ = true;
     addProtectedGarbageXy(info.extend_x, info.extend_y);
-  } else {
-    last_sweep_arrive_xy_ = {gx, gy};
   }
-  has_last_sweep_arrive_ = true;
-  last_sweep_path_yaw_ = info.path_yaw;
-  has_last_sweep_path_yaw_ = true;
 
   Goals suffix;
   suffix.assign(
@@ -4365,9 +4496,7 @@ void InsertGarbagePose::logGarbageListState(const char * reason) const
 void InsertGarbagePose::publishVisualization(
   const InsertInfo & info,
   bool enable,
-  bool viz_accepted_garbage,
-  bool viz_deleted_goals,
-  bool viz_ac_points)
+  bool viz_accepted_garbage)
 {
   if (!marker_pub_) {
     return;
@@ -4420,19 +4549,6 @@ void InsertGarbagePose::publishVisualization(
     p.z = z;
     m.points.push_back(p);
   };
-
-  auto appendRing = [&](
-      visualization_msgs::msg::Marker & m,
-      double cx, double cy, double radius, int n = 36)
-  {
-    for (int i = 0; i <= n; ++i) {
-      const double ang = 2.0 * M_PI * static_cast<double>(i) / static_cast<double>(n);
-      pushPoint(m, cx + radius * std::cos(ang), cy + radius * std::sin(ang));
-    }
-  };
-
-  constexpr int kDeletedIdBase = 6000;
-  constexpr int kDeletedIdSpan = 64;
 
   const double gx = info.garbage.pose.pose.position.x;
   const double gy = info.garbage.pose.pose.position.y;
@@ -4585,128 +4701,6 @@ void InsertGarbagePose::publishVisualization(
         setColor(mid, kBlueR, kBlueG, kBlueB, 1.0f);
         arr.markers.push_back(mid);
       }
-    }
-  }
-
-  if (viz_deleted_goals) {
-    // clip 删点：普通途经点=小空心圆；z=-1 哨兵=黑色箭头
-    constexpr double kDelRingR = 0.08;
-    constexpr double kDelArrowLenM = 0.32;
-    constexpr double kDelArrowWidthM = 0.055;
-    int di = 0;
-    for (const auto & g : info.goaltotal) {
-      if (di >= kDeletedIdSpan) {
-        break;
-      }
-      const double x = g.pose.position.x;
-      const double y = g.pose.position.y;
-      if (isUnindexedSentinelPoseZ(g)) {
-        auto arrow = makeBase(
-          "deleted_sentinel", kDeletedIdBase + pile_idx * kDeletedIdSpan + di,
-          visualization_msgs::msg::Marker::ARROW);
-        arrow.pose.position.x = x;
-        arrow.pose.position.y = y;
-        arrow.pose.position.z = 0.08;
-        double yaw = tf2::getYaw(g.pose.orientation);
-        if (!std::isfinite(yaw)) {
-          yaw = info.path_yaw;
-        }
-        arrow.pose.orientation =
-          nav2_util::geometry_utils::orientationAroundZAxis(yaw);
-        arrow.scale.x = kDelArrowLenM;
-        arrow.scale.y = kDelArrowWidthM;
-        arrow.scale.z = kDelArrowWidthM;
-        setColor(arrow, 0.02f, 0.02f, 0.02f, 1.0f);
-        arr.markers.push_back(arrow);
-      } else {
-        auto m = makeBase(
-          "deleted_waypoint", kDeletedIdBase + pile_idx * kDeletedIdSpan + di,
-          visualization_msgs::msg::Marker::LINE_STRIP);
-        m.scale.x = 0.018;
-        setColor(m, 0.05f, 0.05f, 0.05f, 0.90f);
-        appendRing(m, x, y, kDelRingR);
-        arr.markers.push_back(m);
-      }
-      ++di;
-    }
-  }
-
-  constexpr int kAcPointsIdBase = 1000;
-  constexpr int kRoundsPerPile = 8;
-  constexpr int kIdsPerAcRound = 4;
-
-  for (const auto & rnd : info.clip_rounds) {
-    const bool first = (rnd.round_i == 1);
-    const float lr = first ? 0.90f : 0.00f;
-    const float lg = first ? 0.15f : 0.75f;
-    const float lb = first ? 0.10f : 0.80f;
-
-    const double vx = rnd.cx - rnd.ax;
-    const double vy = rnd.cy - rnd.ay;
-    const double L = std::sqrt(vx * vx + vy * vy) + 1e-9;
-    const double ux = vx / L;
-    const double uy = vy / L;
-    constexpr double kLabelOff = 0.50;
-
-    const int round_i0 = std::max(0, rnd.round_i - 1);
-
-    if (viz_ac_points && round_i0 < kRoundsPerPile) {
-      const int pbase =
-        kAcPointsIdBase +
-        pile_idx * (kRoundsPerPile * kIdsPerAcRound) +
-        round_i0 * kIdsPerAcRound;
-
-      auto ma = makeBase("ac_points", pbase, visualization_msgs::msg::Marker::CUBE);
-      ma.pose.position.x = rnd.ax;
-      ma.pose.position.y = rnd.ay;
-      ma.pose.position.z = 0.08;
-      ma.scale.x = 0.18;
-      ma.scale.y = 0.18;
-      ma.scale.z = 0.08;
-      setColor(ma, lr, lg, lb, 0.95f);
-      arr.markers.push_back(ma);
-
-      auto ta = makeBase("ac_points", pbase + 1, visualization_msgs::msg::Marker::TEXT_VIEW_FACING);
-      ta.pose.position.x = rnd.ax - uy * kLabelOff;
-      ta.pose.position.y = rnd.ay + ux * kLabelOff;
-      ta.pose.position.z = 0.45;
-      ta.scale.z = 0.28;
-      {
-        std::ostringstream oss;
-        oss << "A" << pile_num;
-        if (info.clip_rounds.size() > 1) {
-          oss << "." << rnd.round_i;
-        }
-        ta.text = oss.str();
-      }
-      setColor(ta, lr, lg, lb);
-      arr.markers.push_back(ta);
-
-      auto mc = makeBase("ac_points", pbase + 2, visualization_msgs::msg::Marker::SPHERE);
-      mc.pose.position.x = rnd.cx;
-      mc.pose.position.y = rnd.cy;
-      mc.pose.position.z = 0.10;
-      mc.scale.x = 0.22;
-      mc.scale.y = 0.22;
-      mc.scale.z = 0.22;
-      setColor(mc, lr, lg, lb, 0.95f);
-      arr.markers.push_back(mc);
-
-      auto tc = makeBase("ac_points", pbase + 3, visualization_msgs::msg::Marker::TEXT_VIEW_FACING);
-      tc.pose.position.x = rnd.cx + uy * kLabelOff;
-      tc.pose.position.y = rnd.cy - ux * kLabelOff;
-      tc.pose.position.z = 0.45;
-      tc.scale.z = 0.28;
-      {
-        std::ostringstream oss;
-        oss << "C" << pile_num;
-        if (info.clip_rounds.size() > 1) {
-          oss << "." << rnd.round_i;
-        }
-        tc.text = oss.str();
-      }
-      setColor(tc, lr, lg, lb);
-      arr.markers.push_back(tc);
     }
   }
 
@@ -5109,12 +5103,9 @@ BT::NodeStatus InsertGarbagePose::tick()
 
   bool enable_viz = true;
   bool viz_garbage = true;
-  bool viz_deleted = true;
-  bool viz_ac_pts = true;
   getInput("enable_visualization", enable_viz);
   getInput("viz_accepted_garbage", viz_garbage);
-  getInput("viz_deleted_goals", viz_deleted);
-  getInput("viz_ac_points", viz_ac_pts);
+  getInput("confirm_match_dist_m", confirm_match_dist_m_);
 
   // 按当前顺序一次插入全部待插堆
   const std::size_t goals_before_batch = goals_now.size();
@@ -5152,8 +5143,12 @@ BT::NodeStatus InsertGarbagePose::tick()
       hasObstacleWithinRadius(gx, gy, min_garbage_obstacle_clearance_m_);
     // 近障已标记待贴边：即使 G footprint 勉强过，也走 D-G-E，避免只插 G、E 全灭
     if (footprint_ok && !near_obstacle) {
+      has_obstacle_confirm_ = false;
       goals_now = insertGarbageIntoGoals(info);
     } else {
+      if (!confirmWallEdgeObstacle(gx, gy)) {
+        break;
+      }
       RCLCPP_INFO(
         node_->get_logger(),
         "InsertGarbagePose: %s at G (%.2f, %.2f)%s, wall-edge insert",
@@ -5176,18 +5171,8 @@ BT::NodeStatus InsertGarbagePose::tick()
       node_->get_logger(),
       "InsertGarbagePose: goals list (%zu): %s",
       goals_now.size(), formatGoalsListCompact(goals_now).c_str());
-    const rclcpp::Time viz_now = node_->now();
-    if (has_last_viz_time_ &&
-      (viz_now - last_viz_time_).seconds() > kVizTaskWindowSec)
-    {
-      clearMissionVisualization();
-      viz_pile_count_ = 0;
-      publishFootprintStrippedMarkers();
-    }
-    publishVisualization(info, enable_viz, viz_garbage, viz_deleted, viz_ac_pts);
+    publishVisualization(info, enable_viz, viz_garbage);
     publishRangeCircles(rx, ry);
-    last_viz_time_ = viz_now;
-    has_last_viz_time_ = true;
     addProtectedGarbageXy(gx, gy);
     addProtectedGarbageXy(
       info.garbage.pose.pose.position.x, info.garbage.pose.pose.position.y);

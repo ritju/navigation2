@@ -61,8 +61,8 @@ public:
   static constexpr double kSentinelIdentityMatchM = 0.05;
   /** 本节点约定：插入的 G/E 点 pose.position.z 固定写此值，表示无任务序号的哨兵点 */
   static constexpr double kGarbageSentinelPoseZ = -1.0;
-  /** 连续可视化归入同一任务的间隔阈值秒 */
-  static constexpr double kVizTaskWindowSec = 2.0;
+  /** 未再次匹配的待确认垃圾最长保留秒数 */
+  static constexpr double kConfirmHoldSec = 1.0;
   /** base_link 下距原点小于此值的检测视为无效 */
   static constexpr double kInvalidGarbageOriginRadiusM = 0.3;
   /** from 离 G 近于此则视为已到达：不用欧氏远近选侧，沿车头在 G 后方虚设来向 */
@@ -202,10 +202,9 @@ public:
         "enable_visualization", true, "Publish insert/clip markers to RViz"),   //总开关
       BT::InputPort<bool>(
         "viz_accepted_garbage", true, "Show accepted garbage after filtering"),
-      BT::InputPort<bool>(
-        "viz_deleted_goals", true, "Show deleted goals as hollow black rings"),
-      BT::InputPort<bool>(
-        "viz_ac_points", true, "Show A/C points and labels each clip round"),
+      BT::InputPort<double>(
+        "confirm_match_dist_m", 0.20,
+        "Garbage and nearest-obstacle must match again within this distance (m); <=0 disables"),
       BT::InputPort<std::string>(
         "visualization_topic", std::string("insert_garbage_pose/markers"),
         "MarkerArray topic for insert visualization"),
@@ -504,9 +503,10 @@ private:
   void publishVisualization(
     const InsertInfo & info,
     bool enable = true,
-    bool viz_accepted_garbage = true,
-    bool viz_deleted_goals = true,
-    bool viz_ac_points = true);
+    bool viz_accepted_garbage = true);
+
+  /** footprint/近障连续两次且最近障碍 P 也重合，才允许贴边并信这个 P */
+  bool confirmWallEdgeObstacle(double gx, double gy);
 
   /** 新导航任务时清空本话题上全部 Marker */
   void clearMissionVisualization();
@@ -557,6 +557,8 @@ private:
   double wall_edge_normal_offset_m_{0.0};
   /** 合堆半径：到种子小于该值并为一堆，默认 1.0m */
   double garbage_merge_radius_m_{1.0};
+  /** 垃圾/最近障碍二次确认距离，默认 0.20m；<=0 关闭确认 */
+  double confirm_match_dist_m_{0.20};
   /**
    * 沿 path_yaw 相对垃圾再插一点的距离，环境变量 GARBAGE_EXTEND_M。
    * 默认 2.0；
@@ -582,6 +584,15 @@ private:
   std::mutex history_mutex_;
   /** 原始接收缓存 */
   std::deque<capella_ros_msg::msg::GarbageDetect> history_list_;
+  /** 只出现过一帧、尚未确认的垃圾 */
+  std::deque<capella_ros_msg::msg::GarbageDetect> confirm_wait_list_;
+  bool has_obstacle_confirm_{false};
+  double obstacle_confirm_gx_{0.0};
+  double obstacle_confirm_gy_{0.0};
+  int obstacle_confirm_fails_{0};
+  bool obstacle_confirm_has_p_{false};
+  double obstacle_confirm_px_{0.0};
+  double obstacle_confirm_py_{0.0};
   /** 后处理结果列表 */
   GarbageList garbage_list_;
   /** 已插入且 goals 里尚未扫过的堆；中途新堆只重排其中尚未开始的，正在扫的不重插 */
@@ -606,10 +617,6 @@ private:
   /** E 点坐标 -> 所属 G 编号 */
   std::vector<std::pair<std::pair<double, double>, int>> e_num_xy_;
   int next_g_num_{1};
-  /** 上一次发布可视化的时刻 */
-  rclcpp::Time last_viz_time_{0, 0, RCL_ROS_TIME};
-  /** 是否已发布过可视化 */
-  bool has_last_viz_time_{false};
   /** 已插入且 goals 里尚未去掉的当前堆 */
   bool has_pending_garbage_{false};
   std::pair<double, double> pending_garbage_xy_{0.0, 0.0};
