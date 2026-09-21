@@ -97,6 +97,7 @@ public:
     double wall_edge_d_x{0.0};                            // 贴边 D 点
     double wall_edge_d_y{0.0};
     std::vector<std::pair<double, double>> wall_edge_chain_xy;  // D…G…E 采样点（可视化）
+    bool ac_fallback{false};                              // 原路径不够成 A-C，改用已有 G-E 或车→G
     bool hit_mid_case{false};                             // 垂足落在段中
     bool hit_forward_case{false};                         // 前方延长线
     std::vector<std::pair<double, double>> corners_kept_xy;  // 前方延长线保留角点
@@ -157,7 +158,7 @@ public:
       BT::InputPort<double>(
         "arrived_radius", 0.5, "Stop inserting when footprint enters this radius around garbage"),
       BT::InputPort<double>(
-        "clip_extend_m", 1.0, "After garbage foot on path, delete goals for this distance (m)"),
+        "clip_extend_m", 2.5, "After garbage foot on path, delete goals for this distance (m)"),
       BT::InputPort<double>(
         "corner_angle_deg", 30.0, "Goals with turn angle above this are corners (deg)"),
       BT::InputPort<double>(
@@ -172,6 +173,9 @@ public:
       BT::InputPort<double>(
         "garbage_merge_radius_m", 1.0,
         "Merge detections within this radius (m) of the nearest seed into one pile"),
+      BT::InputPort<double>(
+        "garbage_extend_m", 2.0,
+        "Along path_yaw, insert E this far past garbage (m); env GARBAGE_EXTEND_M overrides"),
       BT::InputPort<double>(
         "work_circle_radius_m", 10.0,
         "Accept new garbage only inside this radius around the robot pose when the first pile of a batch is accepted"),
@@ -196,6 +200,9 @@ public:
       BT::InputPort<std::string>(
         "local_costmap_topic", std::string("local_costmap/costmap"),
         "Local costmap OccupancyGrid topic for obstacle-info readability check"),
+      BT::InputPort<std::string>(
+        "global_costmap_topic", std::string("global_costmap/costmap"),
+        "Global costmap OccupancyGrid topic for robot-G and G-E line checks"),
       BT::InputPort<bool>(
         "enable_visualization", true, "Publish insert/clip markers to RViz"),   //总开关
       BT::InputPort<bool>(
@@ -234,6 +241,39 @@ private:
 
   /** 加锁取最新局部代价图*/
   nav_msgs::msg::OccupancyGrid::SharedPtr getLocalCostmapSnapshot() const;
+
+  /** 全局代价图话题回调 */
+  void globalCostmapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
+
+  /** 加锁取最新全局代价图 */
+  nav_msgs::msg::OccupancyGrid::SharedPtr getGlobalCostmapSnapshot() const;
+
+  /**
+   * 地图点转到 OccupancyGrid 栅格下标。
+   * 没图 / tf 失败 / 窗外返回 false。
+   */
+  bool costmapWorldToIndex(
+    const nav_msgs::msg::OccupancyGrid::SharedPtr & costmap,
+    double x, double y,
+    int * mx, int * my, std::size_t * idx,
+    std::string * reason) const;
+
+  /** 全局代价图该点可通行：窗外、unknown、致命格都不可过 */
+  bool isMapPointPassableOnGlobalCostmap(
+    double x, double y, std::string * reason = nullptr) const;
+
+  /** 全局代价图上两点细线无障碍（窗外 / unknown / 致命格都算不通） */
+  bool isStraightLineClearOnGlobalCostmap(
+    double x0, double y0, double x1, double y1,
+    double sample_m = 0.1) const;
+
+  /**
+   * E 候选：局部窗内用 footprint；窗外问全局。
+   * 再查 G→E 全局细线。
+   */
+  bool isExtendCandidateClear(
+    double gx, double gy, double ex, double ey, double yaw,
+    std::string * reason) const;
 
   /**
    * 障碍物情况可读：点落在局部代价图内*/
@@ -363,6 +403,12 @@ private:
     double garbage_x, double garbage_y);
 
   /**
+   * 原路径已被删光、A-C 撞点时：优先用已插入的 G-E 当投影线，否则车→剩余原路径 / 车→G。
+   * 只补几何线，不否决插入。
+   */
+  bool fillAcWhenOriginalPathGone(InsertInfo * info, double gx, double gy) const;
+
+  /**
    * 若 G→yaw 与 G→机器人同侧（点积>0），翻转 yaw，避免 E 落在车同侧。
    * 车贴 G 时不改。
    */
@@ -370,10 +416,15 @@ private:
     double gx, double gy, double yaw,
     double robot_x, double robot_y);
 
-  /** 按 goala/goalc/goald 收集待删点到 goaltotal，再一块删除 */
-  Goals clipGoalsNearGarbage(InsertInfo & info);
+  /**
+   * 按当前长边 [H, C) 收集待删点到 goaltotal，再一块删除。
+   * 只删途经点，z=-1 的 G/E 哨兵、角点 C、对边 [C, N) 不删。
+   * skip_reverse：E 接回时不把 t<0 当反向跳过。
+   * 段中删点：仅在当前长边上，从车上弧长删到垂足+clip_extend_m。
+   */
+  Goals clipGoalsNearGarbage(InsertInfo & info, bool skip_reverse = false);
 
-  /** 插入真实垃圾、统一时间戳；接回点前残留丢掉，避免扫完折返 */
+  /** 插入真实垃圾、统一时间戳；G-E 接到剩余路径队首，角点和对边留下 */
   Goals insertGarbageIntoGoals(InsertInfo & info);
 
   /** footprint 能否落在垃圾点 */
@@ -412,11 +463,21 @@ private:
   bool isProtectedGarbageXy(double x, double y) const;
   void addProtectedGarbageXy(double x, double y);
   void eraseProtectedGarbageXy(double x, double y);
-  /** 正在清扫的堆：active 里仍占着 z=-1 槽的那一堆；中途新堆时这些点不剥、不重插 */
+  /**
+   * 正在清扫的堆：footprint 已到 G，或已过 G 正在去 E。
+   * 还没到的 G/E 不算，中途新堆时可以剥掉重排。
+   */
   bool collectInProgressKeepXy(
     const Goals & goals,
     std::vector<std::pair<double, double>> * keep_xy,
     int * keep_g_num) const;
+
+  /** footprint 已到 G，或沿 G→E 已过 G */
+  bool isPileSweepInProgress(
+    double gx, double gy,
+    const Goals & goals,
+    const std::vector<geometry_msgs::msg::Point> & footprint_map,
+    double robot_x, double robot_y, double robot_yaw) const;
 
   /** 上一堆插入点是否仍在 goals 中 */
   bool isPendingGarbageInGoals(const Goals & goals) const;
@@ -480,12 +541,14 @@ private:
     double px, double py,
     double ax, double ay,
     double bx, double by);
-  /** true=非角点，false=角点；前驱用上一 goal，队首用机器人 */
+  /** true=非角点，false=角点：当前点→前一点 与 当前点→后一点 的夹角偏离直线超过阈值 */
   bool isGoalNotCorner(
     const Goals & goals,
     std::size_t idx,
     double robot_x, double robot_y) const;
-  /** 从机器人沿路径找第一个角点下标；找不到返回 false */
+  /** 剩余队列第一个非 z=-1 点，工字当前长边队首 */
+  std::size_t ordinaryQueueHead(const Goals & goals) const;
+  /** 从当前长边队首往后找第一个角点；找不到返回 false */
   bool findFirstCornerFromRobot(
     const Goals & goals,
     double robot_x, double robot_y,
@@ -528,6 +591,7 @@ private:
   rclcpp::Subscription<garage_utils_msgs::msg::Polygons>::SharedPtr special_terrain_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PolygonStamped>::SharedPtr footprint_sub_;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr local_costmap_sub_;
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr global_costmap_sub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
 
@@ -535,12 +599,13 @@ private:
   std::string special_terrain_topic_;
   std::string footprint_topic_;
   std::string local_costmap_topic_;
+  std::string global_costmap_topic_;
   std::string visualization_topic_;
   std::string global_frame_;
   std::string robot_base_frame_;
   double transform_tolerance_{0.1};
   double arrived_radius_{0.5};
-  double clip_extend_m_{1.0};
+  double clip_extend_m_{2.5};
   double corner_angle_deg_{30.0};
   double goaltotal_range_m_{10.0};
   /** 离队头超过该距离就不删点，默认 4m */
@@ -564,7 +629,7 @@ private:
   /** 二次确认距离：第二帧落在此距离内才算确认，默认 1.0m；<=0 关闭 */
   double confirm_match_dist_m_{1.0};
   /**
-   * 沿 path_yaw 相对垃圾再插一点的距离，环境变量 GARBAGE_EXTEND_M。
+   * 沿 path_yaw 相对垃圾再插一点的距离；BT 口 garbage_extend_m，环境变量 GARBAGE_EXTEND_M 可覆盖。
    * 默认 2.0；
    */
   double garbage_extend_m_{2.0};
@@ -631,6 +696,9 @@ private:
 
   mutable std::mutex local_costmap_mutex_;
   nav_msgs::msg::OccupancyGrid::SharedPtr latest_local_costmap_;
+
+  mutable std::mutex global_costmap_mutex_;
+  nav_msgs::msg::OccupancyGrid::SharedPtr latest_global_costmap_;
 };
 
 }  // namespace nav2_behavior_tree
