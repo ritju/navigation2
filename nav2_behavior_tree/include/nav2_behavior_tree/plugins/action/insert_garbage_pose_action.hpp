@@ -16,7 +16,6 @@
 #define NAV2_BEHAVIOR_TREE__PLUGINS__ACTION__INSERT_GARBAGE_POSE_ACTION_HPP_
 
 #include <deque>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -27,8 +26,6 @@
 #include "behaviortree_cpp_v3/action_node.h"
 #include "capella_ros_msg/msg/garbage_detect.hpp"
 #include "garage_utils_msgs/msg/polygons.hpp"
-#include "geometry_msgs/msg/point.hpp"
-#include "geometry_msgs/msg/point32.hpp"
 #include "geometry_msgs/msg/polygon.hpp"
 #include "geometry_msgs/msg/polygon_stamped.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
@@ -62,7 +59,7 @@ public:
   /** 本节点约定：插入的 G/E 点 pose.position.z 固定写此值，表示无任务序号的哨兵点 */
   static constexpr double kGarbageSentinelPoseZ = -1.0;
   /** 未再次匹配的待确认垃圾最长保留秒数 */
-  static constexpr double kConfirmHoldSec = 1.0;
+  static constexpr double TmpSecGarbageTime = 1.0;
   /** from 离 G 近于此则视为已到达：不用欧氏远近选侧，沿车头在 G 后方虚设来向 */
   static constexpr double kMinExtendFromDistM = 0.5;
   /** 墙切向走廊失败后，绕该切向左右各扫到此角度 */
@@ -158,8 +155,6 @@ public:
         "footprint_topic", std::string("local_costmap/published_footprint"),
         "Robot footprint topic"),
       BT::InputPort<double>(
-        "arrived_radius", 0.5, "Stop inserting when footprint enters this radius around garbage"),
-      BT::InputPort<double>(
         "clip_extend_m", 2.5, "After garbage foot on path, delete goals for this distance (m)"),
       BT::InputPort<double>(
         "corner_angle_deg", 30.0, "Goals with turn angle above this are corners (deg)"),
@@ -177,7 +172,7 @@ public:
         "Merge detections within this radius (m) of the nearest seed into one pile"),
       BT::InputPort<double>(
         "garbage_extend_m", 2.0,
-        "Along path_yaw, insert E this far past garbage (m); env GARBAGE_EXTEND_M overrides"),
+        "Along path_yaw, insert E this far past garbage (m)"),
       BT::InputPort<double>(
         "work_circle_radius_m", 10.0,
         "Accept new garbage only inside this radius around the robot pose when the first pile of a batch is accepted"),
@@ -231,7 +226,7 @@ private:
   /** 垃圾检测话题回调：转到 map；合堆半径内已见过则不进 history */
   void garbageDetectCallback(const capella_ros_msg::msg::GarbageDetect::SharedPtr msg);
   /** 单堆占用中：丢掉尚未插入的检测，并让回调直接丢弃新消息 */
-  void blockSinglePileIntake();
+  void logblockSinglePileIntake();
   /** 当前 G/E 已离开队列，允许再收下一堆 */
   void releaseSinglePileIntake();
 
@@ -334,20 +329,9 @@ private:
   /** 取机器人当前位姿的 xy*/
   bool getRobotPoseXY(double & x, double & y, double * yaw = nullptr) const;
 
-  /** 获取机器人当前 footprint，并转到 map */
-  bool getRobotFootprintInMap(
-    std::vector<geometry_msgs::msg::Point> & footprint_map) const;
-
   /** 获取 footprint 在 base_link 下的顶点，供走廊按行驶朝向旋转 */
   bool getRobotFootprintInBase(
     std::vector<std::pair<double, double>> & local_xy) const;
-
-  /** 判断 footprint 是否已进入垃圾附近 */
-  bool shouldStopInsertingGarbage(
-    const capella_ros_msg::msg::GarbageDetect & garbage,
-    const std::vector<geometry_msgs::msg::Point> & footprint_map,
-    double arrived_radius,
-    double robot_x, double robot_y, double robot_yaw) const;
 
   /**
    * 判断该 goal 是否为本节点插入的 G/E 哨兵点，而不是带序号的普通途经点。
@@ -355,36 +339,10 @@ private:
   static bool isUnindexedSentinelPoseZ(
     const geometry_msgs::msg::PoseStamped & pose_stamped_goal);
 
-  /** footprint 是否已到达该 xy，并返回触发原因与距离 */
-  struct SentinelArrivalDetail
-  {
-    bool arrived{false};
-    bool by_vertex_radius{false};
-    bool by_inside_polygon{false};
-    double min_vertex_dist_m{std::numeric_limits<double>::infinity()};
-  };
-
-  SentinelArrivalDetail probeSentinelArrival(
-    double gx, double gy,
-    const std::vector<geometry_msgs::msg::Point> & footprint_map,
-    double arrived_radius) const;
-
-  /**
-   * 扫到判定：垃圾在 footprint 内，且距 base_link 不超过 arrived_radius。
-   * 避免只被 1m 多长的车头擦到就删。
-   */
-  bool isGarbageCoveredByFootprint(
-    double gx, double gy,
-    const std::vector<geometry_msgs::msg::Point> & footprint_map,
-    double robot_x, double robot_y, double robot_yaw,
-    double * dist_robot_m = nullptr,
-    double * base_x = nullptr,
-    double * base_y = nullptr) const;
-
   /** 本任务内按 xy 分配稳定 G 编号，重插同一堆不改号 */
   int assignStableGNum(double x, double y);
   int lookupStableGNum(double x, double y) const;
-  /** E 点坐标登记所属 G 编号，footprint 删 E 时显示 E1/E2… */
+  /** E 点坐标登记所属 G 编号 */
   void registerStableENum(double x, double y, int g_num);
   int lookupStableENum(double x, double y) const;
 
@@ -489,13 +447,6 @@ private:
     const Goals & goals,
     std::vector<std::pair<double, double>> * keep_xy,
     int * keep_g_num) const;
-
-  /** footprint 已到 G，或沿 G→E 已过 G */
-  bool isPileSweepInProgress(
-    double gx, double gy,
-    const Goals & goals,
-    const std::vector<geometry_msgs::msg::Point> & footprint_map,
-    double robot_x, double robot_y, double robot_yaw) const;
 
   /** 上一堆插入点是否仍在 goals 中 */
   bool isPendingGarbageInGoals(const Goals & goals) const;
@@ -622,7 +573,6 @@ private:
   std::string global_frame_;
   std::string robot_base_frame_;
   double transform_tolerance_{0.1};
-  double arrived_radius_{0.5};
   double clip_extend_m_{2.5};
   double corner_angle_deg_{30.0};
   double goaltotal_range_m_{10.0};
@@ -646,10 +596,7 @@ private:
   double garbage_merge_radius_m_{1.0};
   /** 二次确认距离：第二帧落在此距离内才算确认，默认 1.0m；<=0 关闭 */
   double confirm_match_dist_m_{1.0};
-  /**
-   * 沿 path_yaw 相对垃圾再插一点的距离；BT 口 garbage_extend_m，环境变量 GARBAGE_EXTEND_M 可覆盖。
-   * 默认 2.0；
-   */
+  /** 沿 path_yaw 相对垃圾再插一点的距离，默认 2.0m */
   double garbage_extend_m_{2.0};
   double sweep_turn_weight_{0.5};
   double sweep_dist_weight_{0.5};
@@ -673,8 +620,8 @@ private:
   bool single_pile_block_intake_{false};
   /** 原始接收缓存 */
   std::deque<capella_ros_msg::msg::GarbageDetect> history_list_;
-  /** 只出现过一帧、尚未确认的垃圾 */
-  std::deque<capella_ros_msg::msg::GarbageDetect> confirm_wait_list_;
+  /** 1 秒内还没被第二帧对上的垃圾，满 kMaxHistorySize 丢最旧 */
+  std::deque<capella_ros_msg::msg::GarbageDetect> tmp_list_;
   /** 后处理结果列表 */
   GarbageList garbage_list_;
   /** 已插入且 goals 里尚未扫过的堆；中途新堆只重排其中尚未开始的，正在扫的不重插 */
