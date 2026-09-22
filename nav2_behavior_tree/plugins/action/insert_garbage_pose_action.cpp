@@ -159,6 +159,15 @@ void InsertGarbagePose::garbageDetectCallback(
   if (!msg) {
     return;
   }
+  {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    if (single_pile_block_intake_) {
+      RCLCPP_INFO_THROTTLE(
+        node_->get_logger(), *(node_->get_clock()), 2000,
+        "InsertGarbagePose: single-pile busy, drop topic garbage");
+      return;
+    }
+  }
   capella_ros_msg::msg::GarbageDetect item = *msg;
   if (!transformGarbageToMap(item)) {
     RCLCPP_WARN(
@@ -198,6 +207,9 @@ void InsertGarbagePose::garbageDetectCallback(
   }
 
   std::lock_guard<std::mutex> lock(history_mutex_);
+  if (single_pile_block_intake_) {
+    return;
+  }
   for (const auto & existing : history_list_) {
     if (near_xy(
         existing.pose.pose.position.x, existing.pose.pose.position.y, merge_r2))
@@ -258,6 +270,39 @@ void InsertGarbagePose::garbageDetectCallback(
     }
     history_list_.erase(farthest_it);
   }
+}
+
+void InsertGarbagePose::blockSinglePileIntake()
+{
+  std::size_t dropped = 0;
+  {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    single_pile_block_intake_ = true;
+    dropped += history_list_.size();
+    dropped += confirm_wait_list_.size();
+    history_list_.clear();
+    confirm_wait_list_.clear();
+  }
+  dropped += garbage_list_.size();
+  garbage_list_.clear();
+  if (dropped > 0) {
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: single-pile drop %zu pending detection(s), topic closed",
+      dropped);
+  }
+}
+
+void InsertGarbagePose::releaseSinglePileIntake()
+{
+  std::lock_guard<std::mutex> lock(history_mutex_);
+  if (!single_pile_block_intake_) {
+    return;
+  }
+  single_pile_block_intake_ = false;
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "InsertGarbagePose: single-pile G/E gone, topic open");
 }
 
 // 特殊清扫/禁扫区域话题回调
@@ -482,6 +527,65 @@ bool InsertGarbagePose::isStraightLineClearOnGlobalCostmap(
   return true;
 }
 
+bool InsertGarbagePose::isFootprintClearOnGlobalCostmap(
+  double x, double y, double yaw, std::string * reason) const
+{
+  std::vector<std::pair<double, double>> local_xy;
+  if (!getRobotFootprintInBase(local_xy) || local_xy.size() < 3) {
+    if (reason) {
+      *reason = "no footprint";
+    }
+    return false;
+  }
+
+  const double c = std::cos(yaw);
+  const double s = std::sin(yaw);
+  std::vector<std::pair<double, double>> corners;
+  corners.reserve(local_xy.size());
+  for (const auto & off : local_xy) {
+    corners.emplace_back(
+      x + off.first * c - off.second * s,
+      y + off.first * s + off.second * c);
+  }
+
+  auto blocked = [&](double px, double py) {
+    std::string cell_reason;
+    if (isMapPointPassableOnGlobalCostmap(px, py, &cell_reason)) {
+      return false;
+    }
+    if (reason) {
+      *reason = "E footprint " + cell_reason;
+    }
+    return true;
+  };
+
+  if (blocked(x, y)) {
+    return false;
+  }
+  for (const auto & q : corners) {
+    if (blocked(q.first, q.second)) {
+      return false;
+    }
+  }
+  constexpr double kStep = 0.1;
+  for (std::size_t i = 0; i < corners.size(); ++i) {
+    const auto & a = corners[i];
+    const auto & b = corners[(i + 1) % corners.size()];
+    const double len = std::hypot(b.first - a.first, b.second - a.second);
+    if (len < 1e-6) {
+      continue;
+    }
+    const double ux = (b.first - a.first) / len;
+    const double uy = (b.second - a.second) / len;
+    for (double t = kStep; t < len - 1e-9; t += kStep) {
+      if (blocked(a.first + ux * t, a.second + uy * t)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 bool InsertGarbagePose::isExtendCandidateClear(
   double gx, double gy, double ex, double ey, double yaw,
   std::string * reason) const
@@ -491,14 +595,9 @@ bool InsertGarbagePose::isExtendCandidateClear(
     if (!isFootprintClearAtPose(ex, ey, yaw, reason)) {
       return false;
     }
-  } else {
-    std::string global_reason;
-    if (!isMapPointPassableOnGlobalCostmap(ex, ey, &global_reason)) {
-      if (reason) {
-        *reason = "E outside local (" + local_reason + "), global: " + global_reason;
-      }
-      return false;
-    }
+  }
+  if (!isFootprintClearOnGlobalCostmap(ex, ey, yaw, reason)) {
+    return false;
   }
   if (!isStraightLineClearOnGlobalCostmap(gx, gy, ex, ey)) {
     if (reason) {
@@ -2100,6 +2199,11 @@ void InsertGarbagePose::checkAndResetOnNewMission()
   g_num_xy_.clear();
   e_num_xy_.clear();
   next_g_num_ = 1;
+  remembered_corner_xy_.clear();
+  {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    single_pile_block_intake_ = false;
+  }
   has_work_circle_ = false;
   mission_stamp_record_ = current_stamp;
 
@@ -2585,68 +2689,51 @@ bool InsertGarbagePose::collectInProgressKeepXy(
     }
   };
 
+  // 队首第一颗 z=-1 就是当前堆，不论车还在去 G 的路上，还是 G 已出队只剩 E。
+  // 不再用「footprint 到了 / 车在 G 的 E 一侧」来判断，否则这两种都会被当成没开始扫。
   int g_num = 0;
-  for (const auto & pile : active_piles_) {
-    const double ax = pile.pose.pose.position.x;
-    const double ay = pile.pose.pose.position.y;
-    if (!findUnindexedSentinelIndex(goals, ax, ay, nullptr)) {
+  bool found_lead = false;
+  for (std::size_t i = 0; i < goals.size(); ++i) {
+    if (!isUnindexedSentinelPoseZ(goals[i])) {
       continue;
     }
-    g_num = lookupStableGNum(ax, ay);
-    add(ax, ay);
+    const double x = goals[i].pose.position.x;
+    const double y = goals[i].pose.position.y;
+    g_num = lookupStableGNum(x, y);
+    if (g_num <= 0) {
+      g_num = lookupStableENum(x, y);
+    }
+    add(x, y);
+    found_lead = true;
     break;
   }
-  if (keep_xy->empty()) {
-    for (std::size_t i = 0; i < goals.size(); ++i) {
-      if (!isUnindexedSentinelPoseZ(goals[i])) {
-        continue;
-      }
-      const double x = goals[i].pose.position.x;
-      const double y = goals[i].pose.position.y;
-      g_num = lookupStableGNum(x, y);
-      if (g_num <= 0) {
-        g_num = lookupStableENum(x, y);
-      }
-      add(x, y);
-      break;
-    }
+  if (!found_lead) {
+    return false;
   }
   if (g_num > 0) {
     for (const auto & item : g_num_xy_) {
-      if (item.second == g_num) {
+      if (item.second != g_num) {
+        continue;
+      }
+      if (findUnindexedSentinelIndex(
+          goals, item.first.first, item.first.second, nullptr))
+      {
         add(item.first.first, item.first.second);
       }
     }
     for (const auto & item : e_num_xy_) {
-      if (item.second == g_num) {
+      if (item.second != g_num) {
+        continue;
+      }
+      if (findUnindexedSentinelIndex(
+          goals, item.first.first, item.first.second, nullptr))
+      {
         add(item.first.first, item.first.second);
       }
     }
   }
   *keep_g_num = g_num;
-  if (keep_xy->empty()) {
-    return false;
-  }
-
-  double rx = 0.0;
-  double ry = 0.0;
-  double robot_yaw = 0.0;
-  if (!getRobotPoseXY(rx, ry, &robot_yaw)) {
-    keep_xy->clear();
-    *keep_g_num = 0;
-    return false;
-  }
-  std::vector<geometry_msgs::msg::Point> footprint_map;
-  const bool have_fp = getRobotFootprintInMap(footprint_map);
-  (void)have_fp;
-  const double gx = keep_xy->front().first;
-  const double gy = keep_xy->front().second;
-  if (!isPileSweepInProgress(gx, gy, goals, footprint_map, rx, ry, robot_yaw)) {
-    keep_xy->clear();
-    *keep_g_num = 0;
-    return false;
-  }
-  return true;
+  return !keep_xy->empty();
 }
 
 bool InsertGarbagePose::isPileSweepInProgress(
@@ -2828,7 +2915,7 @@ bool InsertGarbagePose::isGoalNotCorner(
   return theta >= (M_PI - corner_angle_rad);
 }
 
-// 剩余队列第一个非 z=-1 点：工字当前长边队首，不用欧氏最近（对边 0.5~1m 会抢）
+// 剩余队列第一个非 z=-1 点：工字当前长边队首，不用欧氏最近
 std::size_t InsertGarbagePose::ordinaryQueueHead(const Goals & goals) const
 {
   for (std::size_t i = 0; i < goals.size(); ++i) {
@@ -2837,6 +2924,58 @@ std::size_t InsertGarbagePose::ordinaryQueueHead(const Goals & goals) const
     }
   }
   return goals.size();
+}
+
+bool InsertGarbagePose::isRememberedCorner(double x, double y) const
+{
+  constexpr double kTol2 = 0.08 * 0.08;
+  for (const auto & c : remembered_corner_xy_) {
+    if (squaredDistanceXY(c.first, c.second, x, y) < kTol2) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void InsertGarbagePose::rememberCornerXy(double x, double y) const
+{
+  if (isRememberedCorner(x, y)) {
+    return;
+  }
+  remembered_corner_xy_.emplace_back(x, y);
+}
+
+void InsertGarbagePose::forgetCornerXy(double x, double y) const
+{
+  constexpr double kTol2 = 0.08 * 0.08;
+  remembered_corner_xy_.erase(
+    std::remove_if(
+      remembered_corner_xy_.begin(), remembered_corner_xy_.end(),
+      [x, y](const std::pair<double, double> & c) {
+        return squaredDistanceXY(c.first, c.second, x, y) < kTol2;
+      }),
+    remembered_corner_xy_.end());
+}
+
+bool InsertGarbagePose::robotEnteredNextSide(
+  const Goals & goals, std::size_t head, double robot_x, double robot_y) const
+{
+  if (head + 1 >= goals.size()) {
+    return false;
+  }
+  double t = 0.0;
+  const double d2 = squaredDistancePointToSegment(
+    robot_x, robot_y,
+    goals[head].pose.position.x, goals[head].pose.position.y,
+    goals[head + 1].pose.position.x, goals[head + 1].pose.position.y,
+    &t);
+  if (d2 > 1.5 * 1.5) {
+    return false;
+  }
+  const double seg = std::sqrt(squaredDistanceXY(
+    goals[head].pose.position.x, goals[head].pose.position.y,
+    goals[head + 1].pose.position.x, goals[head + 1].pose.position.y));
+  return t * seg > 0.25;
 }
 
 // 从当前长边队首往后找第一个角点
@@ -2852,6 +2991,20 @@ bool InsertGarbagePose::findFirstCornerFromRobot(
   const std::size_t head = ordinaryQueueHead(goals);
   if (head >= goals.size()) {
     return false;
+  }
+  const double hx = goals[head].pose.position.x;
+  const double hy = goals[head].pose.position.y;
+  if (isRememberedCorner(hx, hy)) {
+    if (robotEnteredNextSide(goals, head, robot_x, robot_y)) {
+      forgetCornerXy(hx, hy);
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "InsertGarbagePose: corner (%.2f, %.2f) passed, open next side",
+        hx, hy);
+    } else {
+      corner_idx = head;
+      return true;
+    }
   }
   const std::size_t start_idx = head;
   if (start_idx >= goals.size()) {
@@ -3124,7 +3277,12 @@ InsertGarbagePose::InsertInfo InsertGarbagePose::gatherInsertInfo(
       if (info.goalc_idx < info.goals.size()) {
         info.goalc = info.goals[info.goalc_idx];
       }
-      if (squaredDistanceXY(
+      const bool closed_side =
+        info.goalc_idx == head_idx &&
+        isRememberedCorner(
+          info.goala.pose.position.x, info.goala.pose.position.y);
+      if (!closed_side &&
+        squaredDistanceXY(
           info.goala.pose.position.x, info.goala.pose.position.y,
           info.goalc.pose.position.x, info.goalc.pose.position.y) < 1e-12)
       {
@@ -3143,7 +3301,13 @@ InsertGarbagePose::InsertInfo InsertGarbagePose::gatherInsertInfo(
           info.goalc = info.goals[info.goalc_idx];
         }
       }
-      if (squaredDistanceXY(
+      if (closed_side) {
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "InsertGarbagePose: hold corner as C (%.2f, %.2f), robot not on next side",
+          info.goala.pose.position.x, info.goala.pose.position.y);
+        ac_ok = true;
+      } else if (squaredDistanceXY(
           info.goala.pose.position.x, info.goala.pose.position.y,
           info.goalc.pose.position.x, info.goalc.pose.position.y) >= 1e-12)
       {
@@ -3325,11 +3489,12 @@ void InsertGarbagePose::refreshCornersOnRemaining(
 
 // 按角点链从队头往后有序删点；碰到角点立即停，角点和后面都不删
 InsertGarbagePose::Goals InsertGarbagePose::clipGoalsNearGarbage(
-  InsertInfo & info, bool skip_reverse)
+  InsertInfo & info, bool plan_only)
 {
   const Goals & goals = info.goals;
   info.goaltotal.clear();
   info.clip_rounds.clear();
+  info.planned_delete_idx.clear();
   if (goals.size() < 2) {
     return goals;
   }
@@ -3462,24 +3627,18 @@ InsertGarbagePose::Goals InsertGarbagePose::clipGoalsNearGarbage(
       node_->get_logger(),
       "InsertGarbagePose: clip skip, current side empty H=%zu C=%zu n_other=%zu",
       H, C, n_other);
-  } else if (t_d < -kEps && !skip_reverse) {
+  } else if (t_d < -kEps) {
     RCLCPP_INFO(
       node_->get_logger(),
       "InsertGarbagePose: clip reverse t=%.3f, skip deletes A=(%.2f, %.2f) C=(%.2f, %.2f) F=(%.2f, %.2f)",
       t_d, ax, ay, cx, cy, dx, dy);
-  } else if (t_d > 1.0 + kEps && !skip_reverse) {
+  } else if (t_d > 1.0 + kEps) {
     info.hit_forward_case = true;
     RCLCPP_INFO(
       node_->get_logger(),
       "InsertGarbagePose: clip beyond current side t=%.3f, keep corner idx=%zu, skip side wipe",
       t_d, C < goals.size() ? C : c_line);
   } else {
-    if (t_d < -kEps && skip_reverse) {
-      RCLCPP_INFO(
-        node_->get_logger(),
-        "InsertGarbagePose: E-clip ignore reverse t=%.3f, clip along current side from foot",
-        t_d);
-    }
     info.hit_mid_case = true;
     const double s_robot = footArcOnCurrentSide(rx, ry);
     const double s_d = footArcOnCurrentSide(gx, gy);
@@ -3492,9 +3651,7 @@ InsertGarbagePose::Goals InsertGarbagePose::clipGoalsNearGarbage(
       H, C, n_side, n_other, s_lo, s_d, s_hi, gx, gy);
 
     for (std::size_t j = H; j < C && j < goals.size(); ++j) {
-      if (arc_s[j] < s_lo - 1e-9) {
-        continue;
-      }
+      // 车身后的队首也要删：往回走时刚拐上来的角点弧长为 0，会被 s_lo 漏掉。
       if (arc_s[j] > s_hi + 1e-9) {
         break;
       }
@@ -3530,6 +3687,14 @@ InsertGarbagePose::Goals InsertGarbagePose::clipGoalsNearGarbage(
     } else {
       ++it;
     }
+  }
+
+  info.planned_delete_idx = delete_idx;
+  for (const auto & xy : info.corners_kept_xy) {
+    rememberCornerXy(xy.first, xy.second);
+  }
+  if (plan_only) {
+    return goals;
   }
 
   // 待删点写入 goaltotal，再从 goals 删除
@@ -3583,7 +3748,9 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
 
   const double saved_yaw = info.path_yaw;
   const auto saved_garbage = info.garbage;
-  Goals out;
+  Goals work = path;
+  InsertInfo frozen = info;
+  bool have_clip_base = false;
   if (!prefix.empty() && path.size() >= 2) {
     InsertInfo path_info = gatherInsertInfo(
       path, info.robot_pose,
@@ -3592,25 +3759,22 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
     if (path_info.valid) {
       path_info.path_yaw = saved_yaw;
       path_info.garbage = saved_garbage;
-      out = clipGoalsNearGarbage(path_info);
+      path_info.goals = path;
+      frozen = path_info;
+      have_clip_base = true;
       info.goala = path_info.goala;
       info.goalc = path_info.goalc;
       info.goalc_idx = path_info.goalc_idx;
       info.goald_x = path_info.goald_x;
       info.goald_y = path_info.goald_y;
-      info.hit_mid_case = path_info.hit_mid_case;
-      info.hit_forward_case = path_info.hit_forward_case;
-      info.corners_kept_xy = std::move(path_info.corners_kept_xy);
-      info.clip_rounds = std::move(path_info.clip_rounds);
-      info.goaltotal = std::move(path_info.goaltotal);
-    } else {
-      out = std::move(path);
     }
-  } else if (path.size() >= 2) {
-    out = clipGoalsNearGarbage(info);
-  } else {
-    out = std::move(path);
+  } else if (path.size() >= 2 && info.valid) {
+    frozen.goals = path;
+    frozen.path_yaw = saved_yaw;
+    frozen.garbage = saved_garbage;
+    have_clip_base = true;
   }
+  Goals out = work;
   info.path_yaw = saved_yaw;
   info.garbage = saved_garbage;
 
@@ -3837,54 +4001,86 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
   last_sweep_path_yaw_ = info.path_yaw;
   has_last_sweep_path_yaw_ = true;
 
+  if (have_clip_base && work.size() >= 2) {
+    InsertInfo ginfo = frozen;
+    ginfo.goals = work;
+    clipGoalsNearGarbage(ginfo, true);
+    std::set<std::size_t> del = ginfo.planned_delete_idx;
+    info.clip_rounds = ginfo.clip_rounds;
+    info.corners_kept_xy = ginfo.corners_kept_xy;
+    info.hit_mid_case = ginfo.hit_mid_case;
+    info.hit_forward_case = ginfo.hit_forward_case;
+    if (ginfo.goalc_idx < work.size()) {
+      info.goalc = work[ginfo.goalc_idx];
+      info.goalc_idx = ginfo.goalc_idx;
+    }
+    std::size_t e_extra = 0;
+    if (add_extend && !far_from_head) {
+      const std::size_t c_line =
+        (ginfo.goalc_idx < work.size()) ? ginfo.goalc_idx : (work.size() - 1);
+      InsertInfo einfo = ginfo;
+      einfo.goals = work;
+      einfo.garbage.pose.pose.position.x = extend_pose.pose.position.x;
+      einfo.garbage.pose.pose.position.y = extend_pose.pose.position.y;
+      einfo.goalc = work[c_line];
+      einfo.goalc_idx = c_line;
+      projectPointToInfiniteLine(
+        extend_pose.pose.position.x, extend_pose.pose.position.y,
+        einfo.goala.pose.position.x, einfo.goala.pose.position.y,
+        work[c_line].pose.position.x, work[c_line].pose.position.y,
+        einfo.goald_x, einfo.goald_y);
+      clipGoalsNearGarbage(einfo, true);
+      double e_t = 0.0;
+      if (!einfo.clip_rounds.empty()) {
+        e_t = einfo.clip_rounds.front().t_d;
+      }
+      constexpr double kEps = 1e-6;
+      info.clip_rounds.insert(
+        info.clip_rounds.end(), einfo.clip_rounds.begin(), einfo.clip_rounds.end());
+      if (einfo.clip_rounds.empty() || e_t < -kEps || e_t > 1.0 + kEps) {
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "InsertGarbagePose: E foot t=%.3f outside current side, keep G deletes only "
+          "E=(%.2f, %.2f) F=(%.2f, %.2f)",
+          e_t,
+          extend_pose.pose.position.x, extend_pose.pose.position.y,
+          einfo.goald_x, einfo.goald_y);
+      } else {
+        const std::size_t before_n = del.size();
+        del.insert(
+          einfo.planned_delete_idx.begin(), einfo.planned_delete_idx.end());
+        e_extra = del.size() - before_n;
+        info.hit_mid_case = info.hit_mid_case || einfo.hit_mid_case;
+        info.hit_forward_case = info.hit_forward_case || einfo.hit_forward_case;
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "InsertGarbagePose: E adds %zu deletes on the same side t=%.3f "
+          "E=(%.2f, %.2f)",
+          e_extra, e_t,
+          extend_pose.pose.position.x, extend_pose.pose.position.y);
+      }
+    }
+    info.goaltotal.clear();
+    info.goaltotal.reserve(del.size());
+    Goals clipped;
+    clipped.reserve(work.size());
+    for (std::size_t i = 0; i < work.size(); ++i) {
+      if (del.count(i) == 0) {
+        clipped.push_back(work[i]);
+      } else {
+        info.goaltotal.push_back(work[i]);
+      }
+    }
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: union delete %zu (E extra %zu), path %zu -> %zu",
+      del.size(), e_extra, work.size(), clipped.size());
+    out = std::move(clipped);
+  }
+
   Goals suffix;
   suffix.assign(
     out.begin() + static_cast<std::ptrdiff_t>(resume_from), out.end());
-
-  // 已生成 E：用 E 再剔接回段；先保护本堆 G
-  if (add_extend && !far_from_head) {
-    addProtectedGarbageXy(
-      garbage_pose.pose.position.x, garbage_pose.pose.position.y);
-    if (suffix.size() >= 2) {
-      InsertInfo e_info = gatherInsertInfo(
-        suffix, info.robot_pose,
-        extend_pose.pose.position.x, extend_pose.pose.position.y);
-      if (e_info.valid) {
-        const std::size_t before = suffix.size();
-        suffix = clipGoalsNearGarbage(e_info, true);
-        info.goaltotal.insert(
-          info.goaltotal.end(), e_info.goaltotal.begin(), e_info.goaltotal.end());
-        info.clip_rounds.insert(
-          info.clip_rounds.end(), e_info.clip_rounds.begin(), e_info.clip_rounds.end());
-        double e_t = 0.0;
-        if (!e_info.clip_rounds.empty()) {
-          e_t = e_info.clip_rounds.front().t_d;
-        }
-        RCLCPP_INFO(
-          node_->get_logger(),
-          "InsertGarbagePose: E-clip extra delete %zu, suffix %zu -> %zu "
-          "t=%.3f mid=%d forward=%d E=(%.2f, %.2f) F=(%.2f, %.2f)",
-          before - suffix.size(), before, suffix.size(),
-          e_t, e_info.hit_mid_case ? 1 : 0, e_info.hit_forward_case ? 1 : 0,
-          extend_pose.pose.position.x, extend_pose.pose.position.y,
-          e_info.goald_x, e_info.goald_y);
-      }
-    } else if (suffix.size() == 1) {
-      const double px = suffix.front().pose.position.x;
-      const double py = suffix.front().pose.position.y;
-      if (!isProtectedGarbageXy(px, py) &&
-        !isUnindexedSentinelPoseZ(suffix.front()))
-      {
-        const double along =
-          (px - extend_pose.pose.position.x) * std::cos(info.path_yaw) +
-          (py - extend_pose.pose.position.y) * std::sin(info.path_yaw);
-        if (along < clip_extend_m_ + 1e-9) {
-          info.goaltotal.push_back(suffix.front());
-          suffix.clear();
-        }
-      }
-    }
-  }
 
   // 往 rebuilt 写入 G 与可选 E：d>0 为 G→E，d<0 为 E→G
   auto push_garbage_and_extend = [&](Goals & rebuilt) {
@@ -5007,6 +5203,25 @@ BT::NodeStatus InsertGarbagePose::tick()
   }
 
   bypass_pending_insert_ = false;
+  bool single_pile_insert = true;
+  getInput("single_pile_insert", single_pile_insert);
+  bool ge_still_in_goals = false;
+  if (single_pile_insert) {
+    for (const auto & g : goals_now) {
+      if (isUnindexedSentinelPoseZ(g)) {
+        ge_still_in_goals = true;
+        break;
+      }
+    }
+  }
+  if (ge_still_in_goals) {
+    blockSinglePileIntake();
+    RCLCPP_INFO_THROTTLE(
+      node_->get_logger(), *(node_->get_clock()), 2000,
+      "InsertGarbagePose: single-pile hold, G/E still in goals");
+  } else if (single_pile_insert) {
+    releaseSinglePileIntake();
+  }
   std::size_t new_idx = 0;
   const bool have_new_pile = findNewGarbageIndex(before, rx, ry, new_idx);
   const bool mid_mission_new = have_new_pile && !active_piles_.empty();
@@ -5076,15 +5291,7 @@ BT::NodeStatus InsertGarbagePose::tick()
           rest_active.push_back(pile);
         }
       }
-      if (keep_active.empty() && !active_piles_.empty()) {
-        keep_active.push_back(active_piles_.front());
-        rest_active.clear();
-        for (std::size_t i = 1; i < active_piles_.size(); ++i) {
-          rest_active.push_back(active_piles_[i]);
-        }
-      }
     } else {
-      // 还没真正扫到：已插堆全部可剥，和新堆一起重排
       rest_active = active_piles_;
     }
 
@@ -5341,6 +5548,10 @@ BT::NodeStatus InsertGarbagePose::tick()
     garbage_list_.erase(garbage_list_.begin());
     ++inserted_count;
     inserted_xy << "(" << gx << ", " << gy << ") ";
+    if (single_pile_insert) {
+      blockSinglePileIntake();
+      break;
+    }
   }
 
   last_sweep_xy_.clear();

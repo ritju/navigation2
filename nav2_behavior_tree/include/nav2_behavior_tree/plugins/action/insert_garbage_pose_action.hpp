@@ -117,6 +117,8 @@ public:
       double t_d{0.0};
     };
     std::vector<ClipRound> clip_rounds;
+    /** plan_only 时收集到的待删下标，不改 goals */
+    std::set<std::size_t> planned_delete_idx;
   };
 
   /** 贴边延长链：D、G、E 及中间点 */
@@ -179,6 +181,9 @@ public:
       BT::InputPort<double>(
         "work_circle_radius_m", 10.0,
         "Accept new garbage only inside this radius around the robot pose when the first pile of a batch is accepted"),
+      BT::InputPort<bool>(
+        "single_pile_insert", true,
+        "If true, accept and insert one pile; while its G or E remains in the queue, drop new detections"),
       BT::InputPort<double>(
         "min_garbage_obstacle_clearance_m", 0.7,
         "If lethal within this radius, prefer wall-edge D-G-E"),
@@ -225,6 +230,10 @@ private:
 
   /** 垃圾检测话题回调：转到 map；合堆半径内已见过则不进 history */
   void garbageDetectCallback(const capella_ros_msg::msg::GarbageDetect::SharedPtr msg);
+  /** 单堆占用中：丢掉尚未插入的检测，并让回调直接丢弃新消息 */
+  void blockSinglePileIntake();
+  /** 当前 G/E 已离开队列，允许再收下一堆 */
+  void releaseSinglePileIntake();
 
   /** 特殊清扫/禁扫区域话题回调 */
   void special_terrain_callback(const garage_utils_msgs::msg::Polygons::SharedPtr msg);
@@ -268,12 +277,15 @@ private:
     double sample_m = 0.1) const;
 
   /**
-   * E 候选：局部窗内用 footprint；窗外问全局。
+   * E 候选：局部窗内查车体轮廓；无论窗内窗外，都按车体轮廓查全局图。
    * 再查 G→E 全局细线。
    */
   bool isExtendCandidateClear(
     double gx, double gy, double ex, double ey, double yaw,
     std::string * reason) const;
+  /** 把车体轮廓放到 (x,y,yaw)，角点和边都要在全局图上可过 */
+  bool isFootprintClearOnGlobalCostmap(
+    double x, double y, double yaw, std::string * reason) const;
 
   /**
    * 障碍物情况可读：点落在局部代价图内*/
@@ -417,12 +429,18 @@ private:
     double robot_x, double robot_y);
 
   /**
-   * 按当前长边 [H, C) 收集待删点到 goaltotal，再一块删除。
-   * 只删途经点，z=-1 的 G/E 哨兵、角点 C、对边 [C, N) 不删。
-   * skip_reverse：E 接回时不把 t<0 当反向跳过。
-   * 段中删点：仅在当前长边上，从车上弧长删到垂足+clip_extend_m。
+   * 按当前长边 [H, C) 收集待删点：从队首删到垂足+clip_extend，含车身后的队首。
+   * 垂足在 A 后面或越过 C 时不删。只删途经点，G/E 哨兵、角点 C、对边不删。
+   * plan_only 只把下标写入 planned_delete_idx，不改 goals。
    */
-  Goals clipGoalsNearGarbage(InsertInfo & info, bool skip_reverse = false);
+  Goals clipGoalsNearGarbage(InsertInfo & info, bool plan_only = false);
+
+  /** 删点后变成队首的角点：车还没开上下一条边时，它仍是当前边终点 */
+  bool isRememberedCorner(double x, double y) const;
+  void rememberCornerXy(double x, double y) const;
+  void forgetCornerXy(double x, double y) const;
+  bool robotEnteredNextSide(
+    const Goals & goals, std::size_t head, double robot_x, double robot_y) const;
 
   /** 插入真实垃圾、统一时间戳；G-E 接到剩余路径队首，角点和对边留下 */
   Goals insertGarbageIntoGoals(InsertInfo & info);
@@ -464,8 +482,8 @@ private:
   void addProtectedGarbageXy(double x, double y);
   void eraseProtectedGarbageXy(double x, double y);
   /**
-   * 正在清扫的堆：footprint 已到 G，或已过 G 正在去 E。
-   * 还没到的 G/E 不算，中途新堆时可以剥掉重排。
+   * 队首第一对还在 goals 里的 G/E。车还在去 G 的路上，或 G 已出队只剩 E，都算当前堆。
+   * 中途新堆只重排这对后面的，不把它剥掉。
    */
   bool collectInProgressKeepXy(
     const Goals & goals,
@@ -651,6 +669,8 @@ private:
   double viz_obstacle_cell_m_{0.15};
 
   std::mutex history_mutex_;
+  /** 单堆：当前 G/E 还在 goals 里时，话题新垃圾不进 history / 待确认 / 待插列表 */
+  bool single_pile_block_intake_{false};
   /** 原始接收缓存 */
   std::deque<capella_ros_msg::msg::GarbageDetect> history_list_;
   /** 只出现过一帧、尚未确认的垃圾 */
@@ -686,6 +706,8 @@ private:
   /** 上一堆扫向 path_yaw；到达点贴下一 G 时延续此朝向，避免退回车头导致 E∥车 */
   bool has_last_sweep_path_yaw_{false};
   double last_sweep_path_yaw_{0.0};
+  /** 本任务里保留过的角点。它变成队首、且没有前一个普通点时，仍先当作 C */
+  mutable std::vector<std::pair<double, double>> remembered_corner_xy_;
 
   mutable std::mutex special_terrain_mutex_;
   /** 禁扫区多边形 */
