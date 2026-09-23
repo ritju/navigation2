@@ -494,18 +494,36 @@ private:
   /** 打印 garbage_list_ 当前内容，reason 为更新原因 */
   void logGarbageListState(const char * reason) const;
 
-  /** 按开关往 RViz 发 Marker；同一个工作圈内累加，工作圈取消时整体清除 */
+  /** 插入一堆时画 G/E、蓝虚线、footprint 长条；首点/角点另刷 */
   void publishVisualization(
     const InsertInfo & info,
     bool enable = true,
     bool viz_accepted_garbage = true);
 
-  /** 清空本话题上全部 Marker */
+  /** 清空本话题上全部 Marker，并丢掉本节点可视化状态 */
   void clearMissionVisualization();
-  /** 深绿工作圈 + 浅绿识别距离圈 */
+  void resetVisualizationState();
+  /** 深绿工作圈 + 浅绿跟随/识别圈 */
   void publishRangeCircles(double robot_x, double robot_y);
   /** footprint 检查不通过时，把当时检查用的 footprint 框画在检查位置上 */
   void publishFootprintCheckBox(double x, double y, double yaw);
+  /** 走廊检查失败：红球 + 当时检查的 footprint 长条 */
+  void publishFailedSweepVisualization(double rx, double ry, double gx, double gy);
+  /** 待插入 garbage_list_ 的红色小球，多了删旧 id */
+  void publishPendingGarbageDots();
+  /** 当前路径首点 H、角点 C：每次按最新判断覆盖，不是角点了就删 */
+  void refreshClipAnchorVisualization(
+    const Goals & goals, double robot_x, double robot_y);
+  /** G/E 都不在 goals 里时，删掉这堆的球、虚线、长条 */
+  void pruneFinishedPileVisualization(const Goals & goals);
+  void deletePileVisualization(int pile_num);
+  void appendDeleteMarker(
+    visualization_msgs::msg::MarkerArray & arr, const std::string & ns, int id);
+  void appendFootprintStripMarkers(
+    visualization_msgs::msg::MarkerArray & arr,
+    const std::string & ns, int id_base,
+    double x0, double y0, double x1, double y1,
+    float r, float g, float b, float a_line, float a_fill);
 
   rclcpp::Node::SharedPtr node_;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
@@ -606,6 +624,21 @@ public:
   int viz_pile_count_{0};
   /** 已画出的 footprint 检查失败框数量 */
   std::size_t viz_footprint_fail_count_{0};
+  /** 已插入、还在画的 G/E，走完对应哨兵后删 */
+  struct VizPileTrack
+  {
+    int pile_num{0};
+    double gx{0.0};
+    double gy{0.0};
+    bool has_e{false};
+    double ex{0.0};
+    double ey{0.0};
+  };
+  std::vector<VizPileTrack> viz_tracks_;
+  std::size_t viz_pending_marker_count_{0};
+  bool viz_have_head_{false};
+  bool viz_have_corner_{false};
+  bool viz_have_fail_strip_{false};
   /** 本任务内各堆稳定 G 编号，避免删点全显示成 G1 */
   std::vector<std::pair<std::pair<double, double>, int>> g_num_xy_;
   /** E 点坐标 -> 所属 G 编号 */
