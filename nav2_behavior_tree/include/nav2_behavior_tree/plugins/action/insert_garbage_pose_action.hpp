@@ -311,10 +311,22 @@ private:
 
   /**
    * 每 tick 检查全部已插堆：{goals} 里找不到这堆自己的 z=-1 槽则从 active 去掉。
+   * 自己不删点，只认「哨兵已经被擦掉」这个结果。
    */
   std::size_t stripReachedZNeg1Goals(
     const Goals & goals,
     std::string * deleted_summary = nullptr);
+
+  /**
+   * 扫完判定：footprint 盖过 / 沿 G→E 经过 G，并且盖过 / 离开 E（无 E 则只看 G）。
+   * 只用来从 {goals} 删掉这对哨兵，不用来判断「这堆开没开扫」。
+   */
+  bool isPointCoveredByRobotFootprint(
+    double x, double y, const geometry_msgs::msg::PoseStamped & robot_pose) const;
+  static bool isPastAlongDirection(
+    double rx, double ry, double px, double py, double dir_x, double dir_y);
+  bool eraseSweptSentinelsFromGoals(
+    Goals & goals, const geometry_msgs::msg::PoseStamped & robot_pose);
 
   /** 每次 setOutput("output_goals") 时打日志，便于观察时机与频率 */
   void emitOutputGoals(const Goals & goals, const char * reason);
@@ -607,6 +619,10 @@ public:
   std::mutex history_mutex_;
   /** 单堆：当前 G/E 还在 goals 里时，话题新垃圾不进 history / 待确认 / 待插列表 */
   bool single_pile_block_intake_{false};
+  /** 当前占用堆的扫完闩：到 G、到 E 分开记，换堆或新任务清掉 */
+  int sweep_latch_g_num_{0};
+  bool sweep_seen_g_{false};
+  bool sweep_seen_e_{false};
   /** 原始接收缓存 */
   std::deque<capella_ros_msg::msg::GarbageDetect> history_list_;
   /** 时间窗内待确认的垃圾位姿，满 kMaxHistorySize 丢最旧 */
