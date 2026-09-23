@@ -56,8 +56,12 @@ public:
   static constexpr std::size_t kMaxGarbageSize = 6;
   /** 清扫顺序全排列上限，超过则贪心 */
   static constexpr std::size_t kSweepBruteMaxN = 6;
-  /** map 下去重距离阈值米，后到且更近于此的删掉 */
-  static constexpr double kDedupDistanceM = 0.4;
+  /**
+   * 按 xy 认「同一个已写入的点」的容差米：G/E 编号查找、已插入点保护用。
+   * 与「两次检测是不是同一堆垃圾」无关，后者按文档 2.12.6/2.12.7 用
+   * garbage_merge_radius_m。
+   */
+  static constexpr double kPointMatchDistanceM = 0.4;
   /** 认「同一颗」：按下标找到 z=-1 槽后，xy 只用来确认 3.1 vs 3.11，不拿来搜附近别的堆 */
   static constexpr double kSentinelIdentityMatchM = 0.05;
   /** 本节点约定：插入的 G/E 点 pose.position.z 固定写此值，表示无任务序号的哨兵点 */
@@ -66,10 +70,6 @@ public:
   static constexpr double TmpSecGarbageTime = 1.0;
   /** from 离 G 近于此则视为已到达：不用欧氏远近选侧，沿车头在 G 后方虚设来向 */
   static constexpr double kMinExtendFromDistM = 0.5;
-  /** 墙切向走廊失败后，绕该切向左右各扫到此角度 */
-  static constexpr double kExtendYawSweepMaxDeg = 90.0;
-  /** 切向扫角步长 */
-  static constexpr double kExtendYawSweepStepDeg = 10.0;
 
   // 插入前采集到的全部信息，valid 为 false 时不做删点插点
   struct InsertInfo
@@ -98,7 +98,6 @@ public:
     double wall_edge_d_x{0.0};                            // 贴边 D 点
     double wall_edge_d_y{0.0};
     std::vector<std::pair<double, double>> wall_edge_chain_xy;  // D…G…E 采样点（可视化）
-    bool ac_fallback{false};                              // 原路径不够成 A-C，改用已有 G-E 或车→G
     bool hit_mid_case{false};                             // 垂足落在段中
     bool hit_forward_case{false};                         // 前方延长线
     std::vector<std::pair<double, double>> corners_kept_xy;  // 前方延长线保留角点
@@ -118,8 +117,6 @@ public:
       double t_d{0.0};
     };
     std::vector<ClipRound> clip_rounds;
-    /** plan_only 时收集到的待删下标，不改 goals */
-    std::set<std::size_t> planned_delete_idx;
   };
 
   /** 贴边延长链：D、G、E 及中间点 */
@@ -178,14 +175,23 @@ public:
         "garbage_extend_m", 2.0,
         "Along path_yaw, insert E this far past garbage (m)"),
       BT::InputPort<double>(
+        "extend_max_yaw_deg", 60.0,
+        "If default E is blocked, sweep this many degrees left/right (deg)"),
+      BT::InputPort<double>(
+        "extend_step_yaw_deg", 10.0,
+        "Yaw step when sweeping left/right for a clear E (deg)"),
+      BT::InputPort<double>(
         "work_circle_radius_m", 10.0,
         "Accept new garbage only inside this radius around the robot pose when the first pile of a batch is accepted"),
       BT::InputPort<bool>(
         "single_pile_insert", true,
         "If true, accept and insert one pile; while its G or E remains in the queue, drop new detections"),
       BT::InputPort<double>(
-        "min_garbage_obstacle_clearance_m", 0.7,
-        "If lethal within this radius, prefer wall-edge D-G-E"),
+        "sweep_dist_weight", 0.5,
+        "Sweep order score weight on total travel distance (2.7.3)"),
+      BT::InputPort<double>(
+        "sweep_turn_weight", 0.5,
+        "Sweep order score weight on total |yaw| turned (2.7.3)"),
       BT::InputPort<double>(
         "wall_edge_d_extend_m", 2.0,
         "Wall-edge: each D push step along tangent (m)"),
@@ -203,7 +209,7 @@ public:
         "Wall-edge: shift whole D-G-E along obstacle->garbage normal (m), + away from wall"),
       BT::InputPort<std::string>(
         "global_costmap_topic", std::string("global_costmap/costmap_raw"),
-        "Global costmap topic (nav2_msgs/Costmap) for footprint sweep checks"),
+        "Global costmap topic (nav2_msgs/Costmap) for all footprint checks"),
       BT::InputPort<bool>(
         "enable_visualization", true, "Publish insert/clip markers to RViz"),   //总开关
       BT::InputPort<bool>(
@@ -243,25 +249,21 @@ private:
   bool ensureCachedFootprint(std::string * reason) const;
 
   /**
-   * 2.11：把车体轮廓放到 (x,y,yaw)，调用
-   * CostmapTopicCollisionChecker::isCollisionFree。图外 / unknown / 致命障碍为不通过。
+   * 2.11：把车体轮廓放到 (x,y,yaw)，交给 nav2 的
+   * CostmapTopicCollisionChecker::isCollisionFree 判定，只查全局代价图。
+   * 图外 / unknown / 致命障碍为不通过。
    */
   bool isCollisionFreeAtPose(
     double x, double y, double yaw, std::string * reason,
     bool fetch_costmap_and_footprint = true) const;
 
   /**
-   * 2.11.1 footprint 长条：沿起点到终点按车长步进，首尾都检，朝向用连线方向。
+   * 2.11 footprint 长条：把两端点连成一条线，车体轮廓沿线按车长步进摆放，
+   * 首尾都检，朝向取连线方向，等价于扫出一个大长条矩形。
+   * 垃圾点检查、延长点检查、线段检查都走这一条。
    */
   bool isFootprintSweepClear(
     double x0, double y0, double x1, double y1, std::string * reason) const;
-
-  /**
-   * 2.11.3 延长点：前一到达点（G）到 E 做 2.11.1。
-   */
-  bool isExtendCandidateClear(
-    double gx, double gy, double ex, double ey, double yaw,
-    std::string * reason) const;
 
   /**
    * 在全局代价图上找离 (x,y) 最近的致命障碍格
@@ -346,10 +348,8 @@ private:
    * 反延不删。正延删掉该边除尾角点外的点，重算角点和当前边后再投影。
    * 多个参考点按顺序共用一份路径副本，后一个看得到前一个删完后的新角点。
    * 下标记在调用方传入的 goals 上，由调用方一次删除。
-   * plan_only 不改返回的 goals。commit_memory 为 false 时不登记保留角点。
    */
-  Goals clipGoalsNearGarbage(
-    InsertInfo & info, bool plan_only = false, bool commit_memory = true);
+  Goals clipGoalsNearGarbage(InsertInfo & info);
 
   /** 按顺序对每个参考点跑 2.5，删除下标写入 delete_idx，不改 goals 本身。 */
   void clipReferencesInOrder(
@@ -380,16 +380,6 @@ private:
   /** 贴墙：把延长链写入 goals */
   Goals insertWallEdgeGarbageIntoGoals(InsertInfo & info);
 
-  /**在触发了延长线删点逻辑和检查当前角点还需不需要保护 */
-  void refreshCornersOnRemaining(
-    const Goals & goals,
-    double robot_x, double robot_y,
-    std::set<std::size_t> & delete_idx,
-    std::set<std::size_t> & protected_corners,
-    std::vector<std::pair<double, double>> & corners_kept_xy,
-    const std::size_t * keep_idx,
-    const std::size_t * also_keep_idx = nullptr) const;
-
   /** 把单个垃圾从 base_link 转到 map */
   bool transformGarbageToMap(capella_ros_msg::msg::GarbageDetect & garbage) const;
   /** 判断点是否在禁扫区域内 */
@@ -397,12 +387,13 @@ private:
   /** 判断点是否在多边形内 */
   static bool isPointInPolygon(
     double x, double y, const geometry_msgs::msg::Polygon & polygon);
-  /** 是否与已保留垃圾过近 */
-  static bool isDuplicateOfKept(
+  /** 2.12.6 新种子是否与已有种子重复：按 garbage_merge_radius_m */
+  bool isDuplicateOfKept(
     const capella_ros_msg::msg::GarbageDetect & garbage,
-    const GarbageList & kept);
-  /** 是否落在已到达过、不再插入的垃圾附近 */
+    const GarbageList & kept) const;
+  /** 2.12.7 是否落在已处理过、不再插入的垃圾附近：按 garbage_merge_radius_m */
   bool isNearReachedGarbage(double x, double y) const;
+  /** 该 xy 是否是已写入 goals 的 G/E 点，用 kPointMatchDistanceM 做几何认点 */
   bool isProtectedGarbageXy(double x, double y) const;
   void addProtectedGarbageXy(double x, double y);
   void eraseProtectedGarbageXy(double x, double y);
@@ -414,9 +405,6 @@ private:
     const Goals & goals,
     std::vector<std::pair<double, double>> * keep_xy,
     int * keep_g_num) const;
-
-  /** 上一堆插入点是否仍在 goals 中 */
-  bool isPendingGarbageInGoals(const Goals & goals) const;
 
   /** 平面距离平方 */
   static double squaredDistanceXY(
@@ -453,13 +441,8 @@ private:
   void reorderNearestFirstThenSweep(
     double robot_x, double robot_y, double robot_yaw);
 
-  /**
-   * 导航中新堆：4-1/4-2 重排 garbage_list_。
-   * 返回 true 表示 4-1
-   */
-  bool reorderGarbageListWithNewPile(
-    double robot_x, double robot_y, double robot_yaw,
-    std::size_t new_idx);
+  /** 超过 kMaxGarbageSize 时截断，保留离机器人最近的若干堆 */
+  void trimGarbageListToCap(double robot_x, double robot_y);
 
   /** 相对 before，找出本轮新入队的堆下标 */
   bool findNewGarbageIndex(
@@ -563,8 +546,6 @@ public:
   double head_delete_robot_dist_m_{4.0};
   /** 垃圾离机器人超过该距离则忽略，默认 5m */
   double max_garbage_robot_dist_m_{5.0};
-  /** 垃圾周围该半径内有 lethal 障碍则丢弃，默认 0.7m */
-  double min_garbage_obstacle_clearance_m_{0.7};
   /** 贴边：D 每次沿切向再推的步长，默认 2m */
   double wall_edge_d_extend_m_{2.0};
   /** 贴边：G 到 E 沿切向伸出长度，默认 2m */
@@ -583,6 +564,11 @@ public:
   int confirm_match_num_{2};
   /** 沿 path_yaw 相对垃圾再插一点的距离，默认 2.0m */
   double garbage_extend_m_{2.0};
+  /** 默认 E 不通时，左右各扫到此角度，默认 60° */
+  double extend_max_yaw_deg_{60.0};
+  /** 扇形扫角步长，默认 10° */
+  double extend_step_yaw_deg_{10.0};
+  /** 2.7.3 排序得分权重：sum_score = dist_w * total_dist_m + turn_w * total_yaw_rad */
   double sweep_turn_weight_{0.5};
   double sweep_dist_weight_{0.5};
   double work_circle_radius_m_{10.0};
@@ -625,11 +611,6 @@ public:
   /** E 点坐标 -> 所属 G 编号 */
   std::vector<std::pair<std::pair<double, double>, int>> e_num_xy_;
   int next_g_num_{1};
-  /** 已插入且 goals 里尚未去掉的当前堆 */
-  bool has_pending_garbage_{false};
-  std::pair<double, double> pending_garbage_xy_{0.0, 0.0};
-  /** 本周期 4-1：允许在 pending 未结束时插入新堆 */
-  bool bypass_pending_insert_{false};
   /** 上次清扫顺序（map xy），供 4-1 保留其余相对次序 */
   std::vector<std::pair<double, double>> last_sweep_xy_;
   /** 上一堆假设到达点   有 E 用 E，否则用 G，供下一堆算 E；新任务/整单重排时清空 */
@@ -647,6 +628,8 @@ public:
 
   mutable std::mutex footprint_mutex_;
   mutable bool have_cached_footprint_{false};
+  /** 收到新轮廓置位，下次用时重取；取不到就继续用上一份缓存 */
+  mutable bool footprint_dirty_{true};
   mutable std::vector<std::pair<double, double>> cached_footprint_base_;
   mutable double cached_robot_length_m_{0.5};
 };
