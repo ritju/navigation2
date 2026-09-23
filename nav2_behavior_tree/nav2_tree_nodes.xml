@@ -98,9 +98,11 @@
       <input_port name="clip_extend_m" default="2.0">After garbage foot on path, delete goals for this distance (m)</input_port>
       <input_port name="corner_angle_deg" default="30.0">Goals with turn angle above this are corners (deg)</input_port>
       <input_port name="goaltotal_range_m" default="10.0">If no corner ahead, use last goal within this path distance as goalc (m)</input_port>
-      <input_port name="head_delete_robot_dist_m" default="4.0">Only delete from goals head forward when robot is within this distance (m) of goals[0]</input_port>
+      <input_port name="head_delete_robot_dist_m" default="4.0">Skip all goal deletes when the robot is farther than this (m) from the nearest point on input_goals</input_port>
       <input_port name="max_garbage_robot_dist_m" default="5.0">Ignore garbage farther than this distance (m) from robot (anti false-detect)</input_port>
       <input_port name="garbage_merge_radius_m" default="1.0">Points within this distance (m) of the seed are judged; a point joins only if it is also within this distance of the pile point farthest from the seed</input_port>
+      <input_port name="confirm_match_dist_m" default="1.0">Max Euclidean distance (m) among confirm frames to count as same pile; &lt;=0 disables multi-frame confirm</input_port>
+      <input_port name="confirm_match_num" default="2">Accept garbage after this many frames within confirm_match_dist_m; pose is their average</input_port>
       <input_port name="work_circle_radius_m" default="10.0">Accept new garbage only inside this radius around the robot pose when the first pile of a batch is accepted</input_port>
       <input_port name="single_pile_insert" default="true">If true, insert only one pile (G/E) and wait until it is swept before inserting the next</input_port>
       <input_port name="min_garbage_obstacle_clearance_m" default="0.7">If lethal within radius, use wall-edge D-G-E insert</input_port>
@@ -109,8 +111,7 @@
       <input_port name="wall_edge_min_robot_dist_m" default="3.0">Wall-edge min |D-robot| (m)</input_port>
       <input_port name="wall_edge_sample_m" default="0.5">Wall-edge D-E sample spacing (m)</input_port>
       <input_port name="wall_edge_normal_offset_m" default="0.0">Wall-edge shift of D-G-E along obstacle-garbage normal (m)</input_port>
-      <input_port name="local_costmap_topic" default="local_costmap/costmap">Local costmap OccupancyGrid topic for obstacle-info readability check</input_port>
-      <input_port name="global_costmap_topic" default="global_costmap/costmap">Global costmap OccupancyGrid topic for robot-G and G-E line checks</input_port>
+      <input_port name="global_costmap_topic" default="global_costmap/costmap_raw">Global costmap topic (nav2_msgs/Costmap) for footprint sweep checks</input_port>
       <input_port name="enable_visualization" default="true">Publish insert/clip markers to RViz</input_port>
       <input_port name="viz_accepted_garbage" default="true">Show accepted garbage after filtering</input_port>
       <input_port name="visualization_topic" default="insert_garbage_pose/markers">MarkerArray topic for insert visualization</input_port>

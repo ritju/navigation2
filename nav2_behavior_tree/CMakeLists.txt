@@ -17,6 +17,7 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(nav2_util REQUIRED)
+find_package(nav2_costmap_2d REQUIRED)
 find_package(capella_ros_msg REQUIRED)
 find_package(garage_utils_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
@@ -45,6 +46,7 @@ set(dependencies
   std_msgs
   std_srvs
   nav2_util
+  nav2_costmap_2d
   capella_ros_msg
   garage_utils_msgs
   visualization_msgs

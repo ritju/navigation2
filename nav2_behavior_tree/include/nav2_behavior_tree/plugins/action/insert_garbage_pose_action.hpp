@@ -26,10 +26,14 @@
 #include "behaviortree_cpp_v3/action_node.h"
 #include "capella_ros_msg/msg/garbage_detect.hpp"
 #include "garage_utils_msgs/msg/polygons.hpp"
+#include "geometry_msgs/msg/point.hpp"
 #include "geometry_msgs/msg/polygon.hpp"
 #include "geometry_msgs/msg/polygon_stamped.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
-#include "nav_msgs/msg/occupancy_grid.hpp"
+#include "nav2_costmap_2d/costmap_subscriber.hpp"
+#include "nav2_costmap_2d/costmap_topic_collision_checker.hpp"
+#include "nav2_costmap_2d/footprint_subscriber.hpp"
+#include "nav2_msgs/msg/costmap.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "tf2_ros/buffer.h"
 #include "visualization_msgs/msg/marker.hpp"
@@ -58,7 +62,7 @@ public:
   static constexpr double kSentinelIdentityMatchM = 0.05;
   /** 本节点约定：插入的 G/E 点 pose.position.z 固定写此值，表示无任务序号的哨兵点 */
   static constexpr double kGarbageSentinelPoseZ = -1.0;
-  /** 未再次匹配的待确认垃圾最长保留秒数 */
+  /** 待确认垃圾位姿列表的最长保留秒数 */
   static constexpr double TmpSecGarbageTime = 1.0;
   /** from 离 G 近于此则视为已到达：不用欧氏远近选侧，沿车头在 G 后方虚设来向 */
   static constexpr double kMinExtendFromDistM = 0.5;
@@ -163,7 +167,7 @@ public:
         "If no corner ahead, use last goal within this path distance as goalc (m)"),
       BT::InputPort<double>(
         "head_delete_robot_dist_m", 4.0,
-        "Only delete from goals head forward when robot is within this distance (m) of goals[0]"),
+        "Skip all goal deletes when the robot is farther than this (m) from the nearest point on input_goals"),
       BT::InputPort<double>(
         "max_garbage_robot_dist_m", 5.0,
         "Ignore garbage farther than this distance (m) from robot (anti false-detect)"),
@@ -198,18 +202,18 @@ public:
         "wall_edge_normal_offset_m", 0.0,
         "Wall-edge: shift whole D-G-E along obstacle->garbage normal (m), + away from wall"),
       BT::InputPort<std::string>(
-        "local_costmap_topic", std::string("local_costmap/costmap"),
-        "Local costmap OccupancyGrid topic for obstacle-info readability check"),
-      BT::InputPort<std::string>(
-        "global_costmap_topic", std::string("global_costmap/costmap"),
-        "Global costmap OccupancyGrid topic for robot-G and G-E line checks"),
+        "global_costmap_topic", std::string("global_costmap/costmap_raw"),
+        "Global costmap topic (nav2_msgs/Costmap) for footprint sweep checks"),
       BT::InputPort<bool>(
         "enable_visualization", true, "Publish insert/clip markers to RViz"),   //总开关
       BT::InputPort<bool>(
         "viz_accepted_garbage", true, "Show accepted garbage after filtering"),
       BT::InputPort<double>(
         "confirm_match_dist_m", 1.0,
-        "Garbage must match again within this distance (m) before accepted; <=0 disables"),
+        "Max Euclidean distance (m) among confirm frames to count as same pile; <=0 disables multi-frame confirm"),
+      BT::InputPort<int>(
+        "confirm_match_num", 2,
+        "Accept garbage after this many frames within confirm_match_dist_m; pose is their average"),
       BT::InputPort<std::string>(
         "visualization_topic", std::string("insert_garbage_pose/markers"),
         "MarkerArray topic for insert visualization"),
@@ -223,96 +227,46 @@ private:
   /** 行为树周期回调 */
   BT::NodeStatus tick() override;
 
-  /** 垃圾检测话题回调：转到 map；合堆半径内已见过则不进 history */
+  /** 垃圾检测话题回调：转到 map；单堆占用中直接丢弃新消息 */
   void garbageDetectCallback(const capella_ros_msg::msg::GarbageDetect::SharedPtr msg);
-  /** 单堆占用中：丢掉尚未插入的检测，并让回调直接丢弃新消息 */
-  void logblockSinglePileIntake();
-  /** 当前 G/E 已离开队列，允许再收下一堆 */
-  void releaseSinglePileIntake();
 
   /** 特殊清扫/禁扫区域话题回调 */
   void special_terrain_callback(const garage_utils_msgs::msg::Polygons::SharedPtr msg);
 
-  /** footprint 话题回调 */
+  /** footprint 话题回调：写入缓存，并喂给 Nav2 FootprintSubscriber */
   void footprintCallback(const geometry_msgs::msg::PolygonStamped::SharedPtr msg);
 
-  /** 加锁取最新 footprint */
-  geometry_msgs::msg::PolygonStamped::SharedPtr getFootprintSnapshot(
-    std::string & source_frame) const;
+  /** 全局代价图话题回调：喂给 Nav2 CostmapSubscriber，供 tick 内 spin 后立刻可用 */
+  void globalCostmapCallback(const nav2_msgs::msg::Costmap::SharedPtr msg);
 
-  /** 局部代价图话题回调 */
-  void localCostmapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
-
-  /** 加锁取最新局部代价图*/
-  nav_msgs::msg::OccupancyGrid::SharedPtr getLocalCostmapSnapshot() const;
-
-  /** 全局代价图话题回调 */
-  void globalCostmapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
-
-  /** 加锁取最新全局代价图 */
-  nav_msgs::msg::OccupancyGrid::SharedPtr getGlobalCostmapSnapshot() const;
+  /** 从话题取一次 footprint，缓存在节点里；车长 = base 下 max_x-min_x */
+  bool ensureCachedFootprint(std::string * reason) const;
 
   /**
-   * 地图点转到 OccupancyGrid 栅格下标。
-   * 没图 / tf 失败 / 窗外返回 false。
+   * 2.11：把车体轮廓放到 (x,y,yaw)，调用
+   * CostmapTopicCollisionChecker::isCollisionFree。图外 / unknown / 致命障碍为不通过。
    */
-  bool costmapWorldToIndex(
-    const nav_msgs::msg::OccupancyGrid::SharedPtr & costmap,
-    double x, double y,
-    int * mx, int * my, std::size_t * idx,
-    std::string * reason) const;
-
-  /** 全局代价图该点可通行：窗外、unknown、致命格都不可过 */
-  bool isMapPointPassableOnGlobalCostmap(
-    double x, double y, std::string * reason = nullptr) const;
-
-  /** 全局代价图上两点细线无障碍（窗外 / unknown / 致命格都算不通） */
-  bool isStraightLineClearOnGlobalCostmap(
-    double x0, double y0, double x1, double y1,
-    double sample_m = 0.1) const;
+  bool isCollisionFreeAtPose(
+    double x, double y, double yaw, std::string * reason,
+    bool fetch_costmap_and_footprint = true) const;
 
   /**
-   * E 候选：局部窗内查车体轮廓；无论窗内窗外，都按车体轮廓查全局图。
-   * 再查 G→E 全局细线。
+   * 2.11.1 footprint 长条：沿起点到终点按车长步进，首尾都检，朝向用连线方向。
+   */
+  bool isFootprintSweepClear(
+    double x0, double y0, double x1, double y1, std::string * reason) const;
+
+  /**
+   * 2.11.3 延长点：前一到达点（G）到 E 做 2.11.1。
    */
   bool isExtendCandidateClear(
     double gx, double gy, double ex, double ey, double yaw,
     std::string * reason) const;
-  /** 把车体轮廓放到 (x,y,yaw)，角点和边都要在全局图上可过 */
-  bool isFootprintClearOnGlobalCostmap(
-    double x, double y, double yaw, std::string * reason) const;
 
   /**
-   * 障碍物情况可读：点落在局部代价图内*/
-  bool isObstacleInfoReadable(double x, double y, std::string * reason) const;
-
-  /** 局部代价图该点可通行：仅 254/255 不可过，253 可通过 */
-  bool isMapPointPassableOnLocalCostmap(double x, double y) const;
-
-  /**
-   * 从 (x0,y0) 朝 (x1,y1) 按 sample_m 固定步长下采样查占用。
-   * 起点必采；终点不强制采样。任一点不可通则 false。
-   */
-  bool isStraightLineClearOnLocalCostmap(
-    double x0, double y0, double x1, double y1,
-    double sample_m = 0.1) const;
-
-  /**
-   * 垃圾点周围 radius_m 内局部代价图是否有占用障碍
-
-   */
-  bool hasObstacleWithinRadius(double x, double y, double radius_m) const;
-
-  /**
-   * 在局部代价图上找离 (x,y) 最近的障碍格
+   * 在全局代价图上找离 (x,y) 最近的致命障碍格
    */
   bool findNearestObstaclePixel(double x, double y, double * ox, double * oy);
-
-  /** 直线走廊无 lethal：footprint 转到行驶朝向后，半宽 0.1m 抽样并检查各顶点 */
-  bool isStraightCorridorClear(
-    double start_x, double start_y,
-    double end_x, double end_y,
-    std::string * reason) const;
 
   /** 接收到垃圾后的后处理函数，返回处理后的 garbage_list */
   GarbageList postProcessHistory();
@@ -329,7 +283,7 @@ private:
   /** 取机器人当前位姿的 xy*/
   bool getRobotPoseXY(double & x, double & y, double * yaw = nullptr) const;
 
-  /** 获取 footprint 在 base_link 下的顶点，供走廊按行驶朝向旋转 */
+  /** 获取缓存的 footprint 在 base_link 下的顶点 */
   bool getRobotFootprintInBase(
     std::vector<std::pair<double, double>> & local_xy) const;
 
@@ -387,11 +341,24 @@ private:
     double robot_x, double robot_y);
 
   /**
-   * 按当前长边 [H, C) 收集待删点：从队首删到垂足+clip_extend，含车身后的队首。
-   * 垂足在 A 后面或越过 C 时不删。只删途经点，G/E 哨兵、角点 C、对边不删。
-   * plan_only 只把下标写入 planned_delete_idx，不改 goals。
+   * 2.5 当前边只有一条：第一个非 z=-1 点 → 其后第一个角点。只向这条边投影。
+   * 落在边上：从该点沿路径删到垂足再加 clip_extend_m；先碰到角点则停在角点并留下角点，然后停止。
+   * 反延不删。正延删掉该边除尾角点外的点，重算角点和当前边后再投影。
+   * 多个参考点按顺序共用一份路径副本，后一个看得到前一个删完后的新角点。
+   * 下标记在调用方传入的 goals 上，由调用方一次删除。
+   * plan_only 不改返回的 goals。commit_memory 为 false 时不登记保留角点。
    */
-  Goals clipGoalsNearGarbage(InsertInfo & info, bool plan_only = false);
+  Goals clipGoalsNearGarbage(
+    InsertInfo & info, bool plan_only = false, bool commit_memory = true);
+
+  /** 按顺序对每个参考点跑 2.5，删除下标写入 delete_idx，不改 goals 本身。 */
+  void clipReferencesInOrder(
+    const Goals & goals,
+    const geometry_msgs::msg::PoseStamped & robot_pose,
+    const std::vector<std::pair<double, double>> & refs,
+    std::set<std::size_t> & delete_idx,
+    InsertInfo & info,
+    bool commit_memory);
 
   /** 删点后变成队首的角点：车还没开上下一条边时，它仍是当前边终点 */
   bool isRememberedCorner(double x, double y) const;
@@ -403,7 +370,7 @@ private:
   /** 插入真实垃圾、统一时间戳；G-E 接到剩余路径队首，角点和对边留下 */
   Goals insertGarbageIntoGoals(InsertInfo & info);
 
-  /** footprint 能否落在垃圾点 */
+  /** 2.11：单点 footprint 能否落在该位姿 */
   bool isFootprintClearAtPose(
     double x, double y, double yaw, std::string * reason) const;
 
@@ -469,15 +436,19 @@ private:
     std::vector<std::vector<std::size_t>> * groups_out = nullptr);
 
   /**
-   * 多堆清扫顺序
+   * 中间堆的清扫顺序。起点是 first_garbage 的延长点。
+   * locked_last 非空时固定为队尾，参与延长点评分，不参与中间排列。
    */
   std::vector<std::size_t> computeSweepOrder(
     const GarbageList & garbage_list,
     double robot_x, double robot_y,
-    double robot_yaw);
+    double robot_yaw,
+    const capella_ros_msg::msg::GarbageDetect * locked_last = nullptr);
 
   /**
-   * 最近堆优先，其余按 computeSweepOrder 扫掠重排 garbage_list_，使 [0] 为下一堆
+   * 队首是车头前方最近的一堆，正前方没有则用离车最近的。
+   * 队尾按 2.7.1 在原始路径副本上跑 2.5，取删除下标最大的一堆。
+   * 中间按 computeSweepOrder 重排，评分含队尾延长点。
    */
   void reorderNearestFirstThenSweep(
     double robot_x, double robot_y, double robot_yaw);
@@ -510,7 +481,7 @@ private:
     double px, double py,
     double ax, double ay,
     double bx, double by);
-  /** true=非角点，false=角点：当前点→前一点 与 当前点→后一点 的夹角偏离直线超过阈值 */
+  /** true=非角点，false=角点：z=-1 不能当角点；仅非 z=-1 点看夹角，最后一个普通途经点收尾 */
   bool isGoalNotCorner(
     const Goals & goals,
     std::size_t idx,
@@ -556,18 +527,30 @@ private:
   rclcpp::Node::SharedPtr node_;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   rclcpp::executors::SingleThreadedExecutor callback_group_executor_;
+  /** 把本节点 callback group 收到的 footprint 喂进 Nav2 FootprintSubscriber */
+  class FeedableFootprintSubscriber : public nav2_costmap_2d::FootprintSubscriber
+  {
+public:
+    using FootprintSubscriber::FootprintSubscriber;
+    void feed(const geometry_msgs::msg::PolygonStamped::SharedPtr & msg)
+    {
+      footprint_callback(msg);
+    }
+  };
+
   rclcpp::Subscription<capella_ros_msg::msg::GarbageDetect>::SharedPtr garbage_sub_;
   rclcpp::Subscription<garage_utils_msgs::msg::Polygons>::SharedPtr special_terrain_sub_;
-  rclcpp::Subscription<geometry_msgs::msg::PolygonStamped>::SharedPtr footprint_sub_;
-  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr local_costmap_sub_;
-  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr global_costmap_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PolygonStamped>::SharedPtr footprint_feed_sub_;
+  rclcpp::Subscription<nav2_msgs::msg::Costmap>::SharedPtr costmap_feed_sub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
+  std::shared_ptr<nav2_costmap_2d::CostmapSubscriber> costmap_sub_;
+  std::shared_ptr<FeedableFootprintSubscriber> footprint_topic_sub_;
+  mutable std::unique_ptr<nav2_costmap_2d::CostmapTopicCollisionChecker> collision_checker_;
 
   std::string garbage_topic_;
   std::string special_terrain_topic_;
   std::string footprint_topic_;
-  std::string local_costmap_topic_;
   std::string global_costmap_topic_;
   std::string visualization_topic_;
   std::string global_frame_;
@@ -594,8 +577,10 @@ private:
   double wall_edge_normal_offset_m_{0.0};
   /** 合堆半径：到种子小于该值并为一堆，默认 1.0m */
   double garbage_merge_radius_m_{1.0};
-  /** 二次确认距离：第二帧落在此距离内才算确认，默认 1.0m；<=0 关闭 */
+  /** 多帧确认：同堆欧氏距离上限，默认 1.0m；<=0 关闭多帧确认 */
   double confirm_match_dist_m_{1.0};
+  /** 多帧确认：需凑够的帧数，默认 2；位姿取这些帧的平均 */
+  int confirm_match_num_{2};
   /** 沿 path_yaw 相对垃圾再插一点的距离，默认 2.0m */
   double garbage_extend_m_{2.0};
   double sweep_turn_weight_{0.5};
@@ -620,7 +605,7 @@ private:
   bool single_pile_block_intake_{false};
   /** 原始接收缓存 */
   std::deque<capella_ros_msg::msg::GarbageDetect> history_list_;
-  /** 1 秒内还没被第二帧对上的垃圾，满 kMaxHistorySize 丢最旧 */
+  /** 时间窗内待确认的垃圾位姿，满 kMaxHistorySize 丢最旧 */
   std::deque<capella_ros_msg::msg::GarbageDetect> tmp_list_;
   /** 后处理结果列表 */
   GarbageList garbage_list_;
@@ -661,13 +646,9 @@ private:
   std::vector<geometry_msgs::msg::Polygon> special_terrain_polygons_;
 
   mutable std::mutex footprint_mutex_;
-  geometry_msgs::msg::PolygonStamped::SharedPtr latest_footprint_;
-
-  mutable std::mutex local_costmap_mutex_;
-  nav_msgs::msg::OccupancyGrid::SharedPtr latest_local_costmap_;
-
-  mutable std::mutex global_costmap_mutex_;
-  nav_msgs::msg::OccupancyGrid::SharedPtr latest_global_costmap_;
+  mutable bool have_cached_footprint_{false};
+  mutable std::vector<std::pair<double, double>> cached_footprint_base_;
+  mutable double cached_robot_length_m_{0.5};
 };
 
 }  // namespace nav2_behavior_tree
