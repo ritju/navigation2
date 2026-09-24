@@ -51,23 +51,19 @@ public:
   /** 后处理结果：每项含 map 位姿、角点、类别 class_id */
   typedef std::vector<capella_ros_msg::msg::GarbageDetect> GarbageList;
   /** history_list_ 最大长度 */
-  static constexpr std::size_t kMaxHistorySize = 10;
+  static constexpr std::size_t kMaxHistorySize = 15;
   /** garbage_list_ 最大长度 */
   static constexpr std::size_t kMaxGarbageSize = 6;
   /** 清扫顺序全排列上限，超过则贪心 */
   static constexpr std::size_t kSweepBruteMaxN = 6;
   /**
-   * 按 xy 认「同一个已写入的点」的容差米：G/E 编号查找、已插入点保护用。
-   * 与「两次检测是不是同一堆垃圾」无关，后者按文档 2.12.6/2.12.7 用
-   * garbage_merge_radius_m。
+   * 按 xy 认「同一个已写入的点」的容差米：G/E 编号查找、已插入点保护用
    */
   static constexpr double kPointMatchDistanceM = 0.4;
   /** 认「同一颗」：按下标找到 z=-1 槽后，xy 只用来确认 3.1 vs 3.11，不拿来搜附近别的堆 */
   static constexpr double kSentinelIdentityMatchM = 0.05;
   /** 本节点约定：插入的 G/E 点 pose.position.z 固定写此值，表示无任务序号的哨兵点 */
   static constexpr double kGarbageSentinelPoseZ = -1.0;
-  /** 待确认垃圾位姿列表的最长保留秒数 */
-  static constexpr double TmpSecGarbageTime = 1.0;
   /** from 离 G 近于此则视为已到达：不用欧氏远近选侧，沿车头在 G 后方虚设来向 */
   static constexpr double kMinExtendFromDistM = 0.5;
 
@@ -220,6 +216,9 @@ public:
       BT::InputPort<int>(
         "confirm_match_num", 2,
         "Accept garbage after this many frames within confirm_match_dist_m; pose is their average"),
+      BT::InputPort<double>(
+        "confirm_sec_garbage_time", 1.0,
+        "Drop tmp_list_ confirm entries older than this (s); <=0 disables age-based drop"),
       BT::InputPort<std::string>(
         "visualization_topic", std::string("insert_garbage_pose/markers"),
         "MarkerArray topic for insert visualization"),
@@ -592,6 +591,8 @@ public:
   double confirm_match_dist_m_{1.0};
   /** 多帧确认：需凑够的帧数，默认 2；位姿取这些帧的平均 */
   int confirm_match_num_{2};
+  /** tmp_list_ 待确认条目最长保留时间 (s)，默认 1.0；<=0 不按时间删除 */
+  double confirm_sec_garbage_time_{1.0};
   /** 沿 path_yaw 相对垃圾再插一点的距离，默认 2.0m */
   double garbage_extend_m_{2.0};
   /** 默认 E 不通时，左右各扫到此角度，默认 60° */

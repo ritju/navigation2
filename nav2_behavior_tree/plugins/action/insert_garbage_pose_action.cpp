@@ -29,6 +29,27 @@
 namespace nav2_behavior_tree
 {
 
+namespace
+{
+/** 日志里最多同时打 10 个坐标，多的静默丢掉 */
+constexpr std::size_t kMaxLogXyCount = 8;
+
+std::string formatXyListCapped(
+  const std::vector<std::pair<double, double>> & xys)
+{
+  std::ostringstream oss;
+  oss << std::fixed << std::setprecision(1);
+  const std::size_t n = std::min(xys.size(), kMaxLogXyCount);
+  for (std::size_t i = 0; i < n; ++i) {
+    if (i > 0) {
+      oss << " ";
+    }
+    oss << "(" << xys[i].first << "," << xys[i].second << ")";
+  }
+  return oss.str();
+}
+}  // namespace
+
 // 构造：创建垃圾、禁扫区、footprint 话题订阅
 InsertGarbagePose::InsertGarbagePose(
   const std::string & name,
@@ -168,6 +189,7 @@ void InsertGarbagePose::garbageDetectCallback(
   const double gy = item.pose.pose.position.y;
   getInput("confirm_match_dist_m", confirm_match_dist_m_);
   getInput("confirm_match_num", confirm_match_num_);
+  getInput("confirm_sec_garbage_time", confirm_sec_garbage_time_);
   const double merge_r2 =
     std::max(0.0, garbage_merge_radius_m_) * std::max(0.0, garbage_merge_radius_m_);
   const double confirm_r = std::max(0.0, confirm_match_dist_m_);
@@ -190,17 +212,20 @@ void InsertGarbagePose::garbageDetectCallback(
   // 时间窗内累计检测：凑够 confirm_match_num 帧且距离在 confirm_match_dist_m 内，取平均往下传
   if (confirm_r > 1e-6 && confirm_match_num > 1) {
     const rclcpp::Time now = node_->now();
-    for (auto it = tmp_list_.begin(); it != tmp_list_.end(); ) {
-      const double age = (now - rclcpp::Time(it->pose.header.stamp)).seconds();
-      if (age > TmpSecGarbageTime) {
-        RCLCPP_INFO(
-          node_->get_logger(),
-          "InsertGarbagePose: 删除待确认垃圾 (%.2f, %.2f), 超过 %.1f 秒没再看到",
-          it->pose.pose.position.x, it->pose.pose.position.y, TmpSecGarbageTime);
-        it = tmp_list_.erase(it);
-        continue;
+    const double confirm_time_sec = std::max(0.0, confirm_sec_garbage_time_);
+    if (confirm_time_sec > 1e-6) {
+      for (auto it = tmp_list_.begin(); it != tmp_list_.end(); ) {
+        const double age = (now - rclcpp::Time(it->pose.header.stamp)).seconds();
+        if (age > confirm_time_sec) {
+          RCLCPP_INFO(
+            node_->get_logger(),
+            "InsertGarbagePose: 删除待确认垃圾 (%.2f, %.2f), 超过 %.1f 秒没再看到",
+            it->pose.pose.position.x, it->pose.pose.position.y, confirm_time_sec);
+          it = tmp_list_.erase(it);
+          continue;
+        }
+        ++it;
       }
-      ++it;
     }
 
     item.pose.header.stamp = now;
@@ -212,12 +237,15 @@ void InsertGarbagePose::garbageDetectCallback(
     double sum_x = 0.0;
     double sum_y = 0.0;
     std::size_t match_n = 0;
+    std::vector<std::pair<double, double>> match_xy;
+    match_xy.reserve(tmp_list_.size());
     for (const auto & cand : tmp_list_) {
       if (squaredDistanceXY(
           gx, gy, cand.pose.pose.position.x, cand.pose.pose.position.y) < confirm_r2)
       {
         sum_x += cand.pose.pose.position.x;
         sum_y += cand.pose.pose.position.y;
+        match_xy.emplace_back(cand.pose.pose.position.x, cand.pose.pose.position.y);
         ++match_n;
       }
     }
@@ -242,8 +270,9 @@ void InsertGarbagePose::garbageDetectCallback(
     }
     RCLCPP_INFO(
       node_->get_logger(),
-      "InsertGarbagePose: 垃圾确认通过 帧数=%zu 平均坐标=(%.2f, %.2f)",
-      match_n, item.pose.pose.position.x, item.pose.pose.position.y);
+      "InsertGarbagePose: 垃圾确认通过 帧数=%zu 平均坐标=(%.1f, %.1f) 参与平均=%s",
+      match_n, item.pose.pose.position.x, item.pose.pose.position.y,
+      formatXyListCapped(match_xy).c_str());
   }
 
   history_list_.push_back(std::move(item));
@@ -1504,10 +1533,19 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
     const double sy = seed.pose.pose.position.y;
 
     if (members.size() > 1) {
-      RCLCPP_INFO_THROTTLE(
-        node_->get_logger(), *(node_->get_clock()), 2000,
-        "InsertGarbagePose: 合并 %zu 点, 首点=(%.2f, %.2f)",
-        members.size(), sx, sy);
+      std::vector<std::pair<double, double>> member_xy;
+      member_xy.reserve(members.size());
+      for (const std::size_t idx : members) {
+        if (idx < candidates.size()) {
+          member_xy.emplace_back(
+            candidates[idx].pose.pose.position.x,
+            candidates[idx].pose.pose.position.y);
+        }
+      }
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "InsertGarbagePose: 合并 %zu 点, 种子=(%.1f, %.1f) 成员=%s",
+        members.size(), sx, sy, formatXyListCapped(member_xy).c_str());
     }
 
     // 2.12.7 已插入过的堆不再进候选，避免持续发布反复占队首

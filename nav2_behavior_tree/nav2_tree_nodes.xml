@@ -103,6 +103,7 @@
       <input_port name="garbage_merge_radius_m" default="1.0">Points within this distance (m) of the seed are judged; a point joins only if it is also within this distance of the pile point farthest from the seed</input_port>
       <input_port name="confirm_match_dist_m" default="1.0">Max Euclidean distance (m) among confirm frames to count as same pile; &lt;=0 disables multi-frame confirm</input_port>
       <input_port name="confirm_match_num" default="2">Accept garbage after this many frames within confirm_match_dist_m; pose is their average</input_port>
+      <input_port name="confirm_sec_garbage_time" default="1.0">Drop tmp_list_ confirm entries older than this (s); &lt;=0 disables age-based drop</input_port>
       <input_port name="garbage_extend_m" default="2.0">Along path_yaw, insert E this far past garbage (m)</input_port>
       <input_port name="extend_max_yaw_deg" default="60.0">If default E is blocked, sweep this many degrees left/right (deg)</input_port>
       <input_port name="extend_step_yaw_deg" default="10.0">Yaw step when sweeping left/right for a clear E (deg)</input_port>
