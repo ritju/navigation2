@@ -56,12 +56,8 @@ public:
   static constexpr std::size_t kMaxGarbageSize = 6;
   /** 清扫顺序全排列上限，超过则贪心 */
   static constexpr std::size_t kSweepBruteMaxN = 6;
-  /**
-   * 按 xy 认「同一个已写入的点」的容差米：G/E 编号查找、已插入点保护用
-   */
-  static constexpr double kPointMatchDistanceM = 0.4;
-  /** 认「同一颗」：按下标找到 z=-1 槽后，xy 只用来确认 3.1 vs 3.11，不拿来搜附近别的堆 */
-  static constexpr double kSentinelIdentityMatchM = 0.05;
+  /** goals 哨兵 / 已保护 G·E 坐标对齐容差 (m) */
+  static constexpr double kSentinelIdentityMatchM = 0.1;
   /** 本节点约定：插入的 G/E 点 pose.position.z 固定写此值，表示无任务序号的哨兵点 */
   static constexpr double kGarbageSentinelPoseZ = -1.0;
   /** from 离 G 近于此则视为已到达：不用欧氏远近选侧，沿车头在 G 后方虚设来向 */
@@ -212,13 +208,13 @@ public:
         "viz_accepted_garbage", true, "Show accepted garbage after filtering"),
       BT::InputPort<double>(
         "confirm_match_dist_m", 1.0,
-        "Max Euclidean distance (m) among confirm frames to count as same pile; <=0 disables multi-frame confirm"),
+        "Max Euclidean distance (m) among confirm frames to count as same pile"),
       BT::InputPort<int>(
         "confirm_match_num", 2,
         "Accept garbage after this many frames within confirm_match_dist_m; pose is their average"),
       BT::InputPort<double>(
         "confirm_sec_garbage_time", 1.0,
-        "Drop tmp_list_ confirm entries older than this (s); <=0 disables age-based drop"),
+        "Drop tmp_list_ confirm entries older than this (s)"),
       BT::InputPort<std::string>(
         "visualization_topic", std::string("insert_garbage_pose/markers"),
         "MarkerArray topic for insert visualization"),
@@ -234,6 +230,9 @@ private:
 
   /** 垃圾检测话题回调：转到 map；单堆占用中直接丢弃新消息 */
   void garbageDetectCallback(const capella_ros_msg::msg::GarbageDetect::SharedPtr msg);
+
+  /** 从 BT 输入口刷新可调参数 */
+  void refreshTunableInputPorts();
 
   /** 特殊清扫/禁扫区域话题回调 */
   void special_terrain_callback(const garage_utils_msgs::msg::Polygons::SharedPtr msg);
@@ -294,13 +293,6 @@ private:
   static bool isUnindexedSentinelPoseZ(
     const geometry_msgs::msg::PoseStamped & pose_stamped_goal);
 
-  /** 本任务内按 xy 分配稳定 G 编号，重插同一堆不改号 */
-  int assignStableGNum(double x, double y);
-  int lookupStableGNum(double x, double y) const;
-  /** E 点坐标登记所属 G 编号 */
-  void registerStableENum(double x, double y, int g_num);
-  int lookupStableENum(double x, double y) const;
-
   /**
    * 按下标找这堆在 {goals} 里的槽：该格 z=-1，xy 仅确认同一颗。
    * 找到返回 true 并写出 index；没有任何一格对上返回 false。
@@ -312,26 +304,12 @@ private:
    * 每 tick 检查全部已插堆：{goals} 里找不到这堆自己的 z=-1 槽则从 active 去掉。
    * 自己不删点，只认「哨兵已经被擦掉」这个结果。
    */
-  std::size_t stripReachedZNeg1Goals(
+  std::size_t checkZgoals(
     const Goals & goals,
     std::string * deleted_summary = nullptr);
 
-  /**
-   * 扫完判定：footprint 盖过 / 沿 G→E 经过 G，并且盖过 / 离开 E（无 E 则只看 G）。
-   * 只用来从 {goals} 删掉这对哨兵，不用来判断「这堆开没开扫」。
-   */
-  bool isPointCoveredByRobotFootprint(
-    double x, double y, const geometry_msgs::msg::PoseStamped & robot_pose) const;
-  static bool isPastAlongDirection(
-    double rx, double ry, double px, double py, double dir_x, double dir_y);
-  bool eraseSweptSentinelsFromGoals(
-    Goals & goals, const geometry_msgs::msg::PoseStamped & robot_pose);
-
   /** 每次 setOutput("output_goals") 时打日志，便于观察时机与频率 */
   void emitOutputGoals(const Goals & goals, const char * reason);
-
-  /** 紧凑打印 goals：(x,y) 或 (x,y,-1) */
-  std::string formatGoalsListCompact(const Goals & goals) const;
 
   /** 获取插入所需的全部信息并返回 */
   InsertInfo gatherInsertInfo(
@@ -398,13 +376,13 @@ private:
   /** 判断点是否在多边形内 */
   static bool isPointInPolygon(
     double x, double y, const geometry_msgs::msg::Polygon & polygon);
-  /** 2.12.6 新种子是否与已有种子重复：按 garbage_merge_radius_m */
-  bool isDuplicateOfKept(
+  /** True if garbage is within garbage_merge_radius_m_ of any pile in existing. */
+  bool isDuplicateGarbage(
     const capella_ros_msg::msg::GarbageDetect & garbage,
-    const GarbageList & kept) const;
+    const GarbageList & existing) const;
   /** 2.12.7 是否落在已处理过、不再插入的垃圾附近：按 garbage_merge_radius_m */
   bool isNearReachedGarbage(double x, double y) const;
-  /** 该 xy 是否是已写入 goals 的 G/E 点，用 kPointMatchDistanceM 做几何认点 */
+  /** 该 xy 是否已在 reached_garbage_xy_（与插入 G/E 同 0.1m 容差） */
   bool isProtectedGarbageXy(double x, double y) const;
   void addProtectedGarbageXy(double x, double y);
   void eraseProtectedGarbageXy(double x, double y);
@@ -426,7 +404,7 @@ private:
     double robot_x, double robot_y);
 
   /**
-   * 合堆,一次性能扫掉的
+   * 合堆：每堆从离车最近的点开堆，代表坐标为成员质心
    */
   static GarbageList mergeGarbagePiles(
     const GarbageList & candidates,
@@ -501,9 +479,6 @@ private:
     std::size_t & out_idx,
     std::size_t * nearest_seg_out = nullptr,
     std::size_t * start_idx_out = nullptr) const;
-
-  /** 打印 garbage_list_ 当前内容，reason 为更新原因 */
-  void logGarbageListState(const char * reason) const;
 
   /** 插入一堆时画 G/E、蓝虚线、footprint 长条；首点/角点另刷 */
   void publishVisualization(
@@ -603,6 +578,9 @@ public:
   double sweep_turn_weight_{0.5};
   double sweep_dist_weight_{0.5};
   double work_circle_radius_m_{10.0};
+  bool single_pile_insert_{true};
+  bool enable_visualization_{true};
+  bool viz_accepted_garbage_{true};
   bool has_work_circle_{false};
   double work_circle_x_{0.0};
   double work_circle_y_{0.0};
@@ -620,18 +598,25 @@ public:
   std::mutex history_mutex_;
   /** 单堆：当前 G/E 还在 goals 里时，话题新垃圾不进 history / 待确认 / 待插列表 */
   bool single_pile_block_intake_{false};
-  /** 当前占用堆的扫完闩：到 G、到 E 分开记，换堆或新任务清掉 */
-  int sweep_latch_g_num_{0};
-  bool sweep_seen_g_{false};
-  bool sweep_seen_e_{false};
   /** 原始接收缓存 */
   std::deque<capella_ros_msg::msg::GarbageDetect> history_list_;
   /** 时间窗内待确认的垃圾位姿，满 kMaxHistorySize 丢最旧 */
   std::deque<capella_ros_msg::msg::GarbageDetect> tmp_list_;
   /** 后处理结果列表 */
   GarbageList garbage_list_;
-  /** 已插入且 goals 里尚未扫过的堆；中途新堆只重排其中尚未开始的，正在扫的不重插 */
-  GarbageList active_piles_;
+  /** 已插入且 goals 里尚未扫过的堆。G/E 身份是插入时写入的坐标，不按距离并号 */
+  struct ActivePile
+  {
+    capella_ros_msg::msg::GarbageDetect detect;
+    int g_num{0};
+    double gx{0.0};
+    double gy{0.0};
+    bool has_e{false};
+    double ex{0.0};
+    double ey{0.0};
+  };
+  std::vector<ActivePile> active_piles_;
+  const ActivePile * findActivePileAt(double x, double y) const;
   /** 当前认定的任务时间戳，与 goals 上统一 stamp 对齐 */
   rclcpp::Time mission_stamp_record_{0, 0, RCL_ROS_TIME};
   bool has_mission_stamp_{false};
@@ -656,10 +641,6 @@ public:
   bool viz_have_head_{false};
   bool viz_have_corner_{false};
   bool viz_have_fail_strip_{false};
-  /** 本任务内各堆稳定 G 编号，避免删点全显示成 G1 */
-  std::vector<std::pair<std::pair<double, double>, int>> g_num_xy_;
-  /** E 点坐标 -> 所属 G 编号 */
-  std::vector<std::pair<std::pair<double, double>, int>> e_num_xy_;
   int next_g_num_{1};
   /** 上次清扫顺序（map xy），供 4-1 保留其余相对次序 */
   std::vector<std::pair<double, double>> last_sweep_xy_;
