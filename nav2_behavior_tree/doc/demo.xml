@@ -1,0 +1,132 @@
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+      <PipelineSequence name="NavigateWithReplanning">
+        <RateController hz="1.0">
+          <Fallback>
+            <IsMoving/>
+            <IsCollision expand_contour="false" server_timeout="1000"/>
+          </Fallback>
+        </RateController>
+
+        <RateController hz="2.0">
+          <Sequence>
+            <InsertGarbagePose
+              input_goals="{goals}"
+              output_goals="{goals}"
+              garbage_topic="/garbage_rectangle_points"
+              special_terrain_topic="/cleaning_tool_retraction_areas"
+              footprint_topic="local_costmap/published_footprint"
+              global_costmap_topic="global_costmap/costmap_raw"
+              clip_extend_m="2.5"
+              corner_angle_deg="30.0"
+              goaltotal_range_m="10.0"
+              head_delete_robot_dist_m="4.0"
+              max_garbage_robot_dist_m="5.0"
+              work_circle_radius_m="10.0"
+              garbage_merge_radius_m="1.0"
+              garbage_extend_m="2.0"
+              confirm_match_dist_m="1.0"
+              confirm_match_num="1"
+              single_pile_insert="true"
+              sweep_dist_weight="0.5"
+              sweep_turn_weight="0.5"
+              extend_max_yaw_deg="60.0"
+              extend_step_yaw_deg="10.0"
+              enable_wall_edge_insert="true"
+              wall_edge_d_extend_m="2.0"
+              wall_edge_e_extend_m="2.0"
+              wall_edge_min_robot_dist_m="1.0"
+              wall_edge_sample_m="0.5"
+              wall_edge_normal_offset_m="0.0"
+              enable_visualization="true"
+              viz_accepted_garbage="true"
+              visualization_topic="insert_garbage_pose/markers"
+              global_frame="map"
+              robot_base_frame="base_link"
+            />
+            <RemovePassedGoals
+              input_goals="{goals}"
+              output_goals="{goals}"
+              output_gpp_goals="{gpp_goals}"
+              radius="5.0"
+              accumulate_distance="8.0"
+              max_gpp_segment_m="300.0"
+              replan_trigger_arc_m="100.0"
+              teb_message_timeout_s="2.0"
+              pass_check_max_search_dist_m="8.0"
+              pass_behind_tol_m="0.0"
+              pass_enable_yaw_check="false"
+              pass_yaw_threshold_rad="2.6"
+              pass_tail_relax_remaining_path_max_m="2.0"
+              pass_tail_relax_radius_m="1.0"
+              global_frame="map"
+              robot_base_frame="base_link"
+              teb_topic="teb_global_plan"
+              odom_topic="odom"
+              pass_check_min_odom_linear_x_mps="0.15"
+              gpp_goal_pose_match_xy_m="0.1"
+              gpp_goal_pose_match_yaw_rad="-1.0"
+            />
+          </Sequence>
+        </RateController>
+
+        <RateController hz="0.5">
+          <PathCheck check_distance="1000.0" input_goals="{goals}" output_goals="{goals}"/>
+        </RateController>
+        <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+            <Fallback>
+              <ReactiveSequence>
+                <Inverter>
+                  <GlobalUpdatedGoal  goals="{gpp_goals}"/>
+                </Inverter>
+                <Inverter>
+                  <PathExpiringTimer seconds="10000" path="{path}"/>
+                </Inverter>
+              </ReactiveSequence>
+              <Sequence>
+                 <ClearCostmapExceptRegion name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_except_global_costmap" reset_distance="6.0"/>
+                 <Wait wait_duration="1"/>
+                 <ComputePathThroughPoses goals="{gpp_goals}" path="{path}" planner_id="GridBased"/>
+              </Sequence>
+            </Fallback>
+            <Sequence>
+              <Fallback>
+                <IsCollision expand_contour="true" server_timeout="1000"/>
+                <CollisionRecover/>
+              </Fallback>
+              <ClearCostmapExceptRegion name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_except_global_costmap" reset_distance="6.0"/>
+            </Sequence>
+        </RecoveryNode>
+
+        <RecoveryNode number_of_retries="1" name="FollowPath">
+          <FollowPath path="{path}" controller_id="FollowPath" input_goals="{gpp_goals}"/>
+          <Sequence>
+            <Fallback>
+              <IsCollision expand_contour="true" server_timeout="1000"/>
+              <CollisionRecover/>
+            </Fallback>
+            <ClearCostmapExceptRegion name="ClearGlobalCostmap-Context" service_name="local_costmap/clear_except_local_costmap" reset_distance="3.0"/>
+            <ClearCostmapExceptRegion name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_except_global_costmap" reset_distance="6.0"/>
+            <Wait wait_duration="1"/>
+            <ComputePathThroughPoses goals="{gpp_goals}" path="{path}" planner_id="GridBased"/>
+          </Sequence>
+        </RecoveryNode>
+      </PipelineSequence>
+
+      <ReactiveFallback name="RecoveryFallback">
+        <GoalUpdated/>
+        <Sequence name="RecoveryActions">
+          <ClearCostmapExceptRegion name="ClearGlobalCostmap-Context" service_name="local_costmap/clear_except_local_costmap" reset_distance="3.0"/>
+          <ClearCostmapExceptRegion name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_except_global_costmap" reset_distance="6.0"/>
+          <Wait wait_duration="1"/>
+          <Fallback>
+            <IsCollision expand_contour="true" server_timeout="1000"/>
+            <CollisionRecover/>
+          </Fallback>
+          <ClearPath input_path="{path}" output_path="{path}"/>
+        </Sequence>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

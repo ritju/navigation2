@@ -178,6 +178,9 @@ public:
       BT::InputPort<bool>(
         "single_pile_insert", true,
         "If true, accept and insert one pile; while its G or E remains in the queue, drop new detections"),
+      BT::InputPort<bool>(
+        "enable_wall_edge_insert", true,
+        "If true and robot->G footprint fails at insert, try wall-edge D-G-E (independent of single_pile_insert)"),
       BT::InputPort<double>(
         "sweep_dist_weight", 0.5,
         "Sweep order score weight on total travel distance (2.7.3)"),
@@ -267,6 +270,14 @@ private:
    * 在全局代价图上找离 (x,y) 最近的致命障碍格
    */
   bool findNearestObstaclePixel(double x, double y, double * ox, double * oy);
+
+  /**
+   * 2.12.4 贴墙进表：robot→garbage 连线在代价图上无致命障碍（不含垃圾格本身）。
+   * 比 footprint 长条宽松，用于 enable_wall_edge_insert 时的候选筛选。
+   */
+  bool isRobotGarbageSegmentClearOfLethal(
+    double robot_x, double robot_y, double gx, double gy,
+    std::string * reason = nullptr) const;
 
   /** 接收到垃圾后的后处理函数，返回处理后的 garbage_list */
   GarbageList postProcessHistory();
@@ -582,6 +593,7 @@ public:
   double sweep_dist_weight_{0.5};
   double work_circle_radius_m_{10.0};
   bool single_pile_insert_{true};
+  bool enable_wall_edge_insert_{true};
   bool enable_visualization_{true};
   bool viz_accepted_garbage_{true};
   bool has_work_circle_{false};

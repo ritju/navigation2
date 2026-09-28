@@ -109,6 +109,7 @@
       <input_port name="extend_step_yaw_deg" default="10.0">Yaw step when sweeping left/right for a clear E (deg)</input_port>
       <input_port name="work_circle_radius_m" default="10.0">Accept new garbage only inside this radius around the robot pose when the first pile of a batch is accepted</input_port>
       <input_port name="single_pile_insert" default="true">If true, insert only one pile (G/E) and wait until it is swept before inserting the next</input_port>
+      <input_port name="enable_wall_edge_insert" default="true">If true and robot-&gt;G footprint fails at insert, try wall-edge D-G-E (independent of single_pile_insert)</input_port>
       <input_port name="sweep_dist_weight" default="0.5">Sweep order score weight on total travel distance (2.7.3)</input_port>
       <input_port name="sweep_turn_weight" default="0.5">Sweep order score weight on total |yaw| turned (2.7.3)</input_port>
       <input_port name="wall_edge_d_extend_m" default="2.0">Wall-edge D push step along tangent (m)</input_port>

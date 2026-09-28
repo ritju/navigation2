@@ -18,6 +18,7 @@
 #include "nav2_costmap_2d/costmap_2d.hpp"
 #include "std_msgs/msg/header.hpp"
 #include "nav2_util/geometry_utils.hpp"
+#include "nav2_util/line_iterator.hpp"
 #include "nav2_util/robot_utils.hpp"
 #include "tf2/utils.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
@@ -141,6 +142,7 @@ void InsertGarbagePose::refreshTunableInputPorts()
   getInput("confirm_match_num", confirm_match_num_);
   getInput("confirm_sec_garbage_time", confirm_sec_garbage_time_);
   getInput("single_pile_insert", single_pile_insert_);
+  getInput("enable_wall_edge_insert", enable_wall_edge_insert_);
   getInput("enable_visualization", enable_visualization_);
   getInput("viz_accepted_garbage", viz_accepted_garbage_);
 }
@@ -487,6 +489,82 @@ bool InsertGarbagePose::findNearestObstaclePixel(
   }
   *ox = best_cx;
   *oy = best_cy;
+  return true;
+}
+
+bool InsertGarbagePose::isRobotGarbageSegmentClearOfLethal(
+  double robot_x, double robot_y, double gx, double gy,
+  std::string * reason) const
+{
+  if (!costmap_sub_) {
+    if (reason) {
+      *reason = "no costmap subscriber";
+    }
+    return false;
+  }
+  std::shared_ptr<nav2_costmap_2d::Costmap2D> costmap;
+  try {
+    costmap = costmap_sub_->getCostmap();
+  } catch (const std::exception &) {
+    if (reason) {
+      *reason = "costmap unavailable";
+    }
+    return false;
+  }
+  if (!costmap) {
+    if (reason) {
+      *reason = "no costmap";
+    }
+    return false;
+  }
+
+  unsigned int mx0 = 0;
+  unsigned int my0 = 0;
+  unsigned int mx1 = 0;
+  unsigned int my1 = 0;
+  if (!costmap->worldToMap(robot_x, robot_y, mx0, my0)) {
+    if (reason) {
+      *reason = "robot out of costmap";
+    }
+    return false;
+  }
+  if (!costmap->worldToMap(gx, gy, mx1, my1)) {
+    if (reason) {
+      *reason = "garbage out of costmap";
+    }
+    return false;
+  }
+
+  const int x0 = static_cast<int>(mx0);
+  const int y0 = static_cast<int>(my0);
+  const int x1 = static_cast<int>(mx1);
+  const int y1 = static_cast<int>(my1);
+
+  for (nav2_util::LineIterator line(x0, y0, x1, y1); line.isValid(); line.advance()) {
+    const int lx = line.getX();
+    const int ly = line.getY();
+    if (lx == x1 && ly == y1) {
+      // 垃圾格常在墙边 lethal 上，贴墙进表不卡终点
+      continue;
+    }
+    if (lx < 0 || ly < 0) {
+      continue;
+    }
+    const unsigned int mx = static_cast<unsigned int>(lx);
+    const unsigned int my = static_cast<unsigned int>(ly);
+    if (mx >= costmap->getSizeInCellsX() || my >= costmap->getSizeInCellsY()) {
+      if (reason) {
+        *reason = "line leaves costmap";
+      }
+      return false;
+    }
+    if (costmap->getCost(mx, my) == nav2_costmap_2d::LETHAL_OBSTACLE) {
+      if (reason) {
+        *reason = "lethal on robot-garbage line";
+      }
+      return false;
+    }
+  }
   return true;
 }
 
@@ -1412,16 +1490,26 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
       }
     }
 
-    // 2.12.4：车到垃圾做 footprint 长条，扫不过去的垃圾不进候选
+    // 2.12.4：GE 用 footprint 长条；enable_wall_edge_insert 时用 robot-G 连线无 lethal
     {
       std::string sweep_reason;
-      if (!isFootprintSweepClear(robot_x, robot_y, gx, gy, &sweep_reason)) {
-        RCLCPP_INFO_THROTTLE(
-          node_->get_logger(), *(node_->get_clock()), 2000,
-          "InsertGarbagePose: 垃圾=(%.2f, %.2f), 因为车到垃圾 footprint 长条不通过(%s), 丢弃",
-          gx, gy, sweep_reason.c_str());
+      const bool intake_clear = enable_wall_edge_insert_ ?
+        isRobotGarbageSegmentClearOfLethal(robot_x, robot_y, gx, gy, &sweep_reason) :
+        isFootprintSweepClear(robot_x, robot_y, gx, gy, &sweep_reason);
+      if (!intake_clear) {
+        if (enable_wall_edge_insert_) {
+          RCLCPP_INFO_THROTTLE(
+            node_->get_logger(), *(node_->get_clock()), 2000,
+            "InsertGarbagePose: 垃圾=(%.2f, %.2f), 贴墙进表: 车到垃圾连线有障碍(%s), 丢弃",
+            gx, gy, sweep_reason.c_str());
+        } else {
+          RCLCPP_INFO_THROTTLE(
+            node_->get_logger(), *(node_->get_clock()), 2000,
+            "InsertGarbagePose: 垃圾=(%.2f, %.2f), 因为车到垃圾 footprint 长条不通过(%s), 丢弃",
+            gx, gy, sweep_reason.c_str());
+          publishFailedSweepVisualization(robot_x, robot_y, gx, gy);
+        }
         eraseFromHistory(original);
-        publishFailedSweepVisualization(robot_x, robot_y, gx, gy);
         continue;
       }
     }
@@ -1471,7 +1559,7 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
     const double sx = seed.pose.pose.position.x;
     const double sy = seed.pose.pose.position.y;
 
-    // 2.12.7 已插入过的堆不再进候选，避免持续发布反复占队首
+    // 已插入过的堆不再进候选，避免持续发布反复占队首
     if (isNearReachedGarbage(sx, sy)) {
       RCLCPP_INFO_THROTTLE(
         node_->get_logger(), *(node_->get_clock()), 2000,
@@ -1813,7 +1901,7 @@ bool InsertGarbagePose::collectInProgressKeepXy(
     }
   };
 
-  // 开扫了没：队首第一颗 z=-1 就是当前堆。扫完了没以 {goals} 里还有没有这对点为准。
+  // 开扫了没：队首第一颗 z=-1 就是当前堆。扫完了没以 {goals} 里还有没有这对点为准
   int g_num = 0;
   bool found_lead = false;
   const ActivePile * pile = nullptr;
@@ -4615,8 +4703,8 @@ BT::NodeStatus InsertGarbagePose::tick()
     if (footprint_ok) {
       // 2.11.2 通过：正常 G-E 扫
       goals_now = insertGarbageIntoGoals(info);
-    } else if (single_pile_insert_) {
-      // 单堆且 2.11.2 不过：贴墙 entry-G-E
+    } else if (enable_wall_edge_insert_) {
+      // 2.11.2 不过且启用贴墙：D-G-E
       RCLCPP_INFO(
         node_->get_logger(),
         "InsertGarbagePose: footprint sweep fail robot->G (%.2f, %.2f): %s, wall-edge insert",
@@ -4631,7 +4719,7 @@ BT::NodeStatus InsertGarbagePose::tick()
     } else {
       RCLCPP_INFO(
         node_->get_logger(),
-        "InsertGarbagePose: skip garbage (%.2f, %.2f), 多堆 footprint 不过，不生成 (%s)",
+        "InsertGarbagePose: skip garbage (%.2f, %.2f), footprint 不过且未启用贴墙 (%s)",
         gx, gy, fp_reason.c_str());
       publishFootprintCheckBox(gx, gy, info.path_yaw);
       addProtectedGarbageXy(gx, gy);
