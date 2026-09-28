@@ -1426,7 +1426,7 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
       }
     }
 
-    if (!has_work_circle_ && garbage_list_.empty() && active_piles_.empty()) {
+    if (!has_work_circle_ && garbage_list_.empty() && cleaning_garbages_.empty()) {
       has_work_circle_ = true;
       work_circle_x_ = robot_x;
       work_circle_y_ = robot_y;
@@ -1542,7 +1542,7 @@ void InsertGarbagePose::checkAndResetOnNewMission()
     tmp_list_.clear();
   }
   garbage_list_.clear();
-  active_piles_.clear();
+  cleaning_garbages_.clear();
   reached_garbage_xy_.clear();
   viz_obstacle_pixels_.clear();
   viz_obstacle_marker_count_ = 0;
@@ -1620,7 +1620,7 @@ const InsertGarbagePose::ActivePile * InsertGarbagePose::findActivePileAt(  // �
   double x, double y) const
 {
   const double thresh2 = kSentinelIdentityMatchM * kSentinelIdentityMatchM;
-  for (const auto & pile : active_piles_) {
+  for (const auto & pile : cleaning_garbages_) {
     if (squaredDistanceXY(pile.gx, pile.gy, x, y) < thresh2) {
       return &pile;
     }
@@ -1663,16 +1663,16 @@ std::size_t InsertGarbagePose::checkZgoals(
   const Goals & goals,
   std::string * deleted_summary)
 {
-  if (active_piles_.empty()) {
+  if (cleaning_garbages_.empty()) {
     return 0;
   }
 
   std::vector<ActivePile> still;
-  still.reserve(active_piles_.size());
+  still.reserve(cleaning_garbages_.size());
   std::size_t n_gone = 0;
   std::ostringstream deleted_oss;
 
-  for (const auto & pile : active_piles_) {
+  for (const auto & pile : cleaning_garbages_) {
     const bool g_in = findUnindexedSentinelIndex(goals, pile.gx, pile.gy, nullptr);
     const bool e_in = pile.has_e &&
       findUnindexedSentinelIndex(goals, pile.ex, pile.ey, nullptr);
@@ -1701,10 +1701,10 @@ std::size_t InsertGarbagePose::checkZgoals(
 
   cleaning_garbages_= std::move(still);
 
-  if (!active_piles_.empty()) {
-    const double ax = active_piles_.front().gx;
-    const double ay = active_piles_.front().gy;
-    const int g_num = active_piles_.front().g_num;
+  if (!cleaning_garbages_.empty()) {
+    const double ax = cleaning_garbages_.front().gx;
+    const double ay = cleaning_garbages_.front().gy;
+    const int g_num = cleaning_garbages_.front().g_num;
     std::size_t idx = 0;
     const bool found = findUnindexedSentinelIndex(goals, ax, ay, &idx);
     RCLCPP_INFO_THROTTLE(
@@ -1743,7 +1743,7 @@ bool InsertGarbagePose::isNearReachedGarbage(double x, double y) const
   return false;
 }
 
-bool InsertGarbagePose::isProtectedGarbageXy(double x, double y) const
+bool InsertGarbagePose::isProtectedGarbageXy(double x, double y) const   //判断某个已经写进 goals 的 G/E 点
 {
   const double thresh2 =
     kSentinelIdentityMatchM * kSentinelIdentityMatchM;
@@ -4224,22 +4224,22 @@ BT::NodeStatus InsertGarbagePose::tick()
         ++z_neg1_n;
       }
     }
-    if (!active_piles_.empty() || z_neg1_n > 0) {
+    if (!cleaning_garbages_.empty() || z_neg1_n > 0) {
       std::ostringstream active_oss;
-      for (std::size_t i = 0; i < active_piles_.size(); ++i) {
-        const double ax = active_piles_[i].gx;
-        const double ay = active_piles_[i].gy;
+      for (std::size_t i = 0; i < cleaning_garbages_.size(); ++i) {
+        const double ax = cleaning_garbages_[i].gx;
+        const double ay = cleaning_garbages_[i].gy;
         const double dist = std::sqrt(squaredDistanceXY(rx, ry, ax, ay));
         std::size_t in_idx = 0;
         bool in_goals = findUnindexedSentinelIndex(goals_now, ax, ay, &in_idx);
-        if (!in_goals && active_piles_[i].has_e) {
+        if (!in_goals && cleaning_garbages_[i].has_e) {
           in_goals = findUnindexedSentinelIndex(
-            goals_now, active_piles_[i].ex, active_piles_[i].ey, &in_idx);
+            goals_now, cleaning_garbages_[i].ex, cleaning_garbages_[i].ey, &in_idx);
         }
         if (i > 0) {
           active_oss << " | ";
         }
-        const int g_num = active_piles_[i].g_num;
+        const int g_num = cleaning_garbages_[i].g_num;
         active_oss << "G" << (g_num > 0 ? g_num : 0)
                    << "(" << ax << "," << ay << ") dist=" << dist
                    << " in_goals=" << (in_goals ? 1 : 0);
@@ -4261,7 +4261,7 @@ BT::NodeStatus InsertGarbagePose::tick()
         "z=-1_n=%zu %s | active_n=%zu %s | protected_n=%zu %s",
         rx, ry, robot_yaw, goals_now.size(),
         z_neg1_n, z_neg1_oss.str().c_str(),
-        active_piles_.size(), active_oss.str().c_str(),
+        cleaning_garbages_.size(), active_oss.str().c_str(),
         reached_garbage_xy_.size(), prot_oss.str().c_str());
     }
   }
@@ -4331,7 +4331,7 @@ BT::NodeStatus InsertGarbagePose::tick()
       formatOrder(final_idxs).c_str());
   };
 
-  if (has_work_circle_ && garbage_list_.empty() && active_piles_.empty()) {
+  if (has_work_circle_ && garbage_list_.empty() && cleaning_garbages_.empty()) {
     RCLCPP_INFO(node_->get_logger(), "InsertGarbagePose: 工作圈取消");
     clearMissionVisualization();
     viz_obstacle_pixels_.clear();
@@ -4357,7 +4357,7 @@ BT::NodeStatus InsertGarbagePose::tick()
   }
   std::size_t new_idx = 0;
   const bool have_new_pile = findNewGarbageIndex(before, rx, ry, new_idx);
-  const bool mid_mission_new = have_new_pile && !active_piles_.empty();
+  const bool mid_mission_new = have_new_pile && !cleaning_garbages_.empty();
   if (mid_mission_new) {
     // 正在扫的 G/E 留在 {goals} 里继续扫完；只把尚未开始的已插堆 + 新堆重排后接在后面
     std::vector<std::pair<double, double>> keep_xy;
@@ -4378,12 +4378,12 @@ BT::NodeStatus InsertGarbagePose::tick()
         goals_now, keep_xy.front().first, keep_xy.front().second, &keep_idx);
 
     std::ostringstream old_active_oss;
-    for (std::size_t i = 0; i < active_piles_.size(); ++i) {
+    for (std::size_t i = 0; i < cleaning_garbages_.size(); ++i) {
       if (i > 0) {
         old_active_oss << " ";
       }
-      old_active_oss << "(" << active_piles_[i].gx << ","
-                     << active_piles_[i].gy << ")";
+      old_active_oss << "(" << cleaning_garbages_[i].gx << ","
+                     << cleaning_garbages_[i].gy << ")";
     }
     std::ostringstream new_list_oss;
     for (std::size_t i = 0; i < garbage_list_.size(); ++i) {
@@ -4406,16 +4406,16 @@ BT::NodeStatus InsertGarbagePose::tick()
       "InsertGarbagePose: diag mid-mission BEGIN goals=%zu active_n=%zu %s "
       "new_list_n=%zu %s keep_g=%d keep_idx=%s keep_xy=%s "
       "(keep in-progress G/E slot, reorder unstarted+new only)",
-      goals_now.size(), active_piles_.size(), old_active_oss.str().c_str(),
+      goals_now.size(), cleaning_garbages_.size(), old_active_oss.str().c_str(),
       garbage_list_.size(), new_list_oss.str().c_str(),
       keep_g_num, keep_idx_str.c_str(), keep_oss.str().c_str());
 
     std::vector<ActivePile> keep_active;
     std::vector<ActivePile> rest_active;
-    keep_active.reserve(active_piles_.size());
-    rest_active.reserve(active_piles_.size());
+    keep_active.reserve(cleaning_garbages_.size());
+    rest_active.reserve(cleaning_garbages_.size());
     if (have_keep) {
-      for (const auto & pile : active_piles_) {
+      for (const auto & pile : cleaning_garbages_) {
         const bool in_progress = isKeepXy(pile.gx, pile.gy) ||
           (pile.has_e && isKeepXy(pile.ex, pile.ey));
         if (in_progress) {
@@ -4425,7 +4425,7 @@ BT::NodeStatus InsertGarbagePose::tick()
         }
       }
     } else {
-      rest_active = active_piles_;
+      rest_active = cleaning_garbages_;
     }
 
     Goals kept_goals;
@@ -4664,13 +4664,13 @@ BT::NodeStatus InsertGarbagePose::tick()
     active.has_e = info.extend_inserted;
     active.ex = info.extend_x;
     active.ey = info.extend_y;
-    active_piles_.push_back(active);
+    cleaning_garbages_.push_back(active);
     RCLCPP_INFO(
       node_->get_logger(),
       "InsertGarbagePose: diag active+ G%d (%.2f, %.2f) extend=%d E=(%.2f, %.2f) "
       "active_n=%zu",
       info.dist_label, gx, gy, info.extend_inserted ? 1 : 0,
-      info.extend_x, info.extend_y, active_piles_.size());
+      info.extend_x, info.extend_y, cleaning_garbages_.size());
     garbage_list_.erase(garbage_list_.begin());
     ++inserted_count;
     inserted_xy << "(" << gx << ", " << gy << ") ";
@@ -4681,8 +4681,8 @@ BT::NodeStatus InsertGarbagePose::tick()
   }
 
   last_sweep_xy_.clear();
-  last_sweep_xy_.reserve(active_piles_.size());
-  for (const auto & g : active_piles_) {
+  last_sweep_xy_.reserve(cleaning_garbages_.size());
+  for (const auto & g : cleaning_garbages_) {
     last_sweep_xy_.emplace_back(g.gx, g.gy);
   }
 
@@ -4698,7 +4698,7 @@ BT::NodeStatus InsertGarbagePose::tick()
       node_->get_logger(),
       "InsertGarbagePose: diag after-batch goals=%zu z=-1_n=%zu active_n=%zu "
       "protected_n=%zu",
-      goals_now.size(), z_neg1_n, active_piles_.size(),
+      goals_now.size(), z_neg1_n, cleaning_garbages_.size(),
       reached_garbage_xy_.size());
     RCLCPP_INFO(
       node_->get_logger(),

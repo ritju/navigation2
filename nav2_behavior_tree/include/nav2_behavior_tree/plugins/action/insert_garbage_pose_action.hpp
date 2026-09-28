@@ -395,9 +395,12 @@ private:
     std::vector<std::pair<double, double>> * keep_xy,
     int * keep_g_num) const;
 
-  /** 平面距离平方 */
+public:
+  /** 平面距离平方。排序用的自由函数在类外，需要能直接调用 */
   static double squaredDistanceXY(
     double x1, double y1, double x2, double y2);
+
+private:
   /** 写入 garbage_list_，满了时优先保留离机器人更近的 */
   bool tryInsertPreferCloserToRobot(
     capella_ros_msg::msg::GarbageDetect garbage,
@@ -615,7 +618,7 @@ public:
     double ex{0.0};
     double ey{0.0};
   };
-  std::vector<ActivePile> active_piles_;
+  std::vector<ActivePile> cleaning_garbages_;
   const ActivePile * findActivePileAt(double x, double y) const;
   /** 当前认定的任务时间戳，与 goals 上统一 stamp 对齐 */
   rclcpp::Time mission_stamp_record_{0, 0, RCL_ROS_TIME};
