@@ -198,10 +198,10 @@ public:
         "Wall-edge: keep |D-robot| at least this (m)"),
       BT::InputPort<double>(
         "wall_edge_sample_m", 0.5,
-        "Wall-edge: spacing of points on D-E (m)"),
+        "Wall-edge: sample spacing along D-G-E (m); <=0 keeps only D, G, E"),
       BT::InputPort<double>(
         "wall_edge_normal_offset_m", 0.0,
-        "Wall-edge: shift whole D-G-E along obstacle->garbage normal (m), + away from wall"),
+        "Wall-edge: after D-G-E is built, shift the whole chain along P->G (m), + away from wall"),
       BT::InputPort<std::string>(
         "global_costmap_topic", std::string("global_costmap/costmap_raw"),
         "Global costmap topic (nav2_msgs/Costmap) for all footprint checks"),
@@ -570,9 +570,9 @@ public:
   double wall_edge_e_extend_m_{2.0};
   /** 贴边：D 与车最小距离 GD，默认 3m */
   double wall_edge_min_robot_dist_m_{3.0};
-  /** 贴边：D-E 插点间隔，默认 0.5m */
+  /** 贴边：D-G-E 链上采样间距，默认 0.5m；<=0 只留 D、G、E */
   double wall_edge_sample_m_{0.5};
-  /** 贴边：整链沿障碍→垃圾法向平移，正为离墙，默认 0 */
+  /** 贴边：整链沿障碍→垃圾法向往外挪，正为离墙，默认 0 */
   double wall_edge_normal_offset_m_{0.0};
   /** 合堆半径：到种子小于该值并为一堆，默认 1.0m */
   double garbage_merge_radius_m_{1.0};
@@ -629,6 +629,8 @@ public:
     bool has_e{false};
     double ex{0.0};
     double ey{0.0};
+    /** 贴边整链 D…采样…G…E；普通插入为空 */
+    std::vector<std::pair<double, double>> chain_xy;
   };
   std::vector<ActivePile> cleaning_garbages_;
   const ActivePile * findActivePileAt(double x, double y) const;
