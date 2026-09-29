@@ -345,13 +345,12 @@ private:
   /**
    * 2.5 当前边只有一条：第一个非 z=-1 点 → 其后第一个角点。只向这条边投影。
    * 落在边上：从该点沿路径删到垂足再加 clip_extend_m；先碰到角点则停在角点并留下角点，然后停止。
-   * 反延不删。正延删掉该边除尾角点外的点，重算角点和当前边后再投影。
-   * 多个参考点按顺序共用一份路径副本，后一个看得到前一个删完后的新角点。
-   * 下标记在调用方传入的 goals 上，由调用方一次删除。
+   * 反延不删。正延删掉该边除尾角点外的点，只在该参考点自己的副本上重算下一条边。
+   * G、E 都在原始路径上判断，互不看到对方的删除；下标取并集后由调用方一次删除。
    */
   Goals clipGoalsNearGarbage(InsertInfo & info);
 
-  /** 按顺序对每个参考点跑 2.5，删除下标写入 delete_idx，不改 goals 本身。 */
+  /** 每个参考点都在原始路径上跑 2.5，删除下标取并集写入 delete_idx，不改 goals 本身。 */
   void clipReferencesInOrder(
     const Goals & goals,
     const geometry_msgs::msg::PoseStamped & robot_pose,

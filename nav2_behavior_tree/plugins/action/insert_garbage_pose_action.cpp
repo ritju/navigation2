@@ -2936,8 +2936,9 @@ struct ClipNode
 
 }  // namespace
 
-// 多个参考点按顺序在同一份副本上跑 2.5。副本里会删点并重算角点，
-// delete_idx 记的是调用方 goals 里的原始下标。
+// 每个参考点都在原始路径上跑 2.5，互不看到对方的删除。
+// 同一个参考点落在正向延长线时，只在自己的副本上重算下一条边。
+// delete_idx 是各参考点原始下标的并集，由调用方一次删除。
 void InsertGarbagePose::clipReferencesInOrder(
   const Goals & goals,
   const geometry_msgs::msg::PoseStamped & robot_pose,
@@ -2974,45 +2975,45 @@ void InsertGarbagePose::clipReferencesInOrder(
     return;
   }
 
-  std::vector<ClipNode> nodes;
-  nodes.reserve(goals.size());
+  std::vector<ClipNode> base_nodes;
+  base_nodes.reserve(goals.size());
   for (std::size_t i = 0; i < goals.size(); ++i) {
-    nodes.push_back(ClipNode{i, goals[i]});
+    base_nodes.push_back(ClipNode{i, goals[i]});
   }
 
   constexpr double kEps = 1e-6;
   const double clip_m = clip_extend_m_;
   int round_i = 0;
 
-  auto canDelete = [this, &nodes](std::size_t node_i) {
-    const auto & pose = nodes[node_i].pose;
-    if (isUnindexedSentinelPoseZ(pose)) {
-      return false;
-    }
-    if (isProtectedGarbageXy(pose.pose.position.x, pose.pose.position.y)) {
-      return false;
-    }
-    return true;
-  };
-
-  auto dropNodes = [&](const std::vector<std::size_t> & origs) {
-    if (origs.empty()) {
-      return;
-    }
-    std::set<std::size_t> drop(origs.begin(), origs.end());
-    std::vector<ClipNode> kept;
-    kept.reserve(nodes.size());
-    for (const auto & node : nodes) {
-      if (drop.count(node.orig) == 0) {
-        kept.push_back(node);
-      } else {
-        delete_idx.insert(node.orig);
-      }
-    }
-    nodes.swap(kept);
-  };
-
   for (const auto & ref : refs) {
+    std::vector<ClipNode> nodes = base_nodes;
+    auto canDelete = [this, &nodes](std::size_t node_i) {
+      const auto & pose = nodes[node_i].pose;
+      if (isUnindexedSentinelPoseZ(pose)) {
+        return false;
+      }
+      if (isProtectedGarbageXy(pose.pose.position.x, pose.pose.position.y)) {
+        return false;
+      }
+      return true;
+    };
+    auto dropNodes = [&](const std::vector<std::size_t> & origs) {
+      if (origs.empty()) {
+        return;
+      }
+      std::set<std::size_t> drop(origs.begin(), origs.end());
+      std::vector<ClipNode> kept;
+      kept.reserve(nodes.size());
+      for (const auto & node : nodes) {
+        if (drop.count(node.orig) == 0) {
+          kept.push_back(node);
+        } else {
+          delete_idx.insert(node.orig);
+        }
+      }
+      nodes.swap(kept);
+    };
+
     const double ref_x = ref.first;
     const double ref_y = ref.second;
     const std::size_t round_limit = nodes.size() + 1;
