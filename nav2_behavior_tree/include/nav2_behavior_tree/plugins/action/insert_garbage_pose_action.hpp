@@ -206,9 +206,7 @@ public:
         "global_costmap_topic", std::string("global_costmap/costmap_raw"),
         "Global costmap topic (nav2_msgs/Costmap) for all footprint checks"),
       BT::InputPort<bool>(
-        "enable_visualization", true, "Publish insert/clip markers to RViz"),   //总开关
-      BT::InputPort<bool>(
-        "viz_accepted_garbage", true, "Show accepted garbage after filtering"),
+        "enable_visualization", true, "Master switch for all insert-garbage RViz markers"),
       BT::InputPort<double>(
         "confirm_match_dist_m", 1.0,
         "Max Euclidean distance (m) among confirm frames to count as same pile"),
@@ -218,9 +216,6 @@ public:
       BT::InputPort<double>(
         "confirm_sec_garbage_time", 1.0,
         "Drop tmp_list_ confirm entries older than this (s)"),
-      BT::InputPort<std::string>(
-        "visualization_topic", std::string("insert_garbage_pose/markers"),
-        "MarkerArray topic for insert visualization"),
       BT::InputPort<std::string>("global_frame", std::string("map"), "Global frame"),
       BT::InputPort<std::string>("robot_base_frame", std::string("base_link"), "Robot base frame"),
     };
@@ -304,20 +299,15 @@ private:
   static bool isUnindexedSentinelPoseZ(
     const geometry_msgs::msg::PoseStamped & pose_stamped_goal);
 
+  /** goals 里是否还有本节点插入的 z=-1 哨兵点 */
+  static bool hasUnindexedSentinel(const Goals & goals);
+
   /**
    * 按下标找这堆在 {goals} 里的槽：该格 z=-1，xy 仅确认同一颗。
    * 找到返回 true 并写出 index；没有任何一格对上返回 false。
    */
   bool findUnindexedSentinelIndex(
     const Goals & goals, double x, double y, std::size_t * index_out) const;
-
-  /**
-   * 每 tick 检查全部已插堆：{goals} 里找不到这堆自己的 z=-1 槽则从 active 去掉。
-   * 自己不删点，只认「哨兵已经被擦掉」这个结果。
-   */
-  std::size_t checkZgoals(
-    const Goals & goals,
-    std::string * deleted_summary = nullptr);
 
   /** 每次 setOutput("output_goals") 时打日志，便于观察时机与频率 */
   void emitOutputGoals(const Goals & goals, const char * reason);
@@ -395,15 +385,6 @@ private:
   /** 该 xy 是否已在 reached_garbage_xy_（与插入 G/E 同 0.1m 容差） */
   bool isProtectedGarbageXy(double x, double y) const;
   void addProtectedGarbageXy(double x, double y);
-  void eraseProtectedGarbageXy(double x, double y);
-  /**
-   * 队首第一对还在 goals 里的 G/E。车还在去 G 的路上，或 G 已出队只剩 E，都算当前堆。
-   * 中途新堆只重排这对后面的，不把它剥掉。
-   */
-  bool collectInProgressKeepXy(
-    const Goals & goals,
-    std::vector<std::pair<double, double>> * keep_xy,
-    int * keep_g_num) const;
 
 public:
   /** 平面距离平方。排序用的自由函数在类外，需要能直接调用 */
@@ -446,12 +427,6 @@ private:
   /** 超过 kMaxGarbageSize 时截断，保留离机器人最近的若干堆 */
   void trimGarbageListToCap(double robot_x, double robot_y);
 
-  /** 相对 before，找出本轮新入队的堆下标 */
-  bool findNewGarbageIndex(
-    const GarbageList & before,
-    double robot_x, double robot_y,
-    std::size_t & new_idx) const;
-
   /** 把当前 garbage_list_ 顺序记入 last_sweep_xy_ */
   void syncLastSweepXyFromList();
 
@@ -493,13 +468,17 @@ private:
     std::size_t * nearest_seg_out = nullptr,
     std::size_t * start_idx_out = nullptr) const;
 
-  /** 插入一堆时画 G/E、蓝虚线、footprint 长条；首点/角点另刷 */
-  void publishVisualization(
-    const InsertInfo & info,
-    bool enable = true,
-    bool viz_accepted_garbage = true);
+  /** 插入一堆时按话题分开画 G、锚点、footprint */
+  void publishVisualization(const InsertInfo & info);
 
-  /** 清空本话题上全部 Marker，并丢掉本节点可视化状态 */
+  /** 总开关关掉时清空四个话题并跳过后续发布 */
+  bool skipVisualization();
+  void clearVisualizationTopics();
+  void publishMarkers(
+    const rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr & pub,
+    const visualization_msgs::msg::MarkerArray & arr);
+
+  /** 清空四个可视化话题，并丢掉本节点可视化状态 */
   void clearMissionVisualization();
   void resetVisualizationState();
   /** 深绿工作圈 + 浅绿跟随/识别圈 */
@@ -508,6 +487,8 @@ private:
   void publishFootprintCheckBox(double x, double y, double yaw);
   /** 走廊检查失败：红球 + 当时检查的 footprint 长条 */
   void publishFailedSweepVisualization(double rx, double ry, double gx, double gy);
+  /** 贴边进表：车到垃圾线段碰到障碍时，把这条线段画出来 */
+  void publishBlockedSegmentVisualization(double rx, double ry, double gx, double gy);
   /** 待插入 garbage_list_ 的红色小球，多了删旧 id */
   void publishPendingGarbageDots();
   /** 当前路径首点 H、角点 C：每次按最新判断覆盖，不是角点了就删 */
@@ -542,7 +523,10 @@ public:
   rclcpp::Subscription<garage_utils_msgs::msg::Polygons>::SharedPtr special_terrain_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PolygonStamped>::SharedPtr footprint_feed_sub_;
   rclcpp::Subscription<nav2_msgs::msg::Costmap>::SharedPtr costmap_feed_sub_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr workspace_circle_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr anchor_point_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr footprint_check_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr garbage_pose_pub_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
   std::shared_ptr<nav2_costmap_2d::CostmapSubscriber> costmap_sub_;
   std::shared_ptr<FeedableFootprintSubscriber> footprint_topic_sub_;
@@ -552,7 +536,6 @@ public:
   std::string special_terrain_topic_;
   std::string footprint_topic_;
   std::string global_costmap_topic_;
-  std::string visualization_topic_;
   std::string global_frame_;
   std::string robot_base_frame_;
   double transform_tolerance_{0.1};
@@ -594,7 +577,7 @@ public:
   bool single_pile_insert_{true};
   bool enable_wall_edge_insert_{true};
   bool enable_visualization_{true};
-  bool viz_accepted_garbage_{true};
+  bool viz_switch_cleared_{false};
   bool has_work_circle_{false};
   double work_circle_x_{0.0};
   double work_circle_y_{0.0};
@@ -609,34 +592,16 @@ public:
   std::size_t viz_obstacle_marker_count_{0};
   double viz_obstacle_cell_m_{0.15};
 
-  std::mutex history_mutex_;
-  /** 单堆：当前 G/E 还在 goals 里时，话题新垃圾不进 history / 待确认 / 待插列表 */
-  bool single_pile_block_intake_{false};
   /** 原始接收缓存 */
   std::deque<capella_ros_msg::msg::GarbageDetect> history_list_;
   /** 时间窗内待确认的垃圾位姿，满 kMaxHistorySize 丢最旧 */
   std::deque<capella_ros_msg::msg::GarbageDetect> tmp_list_;
   /** 后处理结果列表 */
   GarbageList garbage_list_;
-  /** 已插入且 goals 里尚未扫过的堆。G/E 身份是插入时写入的坐标，不按距离并号 */
-  struct ActivePile
-  {
-    capella_ros_msg::msg::GarbageDetect detect;
-    int g_num{0};
-    double gx{0.0};
-    double gy{0.0};
-    bool has_e{false};
-    double ex{0.0};
-    double ey{0.0};
-    /** 贴边整链 D…采样…G…E；普通插入为空 */
-    std::vector<std::pair<double, double>> chain_xy;
-  };
-  std::vector<ActivePile> cleaning_garbages_;
-  const ActivePile * findActivePileAt(double x, double y) const;
   /** 当前认定的任务时间戳，与 goals 上统一 stamp 对齐 */
   rclcpp::Time mission_stamp_record_{0, 0, RCL_ROS_TIME};
   bool has_mission_stamp_{false};
-  /** 本任务内已插入过、不再作为新候选的垃圾 map 坐标 */
+  /** 本任务里已经插入或已经放弃的垃圾 map 坐标，附近不再当新垃圾插入 */
   std::vector<std::pair<double, double>> reached_garbage_xy_;
   /** 本任务内已发布可视化的堆数 */
   int viz_pile_count_{0};

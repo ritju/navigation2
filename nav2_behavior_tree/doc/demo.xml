@@ -40,8 +40,6 @@
               wall_edge_sample_m="0.5"
               wall_edge_normal_offset_m="0.0"
               enable_visualization="true"
-              viz_accepted_garbage="true"
-              visualization_topic="insert_garbage_pose/markers"
               global_frame="map"
               robot_base_frame="base_link"
             />

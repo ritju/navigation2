@@ -30,11 +30,6 @@
 namespace nav2_behavior_tree
 {
 
-// ========================================================================
-// A. 类生命周期与外部输入
-// ========================================================================
-
-// 构造：创建垃圾、禁扫区、footprint 话题订阅
 InsertGarbagePose::InsertGarbagePose(
   const std::string & name,
   const BT::NodeConfiguration & conf)
@@ -43,7 +38,6 @@ InsertGarbagePose::InsertGarbagePose(
   special_terrain_topic_("/cleaning_tool_retraction_areas"),
   footprint_topic_("local_costmap/published_footprint"),
   global_costmap_topic_("global_costmap/costmap_raw"),
-  visualization_topic_("insert_garbage_pose/markers"),
   global_frame_("map"),
   robot_base_frame_("base_link"),
   clip_extend_m_(2.5),        // 从垃圾垂足沿路径再删的距离
@@ -64,7 +58,6 @@ InsertGarbagePose::InsertGarbagePose(
   getInput("special_terrain_topic", special_terrain_topic_);
   getInput("footprint_topic", footprint_topic_);
   getInput("global_costmap_topic", global_costmap_topic_);
-  getInput("visualization_topic", visualization_topic_);
   getInput("global_frame", global_frame_);
   getInput("robot_base_frame", robot_base_frame_);
   refreshTunableInputPorts();
@@ -118,9 +111,14 @@ InsertGarbagePose::InsertGarbagePose(
     std::bind(&InsertGarbagePose::globalCostmapCallback, this, std::placeholders::_1),
     sub_option);
 
-  // RViz Marker，默认 VOLATILE，和 RViz 订阅对齐
-  marker_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
-    visualization_topic_, 10);
+  workspace_circle_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
+    "insert_workspace_circle", 10);
+  anchor_point_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
+    "insert_anchor_point", 10);
+  footprint_check_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
+    "insert_footprint_check", 10);
+  garbage_pose_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
+    "insert_garbage_pose", 10);
 }
 
 void InsertGarbagePose::refreshTunableInputPorts()
@@ -148,46 +146,34 @@ void InsertGarbagePose::refreshTunableInputPorts()
   getInput("single_pile_insert", single_pile_insert_);
   getInput("enable_wall_edge_insert", enable_wall_edge_insert_);
   getInput("enable_visualization", enable_visualization_);
-  getInput("viz_accepted_garbage", viz_accepted_garbage_);
 }
 
 void InsertGarbagePose::garbageDetectCallback(
   const capella_ros_msg::msg::GarbageDetect::SharedPtr msg)
 {
-  if (!msg) {
-    return;
-  }
   refreshTunableInputPorts();
-  {
-    std::lock_guard<std::mutex> lock(history_mutex_);
-    if (single_pile_block_intake_) {
+  if (single_pile_insert_) {
+    Goals goals;
+    if (getInput("input_goals", goals) && hasUnindexedSentinel(goals)) {
       return;
     }
   }
-  capella_ros_msg::msg::GarbageDetect item = *msg;
-  if (!transformGarbageToMap(item)) {
-    RCLCPP_WARN(
-      node_->get_logger(),
-      "InsertGarbagePose: drop garbage, transform to map failed, wait for next frame");
+
+  capella_ros_msg::msg::GarbageDetect item;
+  double robot_x = 0.0;
+  double robot_y = 0.0;
+  if (!msg || !transformGarbageToMap(item = *msg) || !getRobotPoseXY(robot_x, robot_y)) {
+    if (msg) {
+      RCLCPP_WARN(
+        node_->get_logger(),
+        "InsertGarbagePose: drop garbage, transform to map or robot pose failed, wait for next frame");
+    }
     return;
   }
 
-  double robot_x = 0.0;
-  double robot_y = 0.0;
-  if (!getRobotPoseXY(robot_x, robot_y)) {
-    RCLCPP_WARN(
-      node_->get_logger(),
-      "InsertGarbagePose: drop garbage, get the robot pose failed, wait for next frame");
-    return;
-  }
   const double gx = item.pose.pose.position.x;
   const double gy = item.pose.pose.position.y;
   const double confirm_r2 = confirm_match_dist_m_ * confirm_match_dist_m_;
-
-  std::lock_guard<std::mutex> lock(history_mutex_);
-  if (single_pile_block_intake_) {
-    return;
-  }
 
   // 时间窗内累计检测：凑够 confirm_match_num 帧且距离在 confirm_match_dist_m 内，取平均往下传
   const rclcpp::Time now = node_->now();
@@ -303,10 +289,6 @@ void InsertGarbagePose::globalCostmapCallback(
   costmap_sub_->costmapCallback(msg);
 }
 
-// ========================================================================
-// B. 主入口
-// ========================================================================
-
 namespace
 {
 
@@ -339,28 +321,10 @@ BT::NodeStatus InsertGarbagePose::tick()
   refreshTunableInputPorts();
   checkAndResetOnNewMission();
 
-  const GarbageList before = garbage_list_;
   postProcessHistory();
   Goals goals_now = receiveGoals();
-  // 仅在真正改动了 goals
-  bool goals_dirty = false;
-  // 改过 goals 就统一重编号 + 统一时间戳再写回，插入和剥离两条路都要走这里，
-  // 否则剥掉哨兵点以后普通点的 z 序号会带着空洞发下去
-  auto commitGoals = [&](const char * reason) {
-      const rclcpp::Time now_stamp = node_->now();
-      for (std::size_t i = 0; i < goals_now.size(); ++i) {
-        if (!isUnindexedSentinelPoseZ(goals_now[i])) {
-          goals_now[i].pose.position.z = static_cast<double>(i);
-        }
-        goals_now[i].header.stamp = now_stamp;
-      }
-      mission_stamp_record_ = now_stamp;
-      has_mission_stamp_ = true;
-      emitOutputGoals(goals_now, reason);
-    };
 
   if (goals_now.size() < 2) {
-    checkZgoals(goals_now);
     geometry_msgs::msg::PoseStamped robot_pose_short;
     if (getRobotPose(robot_pose_short)) {
       const double robot_x = robot_pose_short.pose.position.x;
@@ -370,9 +334,6 @@ BT::NodeStatus InsertGarbagePose::tick()
     }
     pruneFinishedPileVisualization(goals_now);
     publishPendingGarbageDots();
-    if (goals_dirty) {
-      commitGoals("sweep_done");
-    }
     return BT::NodeStatus::SUCCESS;
   }
 
@@ -385,66 +346,9 @@ BT::NodeStatus InsertGarbagePose::tick()
   const double ry = robot_pose.pose.position.y;
   const double robot_yaw = tf2::getYaw(robot_pose.pose.orientation);
   publishRangeCircles(rx, ry);
-
-  checkZgoals(goals_now);
   pruneFinishedPileVisualization(goals_now);
   refreshClipAnchorVisualization(goals_now, rx, ry);
   publishPendingGarbageDots();
-
-  // 排查：active 堆是否还在 {goals}、z=-1 还剩几个
-  {
-    std::size_t z_neg1_n = 0;
-    std::ostringstream z_neg1_oss;
-    for (const auto & g : goals_now) {
-      if (isUnindexedSentinelPoseZ(g)) {
-        if (z_neg1_n > 0) {
-          z_neg1_oss << " ";
-        }
-        z_neg1_oss << "(" << g.pose.position.x << "," << g.pose.position.y << ")";
-        ++z_neg1_n;
-      }
-    }
-    if (!cleaning_garbages_.empty() || z_neg1_n > 0) {
-      std::ostringstream active_oss;
-      for (std::size_t i = 0; i < cleaning_garbages_.size(); ++i) {
-        const double ax = cleaning_garbages_[i].gx;
-        const double ay = cleaning_garbages_[i].gy;
-        const double dist = std::sqrt(squaredDistanceXY(rx, ry, ax, ay));
-        std::size_t in_idx = 0;
-        bool in_goals = findUnindexedSentinelIndex(goals_now, ax, ay, &in_idx);
-        if (!in_goals && cleaning_garbages_[i].has_e) {
-          in_goals = findUnindexedSentinelIndex(
-            goals_now, cleaning_garbages_[i].ex, cleaning_garbages_[i].ey, &in_idx);
-        }
-        if (i > 0) {
-          active_oss << " | ";
-        }
-        const int g_num = cleaning_garbages_[i].g_num;
-        active_oss << "G" << (g_num > 0 ? g_num : 0)
-                   << "(" << ax << "," << ay << ") dist=" << dist
-                   << " in_goals=" << (in_goals ? 1 : 0);
-        if (in_goals) {
-          active_oss << " idx=" << in_idx;
-        }
-      }
-      std::ostringstream prot_oss;
-      for (std::size_t i = 0; i < reached_garbage_xy_.size(); ++i) {
-        if (i > 0) {
-          prot_oss << " ";
-        }
-        prot_oss << "(" << reached_garbage_xy_[i].first << ","
-                 << reached_garbage_xy_[i].second << ")";
-      }
-      RCLCPP_INFO_THROTTLE(
-        node_->get_logger(), *(node_->get_clock()), 2000,
-        "InsertGarbagePose: diag status robot=(%.2f, %.2f) yaw=%.3f goals=%zu "
-        "z=-1_n=%zu %s | active_n=%zu %s | protected_n=%zu %s",
-        rx, ry, robot_yaw, goals_now.size(),
-        z_neg1_n, z_neg1_oss.str().c_str(),
-        cleaning_garbages_.size(), active_oss.str().c_str(),
-        reached_garbage_xy_.size(), prot_oss.str().c_str());
-    }
-  }
 
   auto logSweepOrder = [this, rx, ry, robot_yaw]() {
     if (garbage_list_.empty()) {
@@ -511,7 +415,7 @@ BT::NodeStatus InsertGarbagePose::tick()
       formatOrder(final_idxs).c_str());
   };
 
-  if (has_work_circle_ && garbage_list_.empty() && cleaning_garbages_.empty()) {
+  if (has_work_circle_ && garbage_list_.empty() && !hasUnindexedSentinel(goals_now)) {
     RCLCPP_INFO(node_->get_logger(), "InsertGarbagePose: 工作圈取消");
     clearMissionVisualization();
     viz_obstacle_pixels_.clear();
@@ -521,227 +425,7 @@ BT::NodeStatus InsertGarbagePose::tick()
     has_work_circle_ = false;
   }
 
-  bool ge_still_in_goals = false;
-  if (single_pile_insert_) {
-    for (const auto & g : goals_now) {
-      if (isUnindexedSentinelPoseZ(g)) {
-        ge_still_in_goals = true;
-        break;
-      }
-    }
-  }
-  if (ge_still_in_goals) {
-    single_pile_block_intake_ = true;
-  } else if (single_pile_insert_) {
-    single_pile_block_intake_ = false;
-  }
-  std::size_t new_idx = 0;
-  const bool have_new_pile = findNewGarbageIndex(before, rx, ry, new_idx);
-  const bool mid_mission_new = have_new_pile && !cleaning_garbages_.empty();
-  if (mid_mission_new) {
-    // 正在扫的 G/E 留在 {goals} 里继续扫完；只把尚未开始的已插堆 + 新堆重排后接在后面
-    std::vector<std::pair<double, double>> keep_xy;
-    int keep_g_num = 0;
-    const bool have_keep = collectInProgressKeepXy(goals_now, &keep_xy, &keep_g_num);
-    const double thresh2 = kSentinelIdentityMatchM * kSentinelIdentityMatchM;
-    auto isKeepXy = [&](double x, double y) {
-      for (const auto & p : keep_xy) {
-        if (squaredDistanceXY(p.first, p.second, x, y) < thresh2) {
-          return true;
-        }
-      }
-      return false;
-    };
-    std::size_t keep_idx = 0;
-    const bool keep_idx_found = have_keep && !keep_xy.empty() &&
-      findUnindexedSentinelIndex(
-        goals_now, keep_xy.front().first, keep_xy.front().second, &keep_idx);
-
-    std::ostringstream old_active_oss;
-    for (std::size_t i = 0; i < cleaning_garbages_.size(); ++i) {
-      if (i > 0) {
-        old_active_oss << " ";
-      }
-      old_active_oss << "(" << cleaning_garbages_[i].gx << ","
-                     << cleaning_garbages_[i].gy << ")";
-    }
-    std::ostringstream new_list_oss;
-    for (std::size_t i = 0; i < garbage_list_.size(); ++i) {
-      if (i > 0) {
-        new_list_oss << " ";
-      }
-      new_list_oss << "(" << garbage_list_[i].pose.pose.position.x << ","
-                   << garbage_list_[i].pose.pose.position.y << ")";
-    }
-    std::ostringstream keep_oss;
-    for (std::size_t i = 0; i < keep_xy.size(); ++i) {
-      if (i > 0) {
-        keep_oss << " ";
-      }
-      keep_oss << "(" << keep_xy[i].first << "," << keep_xy[i].second << ")";
-    }
-    const std::string keep_idx_str = keep_idx_found ? std::to_string(keep_idx) : "-";
-    RCLCPP_INFO(
-      node_->get_logger(),
-      "InsertGarbagePose: diag mid-mission BEGIN goals=%zu active_n=%zu %s "
-      "new_list_n=%zu %s keep_g=%d keep_idx=%s keep_xy=%s "
-      "(keep in-progress G/E slot, reorder unstarted+new only)",
-      goals_now.size(), cleaning_garbages_.size(), old_active_oss.str().c_str(),
-      garbage_list_.size(), new_list_oss.str().c_str(),
-      keep_g_num, keep_idx_str.c_str(), keep_oss.str().c_str());
-
-    std::vector<ActivePile> keep_active;
-    std::vector<ActivePile> rest_active;
-    keep_active.reserve(cleaning_garbages_.size());
-    rest_active.reserve(cleaning_garbages_.size());
-    if (have_keep) {
-      for (const auto & pile : cleaning_garbages_) {
-        const bool in_progress = isKeepXy(pile.gx, pile.gy) ||
-          (pile.has_e && isKeepXy(pile.ex, pile.ey));
-        if (in_progress) {
-          keep_active.push_back(pile);
-        } else {
-          rest_active.push_back(pile);
-        }
-      }
-    } else {
-      rest_active = cleaning_garbages_;
-    }
-
-    Goals kept_goals;
-    kept_goals.reserve(goals_now.size());
-    std::size_t peeled_n = 0;
-    for (std::size_t i = 0; i < goals_now.size(); ++i) {
-      const auto & g = goals_now[i];
-      const double px = g.pose.position.x;
-      const double py = g.pose.position.y;
-      const bool peel_this = isUnindexedSentinelPoseZ(g) &&
-        (!have_keep || !isKeepXy(px, py));
-      if (peel_this) {
-        ++peeled_n;
-        eraseProtectedGarbageXy(px, py);
-        RCLCPP_INFO(
-          node_->get_logger(),
-          "InsertGarbagePose: diag mid-mission peel unstarted idx=%zu "
-          "(%.2f, %.2f) z=%.1f",
-          i, px, py, g.pose.position.z);
-        continue;
-      }
-      kept_goals.push_back(g);
-    }
-    goals_now = std::move(kept_goals);
-    if (peeled_n > 0) {
-      // 剥掉的点必须写回黑板，否则这一轮白剥，下一 tick 还会看到它们
-      goals_dirty = true;
-    }
-
-    for (const auto & pile : rest_active) {
-      eraseProtectedGarbageXy(
-        pile.detect.pose.pose.position.x, pile.detect.pose.pose.position.y);
-      eraseProtectedGarbageXy(pile.gx, pile.gy);
-      if (pile.has_e) {
-        eraseProtectedGarbageXy(pile.ex, pile.ey);
-      }
-    }
-
-    double order_x = rx;
-    double order_y = ry;
-    double order_yaw = robot_yaw;
-    if (have_keep && !keep_xy.empty()) {
-      double gx = keep_xy.front().first;
-      double gy = keep_xy.front().second;
-      double ex = gx;
-      double ey = gy;
-      bool have_g = false;
-      bool have_e = false;
-      const ActivePile * keep_pile = nullptr;
-      for (const auto & pile : keep_active) {
-        if (pile.g_num == keep_g_num) {
-          keep_pile = &pile;
-          break;
-        }
-      }
-      if (keep_pile != nullptr) {
-        gx = keep_pile->gx;
-        gy = keep_pile->gy;
-        have_g = true;
-        if (keep_pile->has_e) {
-          ex = keep_pile->ex;
-          ey = keep_pile->ey;
-          have_e = true;
-        }
-      }
-      if (have_e) {
-        last_sweep_arrive_xy_ = {ex, ey};
-      } else {
-        last_sweep_arrive_xy_ = {gx, gy};
-      }
-      has_last_sweep_arrive_ = true;
-      order_x = last_sweep_arrive_xy_.first;
-      order_y = last_sweep_arrive_xy_.second;
-      if (have_g && have_e) {
-        const double dx = ex - gx;
-        const double dy = ey - gy;
-        if (dx * dx + dy * dy > 1e-6) {
-          order_yaw = std::atan2(dy, dx);
-        }
-      }
-      last_sweep_path_yaw_ = order_yaw;
-      has_last_sweep_path_yaw_ = true;
-    } else {
-      has_last_sweep_arrive_ = false;
-      has_last_sweep_path_yaw_ = false;
-      last_sweep_xy_.clear();
-    }
-
-    GarbageList incoming = std::move(garbage_list_);
-    garbage_list_.clear();
-    garbage_list_.reserve(rest_active.size() + incoming.size());
-    for (const auto & pile : rest_active) {
-      garbage_list_.push_back(pile.detect);
-    }
-    GarbageList keep_detects;
-    keep_detects.reserve(keep_active.size());
-    for (const auto & pile : keep_active) {
-      keep_detects.push_back(pile.detect);
-    }
-    for (const auto & g : incoming) {
-      if (!isDuplicateGarbage(g, garbage_list_) &&
-        !isDuplicateGarbage(g, keep_detects))
-      {
-        garbage_list_.push_back(g);
-      }
-    }
-    // 这里是直接拼表，没走 tryInsertPreferCloserToRobot，得自己守住上限
-    trimGarbageListToCap(order_x, order_y);
-    cleaning_garbages_= std::move(keep_active);
-
-    {
-      std::ostringstream rest_oss;
-      for (std::size_t i = 0; i < garbage_list_.size(); ++i) {
-        if (i > 0) {
-          rest_oss << " ";
-        }
-        rest_oss << "(" << garbage_list_[i].pose.pose.position.x << ","
-                 << garbage_list_[i].pose.pose.position.y << ")";
-      }
-      RCLCPP_INFO(
-        node_->get_logger(),
-        "InsertGarbagePose: diag mid-mission %s G%d, peeled=%zu "
-        "kept_goals=%zu reorder_n=%zu %s",
-        have_keep ? "keep in-progress" : "peel all unstarted",
-        keep_g_num, peeled_n, goals_now.size(),
-        garbage_list_.size(), rest_oss.str().c_str());
-    }
-
-    (void)new_idx;
-    if (garbage_list_.size() > 1) {
-      reorderNearestFirstThenSweep(order_x, order_y, order_yaw);
-    } else if (garbage_list_.size() == 1) {
-      syncLastSweepXyFromList();
-    }
-    logSweepOrder();
-  } else if (garbage_list_.size() > 1 && last_sweep_xy_.empty()) {
+  if (garbage_list_.size() > 1 && last_sweep_xy_.empty()) {
     reorderNearestFirstThenSweep(rx, ry, robot_yaw);
     logSweepOrder();
   } else if (garbage_list_.size() == 1 && last_sweep_xy_.empty()) {
@@ -749,17 +433,11 @@ BT::NodeStatus InsertGarbagePose::tick()
   }
 
   if (garbage_list_.empty()) {
-    if (goals_dirty) {
-      commitGoals("sweep_or_peel");
-    }
     return BT::NodeStatus::SUCCESS;
   }
 
-  // 单堆占用中：当前 G/E 还在 goals 里，不再插下一堆
-  if (single_pile_block_intake_) {
-    if (goals_dirty) {
-      commitGoals("sweep_or_peel");
-    }
+  // 单堆：路径里还有 z=-1 的 G/E，不再插下一堆
+  if (single_pile_insert_ && hasUnindexedSentinel(goals_now)) {
     return BT::NodeStatus::SUCCESS;
   }
   // 按当前顺序一次插入全部待插堆
@@ -793,10 +471,10 @@ BT::NodeStatus InsertGarbagePose::tick()
     const bool footprint_ok = isFootprintSweepClear(
       robot_pose.pose.position.x, robot_pose.pose.position.y, gx, gy, &fp_reason);
     if (footprint_ok) {
-      // 2.11.2 通过：正常 G-E 扫
+      // 通过：正常 G-E 扫
       goals_now = insertGarbageIntoGoals(info);
     } else if (enable_wall_edge_insert_) {
-      // 2.11.2 不过且启用贴墙：D-G-E
+      //  不过且启用贴墙：D-G-E
       RCLCPP_INFO(
         node_->get_logger(),
         "InsertGarbagePose: footprint sweep fail robot->G (%.2f, %.2f): %s, wall-edge insert",
@@ -828,7 +506,7 @@ BT::NodeStatus InsertGarbagePose::tick()
       info.garbage.pose.pose.position.x, info.garbage.pose.pose.position.y,
       info.extend_inserted ? 1 : 0,
       pile_deleted, goals_before_pile, goals_now.size());
-    publishVisualization(info, enable_visualization_, viz_accepted_garbage_);
+    publishVisualization(info);
     publishRangeCircles(rx, ry);
     addProtectedGarbageXy(gx, gy);
     addProtectedGarbageXy(
@@ -836,53 +514,25 @@ BT::NodeStatus InsertGarbagePose::tick()
     if (info.extend_inserted) {
       addProtectedGarbageXy(info.extend_x, info.extend_y);
     }
-    ActivePile active;
-    active.detect = garbage_list_.front();
-    active.g_num = info.dist_label;
-    active.gx = info.garbage.pose.pose.position.x;
-    active.gy = info.garbage.pose.pose.position.y;
-    active.has_e = info.extend_inserted;
-    active.ex = info.extend_x;
-    active.ey = info.extend_y;
-    if (info.wall_edge_inserted) {
-      active.chain_xy = info.wall_edge_chain_xy;
-    }
-    cleaning_garbages_.push_back(active);
-    RCLCPP_INFO(
-      node_->get_logger(),
-      "InsertGarbagePose: diag active+ G%d (%.2f, %.2f) extend=%d E=(%.2f, %.2f) "
-      "active_n=%zu",
-      info.dist_label, gx, gy, info.extend_inserted ? 1 : 0,
-      info.extend_x, info.extend_y, cleaning_garbages_.size());
     garbage_list_.erase(garbage_list_.begin());
     ++inserted_count;
     inserted_xy << "(" << gx << ", " << gy << ") ";
     if (single_pile_insert_) {
-      single_pile_block_intake_ = true;
       break;
     }
   }
 
-  last_sweep_xy_.clear();
-  last_sweep_xy_.reserve(cleaning_garbages_.size());
-  for (const auto & g : cleaning_garbages_) {
-    last_sweep_xy_.emplace_back(g.gx, g.gy);
-  }
-
-  if (inserted_count > 0) {
+  if (inserted_count > 0) {   // 至少要插入一个点才调用
     std::size_t z_neg1_n = 0;
     for (const auto & g : goals_now) {
       if (isUnindexedSentinelPoseZ(g)) {
         ++z_neg1_n;
       }
     }
-    goals_dirty = true;
     RCLCPP_INFO(
       node_->get_logger(),
-      "InsertGarbagePose: diag after-batch goals=%zu z=-1_n=%zu active_n=%zu "
-      "protected_n=%zu",
-      goals_now.size(), z_neg1_n, cleaning_garbages_.size(),
-      reached_garbage_xy_.size());
+      "InsertGarbagePose: diag after-batch goals=%zu z=-1_n=%zu protected_n=%zu",
+      goals_now.size(), z_neg1_n, reached_garbage_xy_.size());
     RCLCPP_INFO(
       node_->get_logger(),
       "InsertGarbagePose: batch insert done: inserted %zu pile(s), deleted %zu path goals, "
@@ -890,20 +540,22 @@ BT::NodeStatus InsertGarbagePose::tick()
       inserted_count, deleted_goals_total,
       goals_before_batch, goals_now.size(),
       inserted_xy.str().c_str());
-  }
-
-  if (goals_dirty) {
-    commitGoals((inserted_count > 0) ? "batch_insert" : "peel_unstarted");
+    const rclcpp::Time now_stamp = node_->now();
+    for (std::size_t i = 0; i < goals_now.size(); ++i) {
+      if (!isUnindexedSentinelPoseZ(goals_now[i])) {
+        goals_now[i].pose.position.z = static_cast<double>(i);
+      }
+      goals_now[i].header.stamp = now_stamp;
+    }
+    mission_stamp_record_ = now_stamp;
+    has_mission_stamp_ = true;
+    emitOutputGoals(goals_now, "batch_insert");
   }
   pruneFinishedPileVisualization(goals_now);
   refreshClipAnchorVisualization(goals_now, rx, ry);
   publishPendingGarbageDots();
   return BT::NodeStatus::SUCCESS;
 }
-
-// ========================================================================
-// C. tick 开头：任务判定 + 位姿
-// ========================================================================
 
 // 看当前是不是一次新的导航任务
 void InsertGarbagePose::checkAndResetOnNewMission()
@@ -924,13 +576,9 @@ void InsertGarbagePose::checkAndResetOnNewMission()
     return;
   }
 
-  {
-    std::lock_guard<std::mutex> lock(history_mutex_);
-    history_list_.clear();
-    tmp_list_.clear();
-  }
+  history_list_.clear();
+  tmp_list_.clear();
   garbage_list_.clear();
-  cleaning_garbages_.clear();
   reached_garbage_xy_.clear();
   viz_obstacle_pixels_.clear();
   viz_obstacle_marker_count_ = 0;
@@ -943,10 +591,6 @@ void InsertGarbagePose::checkAndResetOnNewMission()
   viz_footprint_fail_count_ = 0;
   next_g_num_ = 1;
   remembered_corner_xy_.clear();
-  {
-    std::lock_guard<std::mutex> lock(history_mutex_);
-    single_pile_block_intake_ = false;
-  }
   has_work_circle_ = false;
   mission_stamp_record_ = current_stamp;
   clearMissionVisualization();
@@ -1297,13 +941,9 @@ bool InsertGarbagePose::findNearestObstaclePixel(
 // 接收到垃圾后的后处理函数，返回处理后的 garbage_list
 InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
 {
-  std::deque<capella_ros_msg::msg::GarbageDetect> snapshot;
-  {
-    std::lock_guard<std::mutex> lock(history_mutex_);
-    snapshot = history_list_;
-  } // 加锁
+  std::deque<capella_ros_msg::msg::GarbageDetect> history_list_copy = history_list_;
 
-  if (snapshot.empty()) {
+  if (history_list_copy.empty()) {
     return garbage_list_;
   }
 
@@ -1326,7 +966,6 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
   // 从 history 里删掉已处理完的那一条
   auto eraseFromHistory =
     [this, &sameDetect](const capella_ros_msg::msg::GarbageDetect & original) {
-      std::lock_guard<std::mutex> lock(history_mutex_);
       for (auto it = history_list_.begin(); it != history_list_.end(); ++it) {
         if (sameDetect(*it, original)) {
           history_list_.erase(it);
@@ -1337,8 +976,8 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
 
   GarbageList candidates;
   std::vector<capella_ros_msg::msg::GarbageDetect> candidate_originals;
-  candidates.reserve(snapshot.size());
-  candidate_originals.reserve(snapshot.size());
+  candidates.reserve(history_list_copy.size());
+  candidate_originals.reserve(history_list_copy.size());
 
   // 删掉一组已消化的原始检测
   auto erasePileMembers =
@@ -1350,7 +989,7 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
       }
     };
 
-  for (const auto & original : snapshot) {
+  for (const auto & original : history_list_copy) {
     capella_ros_msg::msg::GarbageDetect garbage = original;
 
     // 转到 map，失败则留在 history
@@ -1387,7 +1026,7 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
       }
     }
 
-    // 2.12.4：GE 用 footprint 长条；enable_wall_edge_insert 时用 robot-G 连线无 lethal
+    // GE 用 footprint 长条；enable_wall_edge_insert 时用 robot-G 连线无 lethal
     {
       std::string sweep_reason;
       const bool intake_clear = enable_wall_edge_insert_ ?
@@ -1399,6 +1038,7 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
             node_->get_logger(), *(node_->get_clock()), 2000,
             "InsertGarbagePose: 垃圾=(%.2f, %.2f), 贴墙进表: 车到垃圾连线有障碍(%s), 丢弃",
             gx, gy, sweep_reason.c_str());
+          publishBlockedSegmentVisualization(robot_x, robot_y, gx, gy);
         } else {
           RCLCPP_INFO_THROTTLE(
             node_->get_logger(), *(node_->get_clock()), 2000,
@@ -1411,7 +1051,8 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
       }
     }
 
-    if (!has_work_circle_ && garbage_list_.empty() && cleaning_garbages_.empty()) {
+    if (!has_work_circle_ && garbage_list_.empty() &&
+      !hasUnindexedSentinel(receiveGoals())) {
       has_work_circle_ = true;
       work_circle_x_ = robot_x;
       work_circle_y_ = robot_y;
@@ -1749,6 +1390,16 @@ bool InsertGarbagePose::isUnindexedSentinelPoseZ(
          std::lround(kGarbageSentinelPoseZ);
 }
 
+bool InsertGarbagePose::hasUnindexedSentinel(const Goals & goals)
+{
+  for (const auto & goal : goals) {
+    if (isUnindexedSentinelPoseZ(goal)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool InsertGarbagePose::findUnindexedSentinelIndex(  // 在整个goals里面找哨兵点
   const Goals & goals, double x, double y, std::size_t * index_out) const
 {
@@ -1768,89 +1419,6 @@ bool InsertGarbagePose::findUnindexedSentinelIndex(  // 在整个goals里面找�
   }
   return false;
 }
-// 每 tick 扫全部已插堆：还占着自己 z=-1 槽的留下，找不到这格的从clenaing掉
-std::size_t InsertGarbagePose::checkZgoals(
-  const Goals & goals,
-  std::string * deleted_summary)
-{
-  if (cleaning_garbages_.empty()) {
-    return 0;
-  }
-
-  std::vector<ActivePile> still;
-  still.reserve(cleaning_garbages_.size());
-  std::size_t n_gone = 0;
-  std::ostringstream deleted_oss;
-
-  for (const auto & pile : cleaning_garbages_) {
-    const bool g_in = findUnindexedSentinelIndex(goals, pile.gx, pile.gy, nullptr);
-    const bool e_in = pile.has_e &&
-      findUnindexedSentinelIndex(goals, pile.ex, pile.ey, nullptr);
-    if (g_in || e_in) {
-      still.push_back(pile);
-      continue;
-    }
-
-    addProtectedGarbageXy(pile.gx, pile.gy);
-    addProtectedGarbageXy(
-      pile.detect.pose.pose.position.x, pile.detect.pose.pose.position.y);
-    if (pile.has_e) {
-      addProtectedGarbageXy(pile.ex, pile.ey);
-    }
-    RCLCPP_INFO(
-      node_->get_logger(),
-      "InsertGarbagePose: strip pile G%d (%.2f, %.2f): gone from {goals} "
-      "(no own z=-1 slot, xy confirm %.2fm), treated as swept",
-      pile.g_num, pile.gx, pile.gy, kSentinelIdentityMatchM);
-    if (n_gone > 0) {
-      deleted_oss << " ";
-    }
-    deleted_oss << "G" << pile.g_num << " (" << pile.gx << "," << pile.gy << ")";
-    ++n_gone;
-  }
-
-  cleaning_garbages_= std::move(still);
-
-  if (!cleaning_garbages_.empty()) {
-    const double ax = cleaning_garbages_.front().gx;
-    const double ay = cleaning_garbages_.front().gy;
-    const int g_num = cleaning_garbages_.front().g_num;
-    std::size_t idx = 0;
-    const bool found = findUnindexedSentinelIndex(goals, ax, ay, &idx);
-    RCLCPP_INFO_THROTTLE(
-      node_->get_logger(), *(node_->get_clock()), 2000,
-      "InsertGarbagePose: strip current pile G%d (%.2f, %.2f): still in {goals} "
-      "at index %zu z=-1 (xy confirm %.2fm), not swept",
-      g_num, ax, ay, found ? idx : static_cast<std::size_t>(-1),
-      kSentinelIdentityMatchM);
-  }
-
-  if (deleted_summary != nullptr && n_gone > 0) {
-    *deleted_summary = deleted_oss.str();
-  }
-  return n_gone;
-}
-
-const InsertGarbagePose::ActivePile * InsertGarbagePose::findActivePileAt(  // 在 cleaning_garbages_里找：这个 (x,y) 是否落在某一堆自己的 (gx,gy) 或 (ex,ey) 的 0.1 m 内 → 返回那一堆
-  double x, double y) const
-{
-  const double thresh2 = kSentinelIdentityMatchM * kSentinelIdentityMatchM;
-  for (const auto & pile : cleaning_garbages_) {
-    if (squaredDistanceXY(pile.gx, pile.gy, x, y) < thresh2) {
-      return &pile;
-    }
-    if (pile.has_e && squaredDistanceXY(pile.ex, pile.ey, x, y) < thresh2) {
-      return &pile;
-    }
-    for (const auto & p : pile.chain_xy) {
-      if (squaredDistanceXY(p.first, p.second, x, y) < thresh2) {
-        return &pile;
-      }
-    }
-  }
-  return nullptr;
-}
-
 bool InsertGarbagePose::isProtectedGarbageXy(double x, double y) const   //判断某个已经写进 goals 的 G/E 点
 {
   const double thresh2 =
@@ -1873,89 +1441,6 @@ void InsertGarbagePose::addProtectedGarbageXy(double x, double y)
     node_->get_logger(),
     "InsertGarbagePose: diag protected+ (%.2f, %.2f), protected_n=%zu",
     x, y, reached_garbage_xy_.size());
-}
-
-void InsertGarbagePose::eraseProtectedGarbageXy(double x, double y)
-{
-  const double thresh2 =
-    kSentinelIdentityMatchM * kSentinelIdentityMatchM;
-  auto it = std::remove_if(
-    reached_garbage_xy_.begin(), reached_garbage_xy_.end(),
-    [x, y, thresh2](const std::pair<double, double> & xy) {
-      return squaredDistanceXY(x, y, xy.first, xy.second) < thresh2;
-    });
-  if (it == reached_garbage_xy_.end()) {
-    return;
-  }
-  reached_garbage_xy_.erase(it, reached_garbage_xy_.end());
-  RCLCPP_INFO(
-    node_->get_logger(),
-    "InsertGarbagePose: diag protected- (%.2f, %.2f), protected_n=%zu",
-    x, y, reached_garbage_xy_.size());
-}
-
-bool InsertGarbagePose::collectInProgressKeepXy(
-  const Goals & goals,
-  std::vector<std::pair<double, double>> * keep_xy,
-  int * keep_g_num) const
-{
-  if (keep_xy == nullptr || keep_g_num == nullptr) {
-    return false;
-  }
-  keep_xy->clear();
-  *keep_g_num = 0;
-  const double thresh2 = kSentinelIdentityMatchM * kSentinelIdentityMatchM;
-
-  auto already = [&](double x, double y) {
-    for (const auto & p : *keep_xy) {
-      if (squaredDistanceXY(p.first, p.second, x, y) < thresh2) {
-        return true;
-      }
-    }
-    return false;
-  };
-  auto add = [&](double x, double y) {
-    if (!already(x, y)) {
-      keep_xy->emplace_back(x, y);
-    }
-  };
-
-  // 开扫了没：队首第一颗 z=-1 就是当前堆。扫完了没以 {goals} 里还有没有这对点为准
-  int g_num = 0;
-  bool found_lead = false;
-  const ActivePile * pile = nullptr;
-  for (std::size_t i = 0; i < goals.size(); ++i) {
-    if (!isUnindexedSentinelPoseZ(goals[i])) {
-      continue;
-    }
-    const double x = goals[i].pose.position.x;
-    const double y = goals[i].pose.position.y;
-    pile = findActivePileAt(x, y);
-    add(x, y);
-    found_lead = true;
-    break;
-  }
-  if (!found_lead) {
-    return false;
-  }
-  if (pile != nullptr) {
-    g_num = pile->g_num;
-    if (findUnindexedSentinelIndex(goals, pile->gx, pile->gy, nullptr)) {
-      add(pile->gx, pile->gy);
-    }
-    if (pile->has_e &&
-      findUnindexedSentinelIndex(goals, pile->ex, pile->ey, nullptr))
-    {
-      add(pile->ex, pile->ey);
-    }
-    for (const auto & p : pile->chain_xy) {
-      if (findUnindexedSentinelIndex(goals, p.first, p.second, nullptr)) {
-        add(p.first, p.second);
-      }
-    }
-  }
-  *keep_g_num = g_num;
-  return !keep_xy->empty();
 }
 
 // ========================================================================
@@ -2179,54 +1664,6 @@ std::vector<std::size_t> findOrderMinDist(
 
 }  // namespace
 
-bool InsertGarbagePose::findNewGarbageIndex(   //找新垃圾的
-  const GarbageList & before,
-  double robot_x, double robot_y,
-  std::size_t & new_idx) const
-{
-  // 与 before 里某堆在合堆半径内就算同一堆，不是新堆
-  const double thresh2 = garbage_merge_radius_m_ * garbage_merge_radius_m_;
-  std::vector<std::size_t> news;
-  news.reserve(garbage_list_.size());
-  for (std::size_t i = 0; i < garbage_list_.size(); ++i) {
-    const double x = garbage_list_[i].pose.pose.position.x;
-    const double y = garbage_list_[i].pose.pose.position.y;
-    bool existed = false;
-    for (const auto & b : before) {
-      if (squaredDistanceXY(
-          x, y, b.pose.pose.position.x, b.pose.pose.position.y) < thresh2)
-      {
-        existed = true;
-        break;
-      }
-    }
-    if (!existed) {
-      news.push_back(i);
-    }
-  }
-  if (news.empty()) {
-    return false;
-  }
-
-  new_idx = news.front();
-  double best_d2 = squaredDistanceXY(
-    garbage_list_[new_idx].pose.pose.position.x,
-    garbage_list_[new_idx].pose.pose.position.y,
-    robot_x, robot_y);
-  for (std::size_t k = 1; k < news.size(); ++k) {
-    const std::size_t i = news[k];
-    const double d2 = squaredDistanceXY(
-      garbage_list_[i].pose.pose.position.x,
-      garbage_list_[i].pose.pose.position.y,
-      robot_x, robot_y);
-    if (d2 < best_d2) {
-      best_d2 = d2;
-      new_idx = i;
-    }
-  }
-  return true;
-}
-// 中途重排会直接拼表，绕过 tryInsertPreferCloserToRobot 的上限，这里统一收口
 void InsertGarbagePose::trimGarbageListToCap(double robot_x, double robot_y)
 {
   if (garbage_list_.size() <= kMaxGarbageSize) {
@@ -4119,13 +3556,8 @@ void InsertGarbagePose::resetVisualizationState()
   viz_pile_count_ = 0;
   viz_footprint_fail_count_ = 0;
 }
-// 新任务 / 工作圈取消：清空本话题上全部 Marker
-void InsertGarbagePose::clearMissionVisualization()
+void InsertGarbagePose::clearVisualizationTopics()
 {
-  resetVisualizationState();
-  if (!marker_pub_) {
-    return;
-  }
   visualization_msgs::msg::MarkerArray arr;
   visualization_msgs::msg::Marker clear;
   clear.header.frame_id = global_frame_;
@@ -4134,7 +3566,47 @@ void InsertGarbagePose::clearMissionVisualization()
   clear.id = 0;
   clear.action = visualization_msgs::msg::Marker::DELETEALL;
   arr.markers.push_back(clear);
-  marker_pub_->publish(arr);
+  auto send = [&](const auto & pub) {
+    if (pub) {
+      pub->publish(arr);
+    }
+  };
+  send(workspace_circle_pub_);
+  send(anchor_point_pub_);
+  send(footprint_check_pub_);
+  send(garbage_pose_pub_);
+}
+
+bool InsertGarbagePose::skipVisualization()
+{
+  if (enable_visualization_) {
+    viz_switch_cleared_ = false;
+    return false;
+  }
+  if (!viz_switch_cleared_) {
+    clearVisualizationTopics();
+    resetVisualizationState();
+    viz_switch_cleared_ = true;
+  }
+  return true;
+}
+
+void InsertGarbagePose::publishMarkers(
+  const rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr & pub,
+  const visualization_msgs::msg::MarkerArray & arr)
+{
+  if (!enable_visualization_ || !pub || arr.markers.empty()) {
+    return;
+  }
+  pub->publish(arr);
+}
+
+// 新任务 / 工作圈取消：清空四个话题上的全部 Marker
+void InsertGarbagePose::clearMissionVisualization()
+{
+  resetVisualizationState();
+  clearVisualizationTopics();
+  viz_switch_cleared_ = !enable_visualization_;
 }
 
 void InsertGarbagePose::appendDeleteMarker(
@@ -4252,7 +3724,7 @@ void InsertGarbagePose::appendFootprintStripMarkers(
 void InsertGarbagePose::publishFailedSweepVisualization(
   double rx, double ry, double gx, double gy)
 {
-  if (!marker_pub_) {
+  if (skipVisualization()) {
     return;
   }
   visualization_msgs::msg::MarkerArray arr;
@@ -4280,39 +3752,77 @@ void InsertGarbagePose::publishFailedSweepVisualization(
   arr.markers.push_back(ball);
 
   viz_have_fail_strip_ = true;
-  if (!arr.markers.empty()) {
-    marker_pub_->publish(arr);
+  publishMarkers(footprint_check_pub_, arr);
+}
+
+void InsertGarbagePose::publishBlockedSegmentVisualization(
+  double rx, double ry, double gx, double gy)
+{
+  if (skipVisualization()) {
+    return;
   }
+  visualization_msgs::msg::Marker line;
+  line.header.frame_id = global_frame_;
+  line.header.stamp = node_->now();
+  line.ns = "segment_check_fail";
+  line.id = 0;
+  line.type = visualization_msgs::msg::Marker::LINE_STRIP;
+  line.action = visualization_msgs::msg::Marker::ADD;
+  line.pose.orientation.w = 1.0;
+  line.scale.x = 0.06;
+  line.color.r = 0.95f;
+  line.color.g = 0.15f;
+  line.color.b = 0.10f;
+  line.color.a = 1.0f;
+  line.lifetime = rclcpp::Duration::from_seconds(0.0);
+  geometry_msgs::msg::Point a;
+  a.x = rx;
+  a.y = ry;
+  a.z = 0.08;
+  geometry_msgs::msg::Point b;
+  b.x = gx;
+  b.y = gy;
+  b.z = 0.08;
+  line.points.push_back(a);
+  line.points.push_back(b);
+
+  visualization_msgs::msg::MarkerArray arr;
+  arr.markers.push_back(line);
+  publishMarkers(footprint_check_pub_, arr);
 }
 
 void InsertGarbagePose::deletePileVisualization(int pile_num)
 {
-  if (!marker_pub_ || pile_num <= 0) {
+  if (!enable_visualization_ || pile_num <= 0) {
     return;
   }
-  visualization_msgs::msg::MarkerArray arr;
+  visualization_msgs::msg::MarkerArray garbage_arr;
+  visualization_msgs::msg::MarkerArray anchor_arr;
+  visualization_msgs::msg::MarkerArray footprint_arr;
   const int base = pile_num * 10;
-  appendDeleteMarker(arr, "garbage", base);
-  appendDeleteMarker(arr, "garbage", base + 1);
-  appendDeleteMarker(arr, "extend", base);
-  appendDeleteMarker(arr, "extend", base + 1);
-  appendDeleteMarker(arr, "extend", base + 2);
-  appendDeleteMarker(arr, "footprint_strip", base);
-  appendDeleteMarker(arr, "footprint_strip", base + 1);
-  appendDeleteMarker(arr, "footprint_strip", base + 2);
-  appendDeleteMarker(arr, "footprint_strip", base + 3);
+  appendDeleteMarker(garbage_arr, "garbage", base);
+  appendDeleteMarker(garbage_arr, "garbage", base + 1);
+  appendDeleteMarker(anchor_arr, "extend", base);
+  appendDeleteMarker(anchor_arr, "extend", base + 1);
+  appendDeleteMarker(anchor_arr, "extend", base + 2);
+  appendDeleteMarker(footprint_arr, "footprint_strip", base);
+  appendDeleteMarker(footprint_arr, "footprint_strip", base + 1);
+  appendDeleteMarker(footprint_arr, "footprint_strip", base + 2);
+  appendDeleteMarker(footprint_arr, "footprint_strip", base + 3);
   constexpr int kWallEdgeIdBase = 8000;
   constexpr int kWallEdgeIdSpan = 128;
   const int wbase = kWallEdgeIdBase + pile_num * kWallEdgeIdSpan;
   for (int i = 0; i < kWallEdgeIdSpan; ++i) {
-    appendDeleteMarker(arr, "wall_edge_pts", wbase + i);
+    appendDeleteMarker(anchor_arr, "wall_edge_pts", wbase + i);
   }
-  marker_pub_->publish(arr);
+  publishMarkers(garbage_pose_pub_, garbage_arr);
+  publishMarkers(anchor_point_pub_, anchor_arr);
+  publishMarkers(footprint_check_pub_, footprint_arr);
 }
 
 void InsertGarbagePose::pruneFinishedPileVisualization(const Goals & goals)
 {
-  if (viz_tracks_.empty()) {
+  if (skipVisualization() || viz_tracks_.empty()) {
     return;
   }
   std::vector<VizPileTrack> keep;
@@ -4332,7 +3842,7 @@ void InsertGarbagePose::pruneFinishedPileVisualization(const Goals & goals)
 
 void InsertGarbagePose::publishPendingGarbageDots()
 {
-  if (!marker_pub_) {
+  if (skipVisualization()) {
     return;
   }
   visualization_msgs::msg::MarkerArray arr;
@@ -4361,15 +3871,13 @@ void InsertGarbagePose::publishPendingGarbageDots()
     appendDeleteMarker(arr, "garbage_pending", static_cast<int>(i));
   }
   viz_pending_marker_count_ = garbage_list_.size();
-  if (!arr.markers.empty()) {
-    marker_pub_->publish(arr);
-  }
+  publishMarkers(garbage_pose_pub_, arr);
 }
 
 void InsertGarbagePose::refreshClipAnchorVisualization(
   const Goals & goals, double robot_x, double robot_y)
 {
-  if (!marker_pub_) {
+  if (skipVisualization()) {
     return;
   }
 
@@ -4469,14 +3977,12 @@ void InsertGarbagePose::refreshClipAnchorVisualization(
   publishAnchor("clip_corner", have_c, cx, cy, "C", 0.02f, 0.40f, 0.10f);
   viz_have_head_ = have_h;
   viz_have_corner_ = have_c;
-  if (!arr.markers.empty()) {
-    marker_pub_->publish(arr);
-  }
+  publishMarkers(anchor_point_pub_, arr);
 }
 // footprint 检查不通过时，把当时检查用的 footprint 框画在垃圾位置上（空心蓝框）
 void InsertGarbagePose::publishFootprintCheckBox(double x, double y, double yaw)
 {
-  if (!marker_pub_) {
+  if (skipVisualization()) {
     return;
   }
   std::vector<std::pair<double, double>> local_xy;
@@ -4515,13 +4021,13 @@ void InsertGarbagePose::publishFootprintCheckBox(double x, double y, double yaw)
 
   visualization_msgs::msg::MarkerArray arr;
   arr.markers.push_back(box);
-  marker_pub_->publish(arr);
+  publishMarkers(footprint_check_pub_, arr);
   ++viz_footprint_fail_count_;
 }
 
 void InsertGarbagePose::publishRangeCircles(double robot_x, double robot_y)
 {
-  if (!marker_pub_) {
+  if (skipVisualization()) {
     return;
   }
 
@@ -4556,15 +4062,16 @@ void InsertGarbagePose::publishRangeCircles(double robot_x, double robot_y)
     return m;
   };
 
-  visualization_msgs::msg::MarkerArray arr;
+  visualization_msgs::msg::MarkerArray circles;
+  visualization_msgs::msg::MarkerArray obstacles;
   // 可视化生命周期 = 工作圈生命周期：生成工作圈时开始，取消时被整体删除；
   // 没有工作圈时不画圈，避免"取消后又被下一帧画回来"
   if (has_work_circle_) {
-    arr.markers.push_back(
+    circles.markers.push_back(
       make_circle(
         "detect_range", robot_x, robot_y, max_garbage_robot_dist_m_,
         0.55f, 0.95f, 0.50f, 0.90f, 0.05));
-    arr.markers.push_back(
+    circles.markers.push_back(
       make_circle(
         "work_circle", work_circle_x_, work_circle_y_, work_circle_radius_m_,
         0.02f, 0.40f, 0.10f, 0.95f, 0.08));
@@ -4592,7 +4099,7 @@ void InsertGarbagePose::publishRangeCircles(double robot_x, double robot_y)
     box.color.b = 0.10f;
     box.color.a = 0.95f;
     box.lifetime = rclcpp::Duration::from_seconds(0.0);
-    arr.markers.push_back(box);
+    obstacles.markers.push_back(box);
 
     visualization_msgs::msg::Marker text;
     text.header = box.header;
@@ -4616,7 +4123,7 @@ void InsertGarbagePose::publishRangeCircles(double robot_x, double robot_y)
     text.color.b = 0.10f;
     text.color.a = 1.0f;
     text.lifetime = rclcpp::Duration::from_seconds(0.0);
-    arr.markers.push_back(text);
+    obstacles.markers.push_back(text);
   }
   for (std::size_t i = viz_obstacle_pixels_.size(); i < viz_obstacle_marker_count_; ++i) {
     visualization_msgs::msg::Marker del;
@@ -4625,28 +4132,26 @@ void InsertGarbagePose::publishRangeCircles(double robot_x, double robot_y)
     del.ns = "nearest_obstacle";
     del.id = static_cast<int>(i);
     del.action = visualization_msgs::msg::Marker::DELETE;
-    arr.markers.push_back(del);
+    obstacles.markers.push_back(del);
 
     visualization_msgs::msg::Marker del_text = del;
     del_text.id = kObstacleTextIdBase + static_cast<int>(i);
-    arr.markers.push_back(del_text);
+    obstacles.markers.push_back(del_text);
   }
   viz_obstacle_marker_count_ = viz_obstacle_pixels_.size();
-  if (!arr.markers.empty()) {
-    marker_pub_->publish(arr);
-  }
+  publishMarkers(workspace_circle_pub_, circles);
+  publishMarkers(anchor_point_pub_, obstacles);
 }
-// 往 RViz 发本次插入：红 G、蓝 E、蓝虚线、footprint 长条
-void InsertGarbagePose::publishVisualization(
-  const InsertInfo & info,
-  bool enable,
-  bool viz_accepted_garbage)
+// 往 RViz 发本次插入：G 在 insert_garbage_pose，锚点/虚线在 insert_anchor_point，长条在 insert_footprint_check
+void InsertGarbagePose::publishVisualization(const InsertInfo & info)
 {
-  if (!marker_pub_) {
+  if (skipVisualization()) {
     return;
   }
 
-  visualization_msgs::msg::MarkerArray arr;
+  visualization_msgs::msg::MarkerArray garbage_arr;
+  visualization_msgs::msg::MarkerArray anchor_arr;
+  visualization_msgs::msg::MarkerArray footprint_arr;
   const rclcpp::Time stamp = node_->now();
 
   const int pile_idx = viz_pile_count_;
@@ -4664,19 +4169,6 @@ void InsertGarbagePose::publishVisualization(
     m.lifetime = rclcpp::Duration::from_seconds(0.0);
     return m;
   };
-
-  if (!enable) {
-    visualization_msgs::msg::Marker clear;
-    clear.header.frame_id = global_frame_;
-    clear.header.stamp = stamp;
-    clear.ns = "";
-    clear.id = 0;
-    clear.action = visualization_msgs::msg::Marker::DELETEALL;
-    arr.markers.push_back(clear);
-    marker_pub_->publish(arr);
-    resetVisualizationState();
-    return;
-  }
 
   auto setColor = [](visualization_msgs::msg::Marker & m,
       float r, float g, float b, float a = 1.0f) {
@@ -4700,14 +4192,14 @@ void InsertGarbagePose::publishVisualization(
   const double ry = info.robot_pose.pose.position.y;
 
   if (viz_have_fail_strip_) {
-    appendDeleteMarker(arr, "footprint_strip_fail", 0);
-    appendDeleteMarker(arr, "footprint_strip_fail", 1);
-    appendDeleteMarker(arr, "footprint_strip_fail", 2);
+    appendDeleteMarker(footprint_arr, "footprint_strip_fail", 0);
+    appendDeleteMarker(footprint_arr, "footprint_strip_fail", 1);
+    appendDeleteMarker(footprint_arr, "footprint_strip_fail", 2);
     viz_have_fail_strip_ = false;
   }
+  appendDeleteMarker(footprint_arr, "segment_check_fail", 0);
 
-  if (viz_accepted_garbage) {
-    const int base = pile_num * 10;
+  const int base = pile_num * 10;
     constexpr double kGarbageDotZM = 0.12;
     constexpr double kGarbageDotSizeM = 0.22;
     constexpr double kDashLenM = 0.12;
@@ -4753,7 +4245,7 @@ void InsertGarbagePose::publishVisualization(
       }
     };
 
-    arr.markers.push_back(
+    garbage_arr.markers.push_back(
       makeSolidDot("garbage", base, gx, gy, 0.95f, 0.10f, 0.10f, kGarbageDotSizeM));
 
     auto t = makeBase("garbage", base + 1, visualization_msgs::msg::Marker::TEXT_VIEW_FACING);
@@ -4767,10 +4259,10 @@ void InsertGarbagePose::publishVisualization(
       t.text = oss.str();
     }
     setColor(t, 0.95f, 0.10f, 0.10f);
-    arr.markers.push_back(t);
+    garbage_arr.markers.push_back(t);
 
     appendFootprintStripMarkers(
-      arr, "footprint_strip", base, rx, ry, gx, gy,
+      footprint_arr, "footprint_strip", base, rx, ry, gx, gy,
       1.00f, 0.55f, 0.05f, 0.90f, 0.22f);
 
     if (info.extend_inserted) {
@@ -4782,10 +4274,10 @@ void InsertGarbagePose::publishVisualization(
       setColor(ge_line, 0.15f, 0.40f, 0.95f, 0.90f);
       appendDashedLine(ge_line, gx, gy, ex, ey);
       if (!ge_line.points.empty()) {
-        arr.markers.push_back(ge_line);
+        anchor_arr.markers.push_back(ge_line);
       }
 
-      arr.markers.push_back(
+      anchor_arr.markers.push_back(
         makeSolidDot("extend", base, ex, ey, 0.15f, 0.40f, 0.95f, kGarbageDotSizeM));
 
       auto te = makeBase("extend", base + 1, visualization_msgs::msg::Marker::TEXT_VIEW_FACING);
@@ -4799,10 +4291,10 @@ void InsertGarbagePose::publishVisualization(
         te.text = oss.str();
       }
       setColor(te, 0.15f, 0.40f, 0.95f);
-      arr.markers.push_back(te);
+      anchor_arr.markers.push_back(te);
 
       appendFootprintStripMarkers(
-        arr, "footprint_strip", base + 2, gx, gy, ex, ey,
+        footprint_arr, "footprint_strip", base + 2, gx, gy, ex, ey,
         0.15f, 0.45f, 0.95f, 0.85f, 0.18f);
     }
 
@@ -4816,7 +4308,7 @@ void InsertGarbagePose::publishVisualization(
       const int wbase = kWallEdgeIdBase + pile_num * kWallEdgeIdSpan;
       int wid = 0;
 
-      arr.markers.push_back(
+      anchor_arr.markers.push_back(
         makeSolidDot(
           "wall_edge_pts", wbase + wid++, info.wall_edge_d_x, info.wall_edge_d_y,
           kBlueR, kBlueG, kBlueB, kGarbageDotSizeM));
@@ -4832,7 +4324,7 @@ void InsertGarbagePose::publishVisualization(
         td.text = oss.str();
       }
       setColor(td, kBlueR, kBlueG, kBlueB);
-      arr.markers.push_back(td);
+      anchor_arr.markers.push_back(td);
 
       for (const auto & p : info.wall_edge_chain_xy) {
         if (wid >= kWallEdgeIdSpan) {
@@ -4845,7 +4337,7 @@ void InsertGarbagePose::publishVisualization(
         {
           continue;
         }
-        arr.markers.push_back(
+        anchor_arr.markers.push_back(
           makeSolidDot(
             "wall_edge_pts", wbase + wid++, p.first, p.second,
             kBlueR, kBlueG, kBlueB, kMidDotSizeM));
@@ -4860,15 +4352,12 @@ void InsertGarbagePose::publishVisualization(
     track.ex = info.extend_x;
     track.ey = info.extend_y;
     viz_tracks_.push_back(track);
-  }
 
-  marker_pub_->publish(arr);
+  publishMarkers(garbage_pose_pub_, garbage_arr);
+  publishMarkers(anchor_point_pub_, anchor_arr);
+  publishMarkers(footprint_check_pub_, footprint_arr);
   ++viz_pile_count_;
 }
-
-// ========================================================================
-// N. 写回黑板
-// ========================================================================
 
 // 真正写黑板前打一条日志，便于观察 output 时机和频率
 void InsertGarbagePose::emitOutputGoals(const Goals & goals, const char * reason)
@@ -4879,10 +4368,6 @@ void InsertGarbagePose::emitOutputGoals(const Goals & goals, const char * reason
     reason, goals.size());
   setOutput("output_goals", goals);
 }
-
-// ========================================================================
-// O. 节点注册
-// ========================================================================
 
 }  // namespace nav2_behavior_tree
 

@@ -118,9 +118,7 @@
       <input_port name="wall_edge_sample_m" default="0.5">Wall-edge sample spacing along D-G-E (m); &lt;=0 keeps only D, G, E</input_port>
       <input_port name="wall_edge_normal_offset_m" default="0.0">After D-G-E is built, shift the whole chain along P-&gt;G (m), + away from wall</input_port>
       <input_port name="global_costmap_topic" default="global_costmap/costmap_raw">Global costmap topic (nav2_msgs/Costmap) for all footprint checks</input_port>
-      <input_port name="enable_visualization" default="true">Publish insert/clip markers to RViz</input_port>
-      <input_port name="viz_accepted_garbage" default="true">Show accepted garbage after filtering</input_port>
-      <input_port name="visualization_topic" default="insert_garbage_pose/markers">MarkerArray topic for insert visualization</input_port>
+      <input_port name="enable_visualization" default="true">Master switch for insert-garbage RViz markers</input_port>
       <input_port name="global_frame" default="map">Global frame</input_port>
       <input_port name="robot_base_frame" default="base_link">Robot base frame</input_port>
     </Action>
