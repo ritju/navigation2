@@ -1678,8 +1678,11 @@ bool InsertGarbagePose::takeOneRayChain(
   }
   const double g1x = (*remaining)[nearest].pose.pose.position.x;
   const double g1y = (*remaining)[nearest].pose.pose.position.y;
+  // 射线方向是假设车位指向 G1，起点放在 G1，夹角在 G1 上量
+  const double ray_tx = g1x + (g1x - *pose_x);
+  const double ray_ty = g1y + (g1y - *pose_y);
   const std::vector<std::size_t> hit = collectSectorChain(
-    *pose_x, *pose_y, g1x, g1y, remaining->size(), nearest,
+    g1x, g1y, ray_tx, ray_ty, remaining->size(), nearest,
     [&](std::size_t i) {
       return std::make_pair(
         (*remaining)[i].pose.pose.position.x,
@@ -2601,8 +2604,9 @@ struct ClipNode
 
 }  // namespace
 
-// 每个参考点都在原始路径上跑 2.5，互不看到对方的删除。
-// 同一个参考点落在正向延长线时，只在自己的副本上重算下一条边。
+// 判断和删除分开。每个参考点都从同一份原始路径算自己的垂足，互不看到对方要删的点。
+// 垂足在线段上时，从垂足沿后续普通点累加路程，超过 clip_extend_m 或碰到角点就停。
+// 垂足在正向延长线上时，只在这个参考点自己的副本上重算下一条边。
 // delete_idx 是各参考点原始下标的并集，由调用方一次删除。
 void InsertGarbagePose::clipReferencesInOrder(
   const Goals & goals,
@@ -2746,6 +2750,7 @@ void InsertGarbagePose::clipReferencesInOrder(
 
       std::vector<std::size_t> drop_orig;
       if (t > 1.0 + kEps) {
+        // 只挪这个参考点自己的副本，好让它去看下一条边。其它参考点仍从原始路径算。
         info.hit_forward_case = true;
         for (std::size_t j = H; j < C; ++j) {
           if (canDelete(j)) {
@@ -2765,27 +2770,53 @@ void InsertGarbagePose::clipReferencesInOrder(
       }
 
       info.hit_mid_case = true;
-      // 垃圾垂足和路径点都投到 H->C 方向上量，避免弦长和折线弧长混着比
-      const double ux = (cx - hx) / seg_len;
-      const double uy = (cy - hy) / seg_len;
-      const double cut = std::max(0.0, t) * seg_len + clip_m;
-      for (std::size_t j = H; j < C; ++j) {
-        const double sj =
-          (live[j].pose.position.x - hx) * ux + (live[j].pose.position.y - hy) * uy;
-        if (sj >= cut - 1e-9) {
+      info.corners_kept_xy.emplace_back(cx, cy);
+      std::vector<std::size_t> edge;
+      edge.reserve(ordinary.size());
+      for (const std::size_t idx : ordinary) {
+        edge.push_back(idx);
+        if (idx == C) {
           break;
         }
+      }
+      std::size_t next_k = edge.size();
+      for (std::size_t k = 0; k < edge.size(); ++k) {
+        const auto & p = live[edge[k]].pose.position;
+        const double pt = lineParameterT(p.x, p.y, hx, hy, cx, cy);
+        if (pt > t + kEps) {
+          next_k = k;
+          break;
+        }
+      }
+      double prev_x = fx;
+      double prev_y = fy;
+      double accumulated = 0.0;
+      for (std::size_t k = next_k; k < edge.size(); ++k) {
+        const std::size_t j = edge[k];
+        if (j == C) {
+          break;
+        }
+        const double x = live[j].pose.position.x;
+        const double y = live[j].pose.position.y;
+        const double seg = std::hypot(x - prev_x, y - prev_y);
+        if (accumulated + seg >= clip_m) {
+          break;
+        }
+        accumulated += seg;
         if (canDelete(j)) {
           drop_orig.push_back(nodes[j].orig);
         }
+        prev_x = x;
+        prev_y = y;
       }
-      info.corners_kept_xy.emplace_back(cx, cy);
       RCLCPP_INFO(
         node_->get_logger(),
-        "InsertGarbagePose: clip on-seg t=%.3f H=%zu C=%zu cut=%.2f "
-        "drop=%zu ref=(%.2f, %.2f), stop at corner",
-        t, nodes[H].orig, nodes[C].orig, cut, drop_orig.size(), ref_x, ref_y);
-      dropNodes(drop_orig);
+        "InsertGarbagePose: clip on-seg t=%.3f H=%zu C=%zu walked=%.2f "
+        "drop=%zu ref=(%.2f, %.2f)",
+        t, nodes[H].orig, nodes[C].orig, accumulated, drop_orig.size(), ref_x, ref_y);
+      for (const std::size_t orig : drop_orig) {
+        delete_idx.insert(orig);
+      }
       break;
     }
   }

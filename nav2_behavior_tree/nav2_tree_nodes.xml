@@ -95,7 +95,7 @@
       <input_port name="garbage_topic" default="/garbage_rectangle_points">Garbage detection topic</input_port>
       <input_port name="special_terrain_topic" default="/cleaning_tool_retraction_areas">Special / retraction area polygons topic</input_port>
       <input_port name="footprint_topic" default="local_costmap/published_footprint">Robot footprint topic</input_port>
-      <input_port name="clip_extend_m" default="2.0">After garbage foot on path, delete goals for this distance (m)</input_port>
+      <input_port name="clip_extend_m" default="2.0">From each reference foot, delete following goals within this path distance (m)</input_port>
       <input_port name="corner_angle_deg" default="30.0">Goals with turn angle above this are corners (deg)</input_port>
       <input_port name="goaltotal_range_m" default="10.0">If no corner ahead, use last goal within this path distance as goalc (m)</input_port>
       <input_port name="head_delete_robot_dist_m" default="4.0">Skip all goal deletes when the robot is farther than this (m) from the nearest point on input_goals</input_port>

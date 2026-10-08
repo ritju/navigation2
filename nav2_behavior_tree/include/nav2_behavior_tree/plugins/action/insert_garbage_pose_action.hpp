@@ -153,7 +153,8 @@ public:
         "footprint_topic", std::string("local_costmap/published_footprint"),
         "Robot footprint topic"),
       BT::InputPort<double>(
-        "clip_extend_m", 2.5, "After garbage foot on path, delete goals for this distance (m)"),
+        "clip_extend_m", 2.5,
+        "From each reference foot, delete following goals within this path distance (m)"),
       BT::InputPort<double>(
         "corner_angle_deg", 30.0, "Goals with turn angle above this are corners (deg)"),
       BT::InputPort<double>(
@@ -510,8 +511,7 @@ private:
     const GarbageList & chain, GarbageList * out, std::vector<char> * skip);
 
   /**
-   * 从假设车位收一条线。扇形里除最近堆外没有别人时返回 false，不改剩余列表。
-   * 收到时按离假设车位由近到远写入 chain_out，并从 remaining 删除；
+   * 取离假设车位最近的堆 G1，射线从 G1 出发、方向为假设车位指向 G1。
    * 假设车位挪到链尾 En，朝向继承 En。
    */
   bool takeOneRayChain(
