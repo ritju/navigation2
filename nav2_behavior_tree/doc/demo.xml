@@ -35,7 +35,6 @@
               extend_step_yaw_deg="10.0"
               enable_wall_edge_insert="true"
               wall_edge_d_extend_m="2.0"
-              wall_edge_e_extend_m="2.0"
               wall_edge_min_robot_dist_m="1.0"
               wall_edge_sample_m="0.5"
               wall_edge_normal_offset_m="0.0"

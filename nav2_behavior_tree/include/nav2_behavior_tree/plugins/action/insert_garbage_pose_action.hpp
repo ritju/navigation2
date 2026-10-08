@@ -16,9 +16,11 @@
 #define NAV2_BEHAVIOR_TREE__PLUGINS__ACTION__INSERT_GARBAGE_POSE_ACTION_HPP_
 
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -168,7 +170,7 @@ public:
         "Merge detections within this radius (m) of the nearest seed into one pile"),
       BT::InputPort<double>(
         "garbage_extend_m", 2.0,
-        "Along path_yaw, insert E this far past garbage (m)"),
+        "G to E distance: normal insert along path_yaw; wall-edge along tangent (m)"),
       BT::InputPort<double>(
         "ray_offset_deg", 30.0,
         "Half-angle (deg) of the forward ray sector that binds garbage into one locked line"),
@@ -203,14 +205,11 @@ public:
         "wall_edge_d_extend_m", 2.0,
         "Wall-edge: each D push step along tangent (m)"),
       BT::InputPort<double>(
-        "wall_edge_e_extend_m", 2.0,
-        "Wall-edge: G to E extend distance along tangent (m)"),
-      BT::InputPort<double>(
         "wall_edge_min_robot_dist_m", 3.0,
         "Wall-edge: keep |D-robot| at least this (m)"),
       BT::InputPort<double>(
         "wall_edge_sample_m", 0.5,
-        "Wall-edge: sample spacing along D-G-E (m); <=0 keeps only D, G, E"),
+        "Wall-edge: sample spacing along D-G-E (m)"),
       BT::InputPort<double>(
         "wall_edge_normal_offset_m", 0.0,
         "Wall-edge: after D-G-E is built, shift the whole chain along P->G (m), + away from wall"),
@@ -344,14 +343,6 @@ private:
     double gx, double gy, double yaw,
     double robot_x, double robot_y);
 
-  /**
-   * 2.5 当前边只有一条：第一个非 z=-1 点 → 其后第一个角点。只向这条边投影。
-   * 落在边上：从该点沿路径删到垂足再加 clip_extend_m；先碰到角点则停在角点并留下角点，然后停止。
-   * 反延不删。正延删掉该边除尾角点外的点，只在该参考点自己的副本上重算下一条边。
-   * G、E 都在原始路径上判断，互不看到对方的删除；下标取并集后由调用方一次删除。
-   */
-  Goals clipGoalsNearGarbage(InsertInfo & info);
-
   /** 每个参考点都在原始路径上跑 2.5，删除下标取并集写入 delete_idx，不改 goals 本身。 */
   void clipReferencesInOrder(
     const Goals & goals,
@@ -367,6 +358,71 @@ private:
   void forgetCornerXy(double x, double y) const;
   bool robotEnteredNextSide(
     const Goals & goals, std::size_t head, double robot_x, double robot_y) const;
+
+  /** 按最后一个已保护点或 z=-1 哨兵把 goals 切成前缀和剩余路径 */
+  void splitAtLastProtected(const Goals & goals, Goals * prefix, Goals * path) const;
+
+  /**
+   * 有前缀时在剩余路径上重算删点基准。
+   * saved_garbage 非空时写进基准，贴墙和普通插入需要；整线插入传空。
+   */
+  bool prepareClipBase(
+    const Goals & prefix, const Goals & path,
+    double gx, double gy, double saved_yaw,
+    const capella_ros_msg::msg::GarbageDetect * saved_garbage,
+    InsertInfo * info, InsertInfo * frozen);
+
+  /** 用参考点删剩余路径，把删点结果写回 info，返回删完的路径 */
+  Goals clipWithRefs(
+    const Goals & work,
+    const std::vector<std::pair<double, double>> & refs,
+    const InsertInfo & frozen,
+    InsertInfo * info,
+    const char * log_tag);
+
+  /** 前缀、新插入点、剩余路径拼成一条，并统一时间戳 */
+  Goals assembleAndStamp(
+    const Goals & prefix, const Goals & inserted, const Goals & rest);
+
+  /** 记下这一堆扫完后的离开点和朝向，供下一堆算来向 */
+  void recordSweepArrive(double x, double y, double yaw);
+
+  enum class InsertLoopAction { Continue, BreakLoop, RunSinglePile };
+
+  /** 插入前记下 goals 和会在「E 太近」回滚时恢复的状态 */
+  struct InsertRollback
+  {
+    Goals goals;
+    std::vector<std::pair<double, double>> reached;
+    std::vector<std::pair<double, double>> corners;
+    std::pair<double, double> arrive{0.0, 0.0};
+    bool has_arrive{false};
+    double path_yaw{0.0};
+    bool has_path_yaw{false};
+
+    static InsertRollback snapshot(const InsertGarbagePose & self, const Goals & goals);
+    void restore(InsertGarbagePose & self, Goals * goals) const;
+  };
+
+  struct InsertBatch
+  {
+    Goals goals;
+    std::size_t inserted_count{0};
+    std::size_t deleted_goals_total{0};
+    std::ostringstream inserted_xy;
+  };
+
+  /** 队首是锁住的线时插入整条；不是线时交给单堆插入 */
+  InsertLoopAction insertLockedChainAtFront(
+    InsertBatch * batch,
+    const geometry_msgs::msg::PoseStamped & robot_pose,
+    double rx, double ry);
+
+  /** 插入队首这一堆。footprint 不过时改走贴墙或跳过 */
+  InsertLoopAction insertFrontPile(
+    InsertBatch * batch,
+    const geometry_msgs::msg::PoseStamped & robot_pose,
+    double rx, double ry);
 
   /** 插入真实垃圾、统一时间戳；G-E 接到剩余路径队首，角点和对边留下 */
   Goals insertGarbageIntoGoals(InsertInfo & info);
@@ -439,6 +495,19 @@ private:
   /** 点相对射线起点是否落在正方向、且夹角不超过 ray_offset_deg_ */
   bool inForwardRaySector(
     double ox, double oy, double tx, double ty, double px, double py) const;
+
+  /**
+   * 种子一定进链。其余下标落在原点指向 (tx,ty) 的扇形里才进链。
+   * 按离原点由近到远排序。除种子外没有别人时返回空。
+   */
+  std::vector<std::size_t> collectSectorChain(
+    double ox, double oy, double tx, double ty,
+    std::size_t count, std::size_t seed,
+    const std::function<std::pair<double, double>(std::size_t)> & at) const;
+
+  /** 一条线追加到列表：中间堆标 1，链尾标 0 */
+  static void appendChainWithSkip(
+    const GarbageList & chain, GarbageList * out, std::vector<char> * skip);
 
   /**
    * 从假设车位收一条线。扇形里除最近堆外没有别人时返回 false，不改剩余列表。
@@ -612,11 +681,9 @@ public:
   double max_garbage_robot_dist_m_{5.0};
   /** 贴边：D 每次沿切向再推的步长，默认 2m */
   double wall_edge_d_extend_m_{2.0};
-  /** 贴边：G 到 E 沿切向伸出长度，默认 2m */
-  double wall_edge_e_extend_m_{2.0};
   /** 贴边：D 与车最小距离 GD，默认 3m */
   double wall_edge_min_robot_dist_m_{3.0};
-  /** 贴边：D-G-E 链上采样间距，默认 0.5m；<=0 只留 D、G、E */
+  /** 贴边：D-G-E 链上采样间距，默认 0.5m */
   double wall_edge_sample_m_{0.5};
   /** 贴边：整链沿障碍→垃圾法向往外挪，正为离墙，默认 0 */
   double wall_edge_normal_offset_m_{0.0};
