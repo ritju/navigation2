@@ -52,6 +52,9 @@ InsertGarbagePose::InsertGarbagePose(
   wall_edge_normal_offset_m_(0.0),
   garbage_merge_radius_m_(1.0),    // 到种子小于该距离合为一堆
   garbage_extend_m_(2.0),          // 沿扫向相对垃圾再插一点，默认 2.0m
+  ray_offset_deg_(30.0),
+  extend_near_radius_m_(1.5),
+  extend_extra_m_(1.0),
   work_circle_radius_m_(10.0)
 {
   getInput("garbage_topic", garbage_topic_);
@@ -137,6 +140,9 @@ void InsertGarbagePose::refreshTunableInputPorts()
   getInput("wall_edge_normal_offset_m", wall_edge_normal_offset_m_);
   getInput("garbage_merge_radius_m", garbage_merge_radius_m_);
   getInput("garbage_extend_m", garbage_extend_m_);
+  getInput("ray_offset_deg", ray_offset_deg_);
+  getInput("extend_near_radius_m", extend_near_radius_m_);
+  getInput("extend_extra_m", extend_extra_m_);
   getInput("extend_max_yaw_deg", extend_max_yaw_deg_);
   getInput("extend_step_yaw_deg", extend_step_yaw_deg_);
   getInput("work_circle_radius_m", work_circle_radius_m_);
@@ -426,9 +432,10 @@ BT::NodeStatus InsertGarbagePose::tick()
   }
 
   if (garbage_list_.size() > 1 && last_sweep_xy_.empty()) {
-    reorderNearestFirstThenSweep(rx, ry, robot_yaw);
+    planRayChainsBeforeSweep(rx, ry, robot_yaw);
     logSweepOrder();
   } else if (garbage_list_.size() == 1 && last_sweep_xy_.empty()) {
+    pile_skip_extend_.assign(1, 0);
     syncLastSweepXyFromList();
   }
 
@@ -446,6 +453,101 @@ BT::NodeStatus InsertGarbagePose::tick()
   std::size_t deleted_goals_total = 0;
   std::ostringstream inserted_xy;
   while (!garbage_list_.empty()) {
+    if (pile_skip_extend_.size() < garbage_list_.size()) {
+      pile_skip_extend_.resize(garbage_list_.size(), 0);
+    }
+    const std::size_t chain_n = lockedChainLengthAtFront();
+    if (chain_n >= 2) {
+      std::vector<std::size_t> kept;
+      double fx = rx;
+      double fy = ry;
+      for (std::size_t i = 0; i < chain_n; ++i) {
+        const double cx = garbage_list_[i].pose.pose.position.x;
+        const double cy = garbage_list_[i].pose.pose.position.y;
+        if (isNearReachedGarbage(cx, cy)) {
+          RCLCPP_INFO_THROTTLE(
+            node_->get_logger(), *(node_->get_clock()), 2000,
+            "InsertGarbagePose: diag skip chain pile (%.2f, %.2f): near protected/reached",
+            cx, cy);
+          continue;
+        }
+        std::string chain_fp;
+        if (!isFootprintSweepClear(fx, fy, cx, cy, &chain_fp)) {
+          RCLCPP_INFO(
+            node_->get_logger(),
+            "InsertGarbagePose: ray chain drop (%.2f, %.2f), footprint 不过 (%s)",
+            cx, cy, chain_fp.c_str());
+          publishFootprintCheckBox(cx, cy, std::atan2(cy - fy, cx - fx));
+          addProtectedGarbageXy(cx, cy);
+          continue;
+        }
+        kept.push_back(i);
+        fx = cx;
+        fy = cy;
+      }
+      GarbageList kept_piles;
+      kept_piles.reserve(kept.size());
+      for (const std::size_t i : kept) {
+        kept_piles.push_back(garbage_list_[i]);
+      }
+      eraseGarbageFront(chain_n);
+      if (kept_piles.size() >= 2) {
+        std::vector<std::pair<double, double>> gxy;
+        gxy.reserve(kept_piles.size());
+        for (const auto & pile : kept_piles) {
+          gxy.emplace_back(pile.pose.pose.position.x, pile.pose.pose.position.y);
+        }
+        InsertInfo info = gatherInsertInfo(
+          goals_now, robot_pose, gxy.front().first, gxy.front().second);
+        if (!info.valid) {
+          RCLCPP_INFO_THROTTLE(
+            node_->get_logger(), *(node_->get_clock()), 2000,
+            "InsertGarbagePose: diag skip ray chain (%.2f, %.2f): gather invalid (%s)",
+            gxy.front().first, gxy.front().second, info.invalid_reason.c_str());
+          for (const auto & p : gxy) {
+            addProtectedGarbageXy(p.first, p.second);
+          }
+          continue;
+        }
+        info.dist_label = next_g_num_;
+        next_g_num_ += static_cast<int>(kept_piles.size());
+        info.ray_chain_xy = gxy;
+        info.garbage = kept_piles.front();
+        const std::size_t goals_before_pile = goals_now.size();
+        goals_now = insertRayChainIntoGoals(info, gxy, garbage_extend_m_);
+        const std::size_t pile_deleted = info.goaltotal.size();
+        deleted_goals_total += pile_deleted;
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "InsertGarbagePose: insert ray chain n=%zu G%d (%.2f, %.2f)->(%.2f, %.2f) "
+          "extend=%d, deleted %zu path goals, goals %zu -> %zu",
+          gxy.size(), info.dist_label,
+          gxy.front().first, gxy.front().second, gxy.back().first, gxy.back().second,
+          info.extend_inserted ? 1 : 0,
+          pile_deleted, goals_before_pile, goals_now.size());
+        publishVisualization(info);
+        publishRangeCircles(rx, ry);
+        for (const auto & p : gxy) {
+          addProtectedGarbageXy(p.first, p.second);
+          inserted_xy << "(" << p.first << ", " << p.second << ") ";
+        }
+        if (info.extend_inserted) {
+          addProtectedGarbageXy(info.extend_x, info.extend_y);
+        }
+        inserted_count += kept_piles.size();
+        if (single_pile_insert_) {
+          break;
+        }
+        continue;
+      }
+      if (kept_piles.size() == 1) {
+        garbage_list_.insert(garbage_list_.begin(), kept_piles.front());
+        pile_skip_extend_.insert(pile_skip_extend_.begin(), 0);
+      } else {
+        continue;
+      }
+    }
+
     const double gx = garbage_list_.front().pose.pose.position.x;
     const double gy = garbage_list_.front().pose.pose.position.y;
     if (isNearReachedGarbage(gx, gy)) {
@@ -453,7 +555,7 @@ BT::NodeStatus InsertGarbagePose::tick()
         node_->get_logger(), *(node_->get_clock()), 2000,
         "InsertGarbagePose: diag skip insert (%.2f, %.2f): near protected/reached",
         gx, gy);
-      garbage_list_.erase(garbage_list_.begin());
+      eraseGarbageFront(1);
       continue;
     }
     InsertInfo info = gatherInsertInfo(goals_now, robot_pose, gx, gy);
@@ -462,7 +564,7 @@ BT::NodeStatus InsertGarbagePose::tick()
         node_->get_logger(), *(node_->get_clock()), 2000,
         "InsertGarbagePose: diag skip insert (%.2f, %.2f): gather invalid (%s)",
         gx, gy, info.invalid_reason.c_str());
-      garbage_list_.erase(garbage_list_.begin());
+      eraseGarbageFront(1);
       continue;
     }
     info.dist_label = next_g_num_++;
@@ -471,8 +573,48 @@ BT::NodeStatus InsertGarbagePose::tick()
     const bool footprint_ok = isFootprintSweepClear(
       robot_pose.pose.position.x, robot_pose.pose.position.y, gx, gy, &fp_reason);
     if (footprint_ok) {
-      // 通过：正常 G-E 扫
+      const Goals goals_checkpoint = goals_now;
+      const auto protected_checkpoint = reached_garbage_xy_;
+      const auto corner_checkpoint = remembered_corner_xy_;
+      const auto arrive_checkpoint = last_sweep_arrive_xy_;
+      const bool has_arrive_checkpoint = has_last_sweep_arrive_;
+      const double path_yaw_checkpoint = last_sweep_path_yaw_;
+      const bool has_path_yaw_checkpoint = has_last_sweep_path_yaw_;
       goals_now = insertGarbageIntoGoals(info);
+      if (info.extend_inserted && garbage_list_.size() > 1) {
+        double yaw_out = info.path_yaw;
+        double ext_out = info.extend_used_m;
+        const ExtendNearAction action = considerExtendNear(
+          gx, gy, info.extend_x, info.extend_y, info.path_yaw, &yaw_out, &ext_out);
+        if (action != ExtendNearAction::Keep) {
+          goals_now = goals_checkpoint;
+          reached_garbage_xy_ = protected_checkpoint;
+          remembered_corner_xy_ = corner_checkpoint;
+          last_sweep_arrive_xy_ = arrive_checkpoint;
+          has_last_sweep_arrive_ = has_arrive_checkpoint;
+          last_sweep_path_yaw_ = path_yaw_checkpoint;
+          has_last_sweep_path_yaw_ = has_path_yaw_checkpoint;
+          if (action == ExtendNearAction::Rechain) {
+            --next_g_num_;
+            continue;
+          }
+          InsertInfo info2 = gatherInsertInfo(goals_now, robot_pose, gx, gy);
+          if (!info2.valid) {
+            RCLCPP_INFO_THROTTLE(
+              node_->get_logger(), *(node_->get_clock()), 2000,
+              "InsertGarbagePose: diag skip nudged E (%.2f, %.2f): gather invalid (%s)",
+              gx, gy, info2.invalid_reason.c_str());
+            eraseGarbageFront(1);
+            continue;
+          }
+          info2.path_yaw = yaw_out;
+          info2.extend_length_override = true;
+          info2.extend_length_m = ext_out;
+          info2.dist_label = info.dist_label;
+          goals_now = insertGarbageIntoGoals(info2);
+          info = std::move(info2);
+        }
+      }
     } else if (enable_wall_edge_insert_) {
       //  不过且启用贴墙：D-G-E
       RCLCPP_INFO(
@@ -483,7 +625,7 @@ BT::NodeStatus InsertGarbagePose::tick()
       goals_now = insertWallEdgeGarbageIntoGoals(info);
       if (!info.wall_edge_inserted) {
         addProtectedGarbageXy(gx, gy);
-        garbage_list_.erase(garbage_list_.begin());
+        eraseGarbageFront(1);
         continue;
       }
     } else {
@@ -493,7 +635,7 @@ BT::NodeStatus InsertGarbagePose::tick()
         gx, gy, fp_reason.c_str());
       publishFootprintCheckBox(gx, gy, info.path_yaw);
       addProtectedGarbageXy(gx, gy);
-      garbage_list_.erase(garbage_list_.begin());
+      eraseGarbageFront(1);
       continue;
     }
     const std::size_t pile_deleted = info.goaltotal.size();
@@ -514,7 +656,7 @@ BT::NodeStatus InsertGarbagePose::tick()
     if (info.extend_inserted) {
       addProtectedGarbageXy(info.extend_x, info.extend_y);
     }
-    garbage_list_.erase(garbage_list_.begin());
+    eraseGarbageFront(1);
     ++inserted_count;
     inserted_xy << "(" << gx << ", " << gy << ") ";
     if (single_pile_insert_) {
@@ -583,6 +725,7 @@ void InsertGarbagePose::checkAndResetOnNewMission()
   viz_obstacle_pixels_.clear();
   viz_obstacle_marker_count_ = 0;
   last_sweep_xy_.clear();
+  pile_skip_extend_.clear();
   has_last_sweep_arrive_ = false;
   last_sweep_arrive_xy_ = {0.0, 0.0};
   has_last_sweep_path_yaw_ = false;
@@ -1696,6 +1839,372 @@ void InsertGarbagePose::trimGarbageListToCap(double robot_x, double robot_y)
     "InsertGarbagePose: garbage_list 超上限 %zu -> %zu, 丢掉离车最远的几堆",
     garbage_list_.size(), trimmed.size());
   garbage_list_ = std::move(trimmed);
+}
+
+bool InsertGarbagePose::inForwardRaySector(
+  double ox, double oy, double tx, double ty, double px, double py) const
+{
+  const double rx = tx - ox;
+  const double ry = ty - oy;
+  const double rlen = std::hypot(rx, ry);
+  if (rlen < 1e-6) {
+    return false;
+  }
+  const double vx = px - ox;
+  const double vy = py - oy;
+  const double vlen = std::hypot(vx, vy);
+  if (vlen < 1e-6) {
+    return false;
+  }
+  const double dot = vx * rx + vy * ry;
+  if (dot <= 0.0) {
+    return false;
+  }
+  const double cosang = std::clamp(dot / (vlen * rlen), -1.0, 1.0);
+  const double ang = std::acos(cosang);
+  return ang <= ray_offset_deg_ * M_PI / 180.0;
+}
+
+bool InsertGarbagePose::takeOneRayChain(
+  GarbageList * remaining,
+  double * pose_x, double * pose_y, double * pose_yaw,
+  GarbageList * chain_out) const
+{
+  if (remaining == nullptr || chain_out == nullptr ||
+    pose_x == nullptr || pose_y == nullptr || pose_yaw == nullptr ||
+    remaining->size() < 2)
+  {
+    return false;
+  }
+  std::size_t nearest = 0;
+  double best_d2 = std::numeric_limits<double>::infinity();
+  for (std::size_t i = 0; i < remaining->size(); ++i) {
+    const double d2 = squaredDistanceXY(
+      (*remaining)[i].pose.pose.position.x,
+      (*remaining)[i].pose.pose.position.y,
+      *pose_x, *pose_y);
+    if (d2 < best_d2) {
+      best_d2 = d2;
+      nearest = i;
+    }
+  }
+  const double g1x = (*remaining)[nearest].pose.pose.position.x;
+  const double g1y = (*remaining)[nearest].pose.pose.position.y;
+  std::vector<std::size_t> hit;
+  hit.push_back(nearest);
+  for (std::size_t i = 0; i < remaining->size(); ++i) {
+    if (i == nearest) {
+      continue;
+    }
+    const double px = (*remaining)[i].pose.pose.position.x;
+    const double py = (*remaining)[i].pose.pose.position.y;
+    if (inForwardRaySector(*pose_x, *pose_y, g1x, g1y, px, py)) {
+      hit.push_back(i);
+    }
+  }
+  if (hit.size() < 2) {
+    return false;
+  }
+  std::stable_sort(
+    hit.begin(), hit.end(),
+    [&](std::size_t a, std::size_t b) {
+      return squaredDistanceXY(
+        (*remaining)[a].pose.pose.position.x,
+        (*remaining)[a].pose.pose.position.y, *pose_x, *pose_y) <
+             squaredDistanceXY(
+        (*remaining)[b].pose.pose.position.x,
+        (*remaining)[b].pose.pose.position.y, *pose_x, *pose_y);
+    });
+  chain_out->clear();
+  chain_out->reserve(hit.size());
+  for (const std::size_t idx : hit) {
+    chain_out->push_back((*remaining)[idx]);
+  }
+  std::vector<std::size_t> remove_idx = hit;
+  std::sort(remove_idx.begin(), remove_idx.end(), [](std::size_t a, std::size_t b) {
+    return a > b;
+  });
+  for (const std::size_t idx : remove_idx) {
+    remaining->erase(remaining->begin() + static_cast<std::ptrdiff_t>(idx));
+  }
+  const auto & prev = (*chain_out)[chain_out->size() - 2];
+  const auto & tail = chain_out->back();
+  double ex = 0.0;
+  double ey = 0.0;
+  double yaw = *pose_yaw;
+  extendBeyondGarbage(
+    prev.pose.pose.position.x, prev.pose.pose.position.y,
+    tail.pose.pose.position.x, tail.pose.pose.position.y,
+    garbage_extend_m_, ex, ey, yaw);
+  *pose_x = ex;
+  *pose_y = ey;
+  *pose_yaw = yaw;
+  return true;
+}
+
+void InsertGarbagePose::planRayChainsBeforeSweep(
+  double robot_x, double robot_y, double robot_yaw)
+{
+  GarbageList remaining = garbage_list_;
+  GarbageList chained;
+  std::vector<char> skip;
+  double pose_x = robot_x;
+  double pose_y = robot_y;
+  double pose_yaw = robot_yaw;
+  while (remaining.size() >= 2) {
+    GarbageList chain;
+    if (!takeOneRayChain(&remaining, &pose_x, &pose_y, &pose_yaw, &chain)) {
+      break;
+    }
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: lock ray chain n=%zu (%.2f, %.2f)->(%.2f, %.2f), "
+      "virtual E (%.2f, %.2f) yaw=%.3f",
+      chain.size(),
+      chain.front().pose.pose.position.x, chain.front().pose.pose.position.y,
+      chain.back().pose.pose.position.x, chain.back().pose.pose.position.y,
+      pose_x, pose_y, pose_yaw);
+    for (std::size_t i = 0; i < chain.size(); ++i) {
+      chained.push_back(chain[i]);
+      skip.push_back(i + 1 == chain.size() ? 0 : 1);
+    }
+  }
+  garbage_list_ = std::move(remaining);
+  if (garbage_list_.size() > 1) {
+    reorderNearestFirstThenSweep(pose_x, pose_y, pose_yaw);
+  } else if (garbage_list_.size() == 1) {
+    syncLastSweepXyFromList();
+  }
+  GarbageList merged;
+  merged.reserve(chained.size() + garbage_list_.size());
+  merged.insert(merged.end(), chained.begin(), chained.end());
+  merged.insert(merged.end(), garbage_list_.begin(), garbage_list_.end());
+  garbage_list_ = std::move(merged);
+  skip.resize(garbage_list_.size(), 0);
+  pile_skip_extend_ = std::move(skip);
+  syncLastSweepXyFromList();
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "InsertGarbagePose: ray chains locked %zu, brute-force remainder %zu",
+    chained.size(), garbage_list_.size() - chained.size());
+}
+
+std::size_t InsertGarbagePose::nearestWaitingNear(
+  double ex, double ey, std::size_t begin_idx) const
+{
+  const double limit2 = extend_near_radius_m_ * extend_near_radius_m_;
+  std::size_t end = garbage_list_.size();
+  const std::size_t flag_n = std::min(garbage_list_.size(), pile_skip_extend_.size());
+  for (std::size_t i = begin_idx; i < flag_n; ++i) {
+    if (pile_skip_extend_[i]) {
+      end = i;
+      break;
+    }
+  }
+  std::size_t best = garbage_list_.size();
+  double best_d2 = limit2;
+  bool found = false;
+  for (std::size_t i = begin_idx; i < end; ++i) {
+    const double d2 = squaredDistanceXY(
+      garbage_list_[i].pose.pose.position.x,
+      garbage_list_[i].pose.pose.position.y, ex, ey);
+    if (d2 <= limit2 && (!found || d2 < best_d2)) {
+      found = true;
+      best = i;
+      best_d2 = d2;
+    }
+  }
+  return best;
+}
+
+void InsertGarbagePose::nudgeExtendAwayFromGarbage(
+  double gx, double gy, double yaw,
+  double near_x, double near_y,
+  double * yaw_out, double * extend_m_out) const
+{
+  const double ex = std::cos(yaw);
+  const double ey = std::sin(yaw);
+  const double vx = near_x - gx;
+  const double vy = near_y - gy;
+  const double cross = ex * vy - ey * vx;
+  const double sign = (cross >= 0.0) ? -1.0 : 1.0;
+  if (yaw_out != nullptr) {
+    *yaw_out = yaw + sign * ray_offset_deg_ * M_PI / 180.0;
+  }
+  if (extend_m_out != nullptr) {
+    *extend_m_out = garbage_extend_m_ + extend_extra_m_;
+  }
+}
+
+InsertGarbagePose::ExtendNearAction InsertGarbagePose::considerExtendNear(
+  double gx, double gy, double extend_x, double extend_y, double path_yaw,
+  double * yaw_out, double * extend_m_out)
+{
+  const std::size_t near = nearestWaitingNear(extend_x, extend_y, 1);
+  if (near >= garbage_list_.size()) {
+    return ExtendNearAction::Keep;
+  }
+  const double near_x = garbage_list_[near].pose.pose.position.x;
+  const double near_y = garbage_list_[near].pose.pose.position.y;
+  double yaw_nudge = path_yaw;
+  double ext_nudge = garbage_extend_m_ + extend_extra_m_;
+  nudgeExtendAwayFromGarbage(gx, gy, path_yaw, near_x, near_y, &yaw_nudge, &ext_nudge);
+  const double nex = gx + ext_nudge * std::cos(yaw_nudge);
+  const double ney = gy + ext_nudge * std::sin(yaw_nudge);
+  std::string reason;
+  if (!isFootprintSweepClear(gx, gy, nex, ney, &reason)) {
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: keep original E, nudged E (%.2f, %.2f) blocked (%s)",
+      nex, ney, reason.c_str());
+    publishFootprintCheckBox(nex, ney, yaw_nudge);
+    return ExtendNearAction::Keep;
+  }
+  const std::size_t near2 = nearestWaitingNear(nex, ney, 1);
+  const double tx = gx + std::cos(yaw_nudge);
+  const double ty = gy + std::sin(yaw_nudge);
+  std::size_t window_end = garbage_list_.size();
+  const std::size_t flag_n = std::min(garbage_list_.size(), pile_skip_extend_.size());
+  for (std::size_t i = 1; i < flag_n; ++i) {
+    if (pile_skip_extend_[i]) {
+      window_end = i;
+      break;
+    }
+  }
+  std::vector<std::size_t> hits;
+  hits.push_back(0);
+  for (std::size_t i = 1; i < window_end; ++i) {
+    const double px = garbage_list_[i].pose.pose.position.x;
+    const double py = garbage_list_[i].pose.pose.position.y;
+    if (inForwardRaySector(gx, gy, tx, ty, px, py)) {
+      hits.push_back(i);
+    }
+  }
+  if (near2 >= garbage_list_.size() || hits.size() < 2) {
+    if (yaw_out != nullptr) {
+      *yaw_out = yaw_nudge;
+    }
+    if (extend_m_out != nullptr) {
+      *extend_m_out = ext_nudge;
+    }
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: nudge E away from (%.2f, %.2f) to (%.2f, %.2f) len=%.2f",
+      near_x, near_y, nex, ney, ext_nudge);
+    return ExtendNearAction::Rewrite;
+  }
+
+  std::stable_sort(
+    hits.begin(), hits.end(),
+    [&](std::size_t a, std::size_t b) {
+      return squaredDistanceXY(
+        garbage_list_[a].pose.pose.position.x,
+        garbage_list_[a].pose.pose.position.y, gx, gy) <
+             squaredDistanceXY(
+        garbage_list_[b].pose.pose.position.x,
+        garbage_list_[b].pose.pose.position.y, gx, gy);
+    });
+  GarbageList first_chain;
+  first_chain.reserve(hits.size());
+  std::vector<char> used(garbage_list_.size(), 0);
+  for (const std::size_t idx : hits) {
+    first_chain.push_back(garbage_list_[idx]);
+    used[idx] = 1;
+  }
+  GarbageList remaining;
+  for (std::size_t i = 1; i < window_end; ++i) {
+    if (!used[i]) {
+      remaining.push_back(garbage_list_[i]);
+    }
+  }
+  GarbageList locked_suffix;
+  std::vector<char> locked_suffix_skip;
+  for (std::size_t i = window_end; i < garbage_list_.size(); ++i) {
+    locked_suffix.push_back(garbage_list_[i]);
+    locked_suffix_skip.push_back(
+      i < pile_skip_extend_.size() ? pile_skip_extend_[i] : 0);
+  }
+  const double prev_x = first_chain[first_chain.size() - 2].pose.pose.position.x;
+  const double prev_y = first_chain[first_chain.size() - 2].pose.pose.position.y;
+  const double gn_x = first_chain.back().pose.pose.position.x;
+  const double gn_y = first_chain.back().pose.pose.position.y;
+  double pose_x = gn_x;
+  double pose_y = gn_y;
+  double pose_yaw = path_yaw;
+  extendBeyondGarbage(prev_x, prev_y, gn_x, gn_y, garbage_extend_m_, pose_x, pose_y, pose_yaw);
+
+  GarbageList ordered;
+  std::vector<char> skip;
+  auto append_chain = [&](const GarbageList & chain) {
+    for (std::size_t i = 0; i < chain.size(); ++i) {
+      ordered.push_back(chain[i]);
+      skip.push_back(i + 1 == chain.size() ? 0 : 1);
+    }
+  };
+  append_chain(first_chain);
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "InsertGarbagePose: E still near garbage, lock line n=%zu from G (%.2f, %.2f), "
+    "virtual E (%.2f, %.2f)",
+    first_chain.size(), gx, gy, pose_x, pose_y);
+  while (remaining.size() >= 2) {
+    GarbageList next;
+    if (!takeOneRayChain(&remaining, &pose_x, &pose_y, &pose_yaw, &next)) {
+      break;
+    }
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: lock follow-on ray chain n=%zu (%.2f, %.2f)->(%.2f, %.2f), "
+      "virtual E (%.2f, %.2f)",
+      next.size(),
+      next.front().pose.pose.position.x, next.front().pose.pose.position.y,
+      next.back().pose.pose.position.x, next.back().pose.pose.position.y,
+      pose_x, pose_y);
+    append_chain(next);
+  }
+  for (const auto & pile : remaining) {
+    ordered.push_back(pile);
+    skip.push_back(0);
+  }
+  ordered.insert(ordered.end(), locked_suffix.begin(), locked_suffix.end());
+  skip.insert(skip.end(), locked_suffix_skip.begin(), locked_suffix_skip.end());
+  garbage_list_ = std::move(ordered);
+  pile_skip_extend_ = std::move(skip);
+  syncLastSweepXyFromList();
+  return ExtendNearAction::Rechain;
+}
+
+std::size_t InsertGarbagePose::lockedChainLengthAtFront() const
+{
+  if (garbage_list_.size() < 2 || pile_skip_extend_.empty() || !pile_skip_extend_.front()) {
+    return 0;
+  }
+  std::size_t n = 0;
+  const std::size_t limit = std::min(garbage_list_.size(), pile_skip_extend_.size());
+  while (n < limit && pile_skip_extend_[n]) {
+    ++n;
+  }
+  if (n < garbage_list_.size() && n < pile_skip_extend_.size() && !pile_skip_extend_[n]) {
+    return n + 1;
+  }
+  return n >= 2 ? n : 0;
+}
+
+void InsertGarbagePose::eraseGarbageFront(std::size_t count)
+{
+  if (count > garbage_list_.size()) {
+    count = garbage_list_.size();
+  }
+  garbage_list_.erase(
+    garbage_list_.begin(),
+    garbage_list_.begin() + static_cast<std::ptrdiff_t>(count));
+  if (count > pile_skip_extend_.size()) {
+    pile_skip_extend_.clear();
+  } else {
+    pile_skip_extend_.erase(
+      pile_skip_extend_.begin(),
+      pile_skip_extend_.begin() + static_cast<std::ptrdiff_t>(count));
+  }
 }
 
 void InsertGarbagePose::reorderNearestFirstThenSweep(
@@ -2913,7 +3422,8 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
   garbage_pose.pose.position.z = kGarbageSentinelPoseZ;
 
   // 沿 path_yaw 插 E；默认方向不通则左右扇形扫，仍不通只留 G
-  const double extend_param = garbage_extend_m_;
+  const double extend_param = info.extend_length_override ?
+    info.extend_length_m : garbage_extend_m_;
   double extend_m = 0.0;
   bool add_extend = false;
   geometry_msgs::msg::PoseStamped extend_pose = garbage_pose;
@@ -3107,6 +3617,195 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
     info.hit_mid_case ? 1 : 0, info.hit_forward_case ? 1 : 0);
 
   return out;
+}
+
+InsertGarbagePose::Goals InsertGarbagePose::insertRayChainIntoGoals(
+  InsertInfo & info,
+  const std::vector<std::pair<double, double>> & gxy,
+  double extend_m)
+{
+  info.ray_chain_xy = gxy;
+  if (gxy.size() < 2) {
+    info.extend_inserted = false;
+    return info.goals;
+  }
+
+  Goals prefix;
+  Goals path;
+  int last_protected = -1;
+  for (std::size_t i = 0; i < info.goals.size(); ++i) {
+    if (isProtectedGarbageXy(
+        info.goals[i].pose.position.x, info.goals[i].pose.position.y) ||
+      isUnindexedSentinelPoseZ(info.goals[i]))
+    {
+      last_protected = static_cast<int>(i);
+    }
+  }
+  if (last_protected >= 0) {
+    prefix.assign(
+      info.goals.begin(),
+      info.goals.begin() + static_cast<std::ptrdiff_t>(last_protected) + 1);
+    path.assign(
+      info.goals.begin() + static_cast<std::ptrdiff_t>(last_protected) + 1,
+      info.goals.end());
+  } else {
+    path = info.goals;
+  }
+
+  const double saved_yaw = info.path_yaw;
+  Goals work = path;
+  InsertInfo frozen = info;
+  bool have_clip_base = false;
+  if (!prefix.empty() && path.size() >= 2) {
+    InsertInfo path_info = gatherInsertInfo(
+      path, info.robot_pose, gxy.front().first, gxy.front().second);
+    if (path_info.valid) {
+      path_info.path_yaw = saved_yaw;
+      path_info.goals = path;
+      frozen = path_info;
+      have_clip_base = true;
+      info.goala = path_info.goala;
+      info.goalc = path_info.goalc;
+      info.goalc_idx = path_info.goalc_idx;
+      info.goald_x = path_info.goald_x;
+      info.goald_y = path_info.goald_y;
+    }
+  } else if (path.size() >= 2 && info.valid) {
+    frozen.goals = path;
+    frozen.path_yaw = saved_yaw;
+    have_clip_base = true;
+  }
+  info.path_yaw = saved_yaw;
+
+  std::string frame = global_frame_;
+  if (!info.goals.empty() && !info.goals.front().header.frame_id.empty()) {
+    frame = info.goals.front().header.frame_id;
+  }
+  auto makeSentinel = [&](double x, double y, double yaw) {
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header.frame_id = frame;
+    pose.pose.position.x = x;
+    pose.pose.position.y = y;
+    pose.pose.position.z = kGarbageSentinelPoseZ;
+    pose.pose.orientation = nav2_util::geometry_utils::orientationAroundZAxis(yaw);
+    return pose;
+  };
+
+  const double prev_x = gxy[gxy.size() - 2].first;
+  const double prev_y = gxy[gxy.size() - 2].second;
+  const double gn_x = gxy.back().first;
+  const double gn_y = gxy.back().second;
+  double ex = gn_x;
+  double ey = gn_y;
+  double yaw = saved_yaw;
+  extendBeyondGarbage(prev_x, prev_y, gn_x, gn_y, extend_m, ex, ey, yaw);
+  info.path_yaw = yaw;
+
+  bool add_extend = false;
+  std::string extend_reason;
+  if (isFootprintSweepClear(gn_x, gn_y, ex, ey, &extend_reason)) {
+    add_extend = true;
+  } else {
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: ray chain skip E (%.2f, %.2f), 通不过: %s",
+      ex, ey, extend_reason.c_str());
+    publishFootprintCheckBox(ex, ey, yaw);
+  }
+  info.extend_inserted = add_extend;
+  info.extend_used_m = add_extend ? extend_m : 0.0;
+  if (add_extend) {
+    info.extend_x = ex;
+    info.extend_y = ey;
+    last_sweep_arrive_xy_ = {ex, ey};
+    addProtectedGarbageXy(ex, ey);
+  } else {
+    info.extend_x = gn_x;
+    info.extend_y = gn_y;
+    last_sweep_arrive_xy_ = {gn_x, gn_y};
+  }
+  has_last_sweep_arrive_ = true;
+  last_sweep_path_yaw_ = info.path_yaw;
+  has_last_sweep_path_yaw_ = true;
+
+  std::vector<geometry_msgs::msg::PoseStamped> gposes;
+  gposes.reserve(gxy.size());
+  for (std::size_t i = 0; i < gxy.size(); ++i) {
+    double seg_yaw = yaw;
+    if (i + 1 < gxy.size()) {
+      seg_yaw = std::atan2(
+        gxy[i + 1].second - gxy[i].second, gxy[i + 1].first - gxy[i].first);
+    }
+    gposes.push_back(makeSentinel(gxy[i].first, gxy[i].second, seg_yaw));
+  }
+  const geometry_msgs::msg::PoseStamped extend_pose = makeSentinel(ex, ey, yaw);
+
+  Goals out = work;
+  if (have_clip_base && work.size() >= 2) {
+    std::vector<std::pair<double, double>> refs = gxy;
+    if (add_extend) {
+      if (extend_m < 0.0) {
+        refs.insert(refs.begin(), std::make_pair(ex, ey));
+      } else {
+        refs.emplace_back(ex, ey);
+      }
+    }
+    InsertInfo cinfo = frozen;
+    cinfo.goals = work;
+    std::set<std::size_t> del;
+    clipReferencesInOrder(work, info.robot_pose, refs, del, cinfo, true);
+    info.clip_rounds = std::move(cinfo.clip_rounds);
+    info.corners_kept_xy = std::move(cinfo.corners_kept_xy);
+    info.hit_mid_case = cinfo.hit_mid_case;
+    info.hit_forward_case = cinfo.hit_forward_case;
+    if (cinfo.goalc_idx < work.size()) {
+      info.goalc = work[cinfo.goalc_idx];
+      info.goalc_idx = cinfo.goalc_idx;
+    }
+    info.goala = cinfo.goala;
+    info.goaltotal.clear();
+    info.goaltotal.reserve(del.size());
+    Goals clipped;
+    clipped.reserve(work.size());
+    for (std::size_t i = 0; i < work.size(); ++i) {
+      if (del.count(i) == 0) {
+        clipped.push_back(work[i]);
+      } else {
+        info.goaltotal.push_back(work[i]);
+      }
+    }
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: ray chain union delete %zu refs=%zu, path %zu -> %zu",
+      del.size(), refs.size(), work.size(), clipped.size());
+    out = std::move(clipped);
+  } else {
+    info.goaltotal.clear();
+  }
+
+  Goals rebuilt;
+  rebuilt.reserve(prefix.size() + gposes.size() + (add_extend ? 1u : 0u) + out.size());
+  rebuilt.insert(rebuilt.end(), prefix.begin(), prefix.end());
+  if (add_extend && extend_m < 0.0) {
+    rebuilt.push_back(extend_pose);
+  }
+  rebuilt.insert(rebuilt.end(), gposes.begin(), gposes.end());
+  if (add_extend && extend_m >= 0.0) {
+    rebuilt.push_back(extend_pose);
+  }
+  rebuilt.insert(rebuilt.end(), out.begin(), out.end());
+
+  const rclcpp::Time stamp_now = node_->now();
+  for (auto & pose : rebuilt) {
+    pose.header.stamp = stamp_now;
+  }
+  mission_stamp_record_ = stamp_now;
+  has_mission_stamp_ = true;
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "InsertGarbagePose: ray chain insert n=%zu extend=%d remain=%zu",
+    gxy.size(), add_extend ? 1 : 0, rebuilt.size());
+  return rebuilt;
 }
 
 // ========================================================================
@@ -3802,6 +4501,11 @@ void InsertGarbagePose::deletePileVisualization(int pile_num)
   const int base = pile_num * 10;
   appendDeleteMarker(garbage_arr, "garbage", base);
   appendDeleteMarker(garbage_arr, "garbage", base + 1);
+  appendDeleteMarker(anchor_arr, "ray_chain", pile_num);
+  for (int i = 0; i < 8; ++i) {
+    appendDeleteMarker(garbage_arr, "ray_chain_g", pile_num * 10 + i);
+    appendDeleteMarker(garbage_arr, "ray_chain_g", pile_num * 10 + i + 100);
+  }
   appendDeleteMarker(anchor_arr, "extend", base);
   appendDeleteMarker(anchor_arr, "extend", base + 1);
   appendDeleteMarker(anchor_arr, "extend", base + 2);
@@ -4261,6 +4965,38 @@ void InsertGarbagePose::publishVisualization(const InsertInfo & info)
     setColor(t, 0.95f, 0.10f, 0.10f);
     garbage_arr.markers.push_back(t);
 
+    if (info.ray_chain_xy.size() >= 2) {
+      auto chain_line = makeBase(
+        "ray_chain", pile_num, visualization_msgs::msg::Marker::LINE_STRIP);
+      chain_line.scale.x = 0.04;
+      setColor(chain_line, 0.95f, 0.10f, 0.10f, 0.95f);
+      for (const auto & p : info.ray_chain_xy) {
+        pushPoint(chain_line, p.first, p.second, 0.08);
+      }
+      anchor_arr.markers.push_back(chain_line);
+      for (std::size_t i = 1; i < info.ray_chain_xy.size(); ++i) {
+        const int cid = pile_num * 10 + static_cast<int>(i);
+        garbage_arr.markers.push_back(
+          makeSolidDot(
+            "ray_chain_g", cid,
+            info.ray_chain_xy[i].first, info.ray_chain_xy[i].second,
+            0.95f, 0.10f, 0.10f, kGarbageDotSizeM));
+        auto ct = makeBase(
+          "ray_chain_g", cid + 100, visualization_msgs::msg::Marker::TEXT_VIEW_FACING);
+        ct.pose.position.x = info.ray_chain_xy[i].first;
+        ct.pose.position.y = info.ray_chain_xy[i].second;
+        ct.pose.position.z = 0.42;
+        ct.scale.z = 0.22;
+        {
+          std::ostringstream oss;
+          oss << "G" << (pile_num + static_cast<int>(i));
+          ct.text = oss.str();
+        }
+        setColor(ct, 0.95f, 0.10f, 0.10f);
+        garbage_arr.markers.push_back(ct);
+      }
+    }
+
     appendFootprintStripMarkers(
       footprint_arr, "footprint_strip", base, rx, ry, gx, gy,
       1.00f, 0.55f, 0.05f, 0.90f, 0.22f);
@@ -4268,11 +5004,17 @@ void InsertGarbagePose::publishVisualization(const InsertInfo & info)
     if (info.extend_inserted) {
       const double ex = info.extend_x;
       const double ey = info.extend_y;
+      double line_x = gx;
+      double line_y = gy;
+      if (info.ray_chain_xy.size() >= 2) {
+        line_x = info.ray_chain_xy.back().first;
+        line_y = info.ray_chain_xy.back().second;
+      }
 
       auto ge_line = makeBase("extend", base + 2, visualization_msgs::msg::Marker::LINE_LIST);
       ge_line.scale.x = kDashLineWidthM;
       setColor(ge_line, 0.15f, 0.40f, 0.95f, 0.90f);
-      appendDashedLine(ge_line, gx, gy, ex, ey);
+      appendDashedLine(ge_line, line_x, line_y, ex, ey);
       if (!ge_line.points.empty()) {
         anchor_arr.markers.push_back(ge_line);
       }
@@ -4294,7 +5036,7 @@ void InsertGarbagePose::publishVisualization(const InsertInfo & info)
       anchor_arr.markers.push_back(te);
 
       appendFootprintStripMarkers(
-        footprint_arr, "footprint_strip", base + 2, gx, gy, ex, ey,
+        footprint_arr, "footprint_strip", base + 2, line_x, line_y, ex, ey,
         0.15f, 0.45f, 0.95f, 0.85f, 0.18f);
     }
 
@@ -4348,6 +5090,10 @@ void InsertGarbagePose::publishVisualization(const InsertInfo & info)
     track.pile_num = pile_num;
     track.gx = gx;
     track.gy = gy;
+    if (!info.ray_chain_xy.empty()) {
+      track.gx = info.ray_chain_xy.back().first;
+      track.gy = info.ray_chain_xy.back().second;
+    }
     track.has_e = info.extend_inserted;
     track.ex = info.extend_x;
     track.ey = info.extend_y;

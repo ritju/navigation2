@@ -86,6 +86,9 @@ public:
     double extend_used_m{0.0};                            // 实际采用的延伸距离，可与参数不同
     double extend_x{0.0};                                 // 实际写入 goals 的 E 点 x，墙切向后与 path_yaw 重算可能不同
     double extend_y{0.0};                                 // 实际写入 goals 的 E 点 y
+    bool extend_length_override{false};                   // 为真时 E 的长度用 extend_length_m，不用 garbage_extend_m
+    double extend_length_m{0.0};
+    std::vector<std::pair<double, double>> ray_chain_xy;  // 一条锁住的线：G1…Gn，只有链尾生成 E
     bool wall_edge_inserted{false};                       // 本堆是否走了贴边 D-G-E
     double wall_edge_d_x{0.0};                            // 贴边 D 点
     double wall_edge_d_y{0.0};
@@ -166,6 +169,15 @@ public:
       BT::InputPort<double>(
         "garbage_extend_m", 2.0,
         "Along path_yaw, insert E this far past garbage (m)"),
+      BT::InputPort<double>(
+        "ray_offset_deg", 30.0,
+        "Half-angle (deg) of the forward ray sector that binds garbage into one locked line"),
+      BT::InputPort<double>(
+        "extend_near_radius_m", 1.5,
+        "If another pile is within this radius (m) of E, nudge E away or bind a line"),
+      BT::InputPort<double>(
+        "extend_extra_m", 1.0,
+        "Extra length (m) added to garbage_extend_m when nudging E away from a nearby pile"),
       BT::InputPort<double>(
         "extend_max_yaw_deg", 60.0,
         "If default E is blocked, sweep this many degrees left/right (deg)"),
@@ -424,6 +436,58 @@ private:
   void reorderNearestFirstThenSweep(
     double robot_x, double robot_y, double robot_yaw);
 
+  /** 点相对射线起点是否落在正方向、且夹角不超过 ray_offset_deg_ */
+  bool inForwardRaySector(
+    double ox, double oy, double tx, double ty, double px, double py) const;
+
+  /**
+   * 从假设车位收一条线。扇形里除最近堆外没有别人时返回 false，不改剩余列表。
+   * 收到时按离假设车位由近到远写入 chain_out，并从 remaining 删除；
+   * 假设车位挪到链尾 En，朝向继承 En。
+   */
+  bool takeOneRayChain(
+    GarbageList * remaining,
+    double * pose_x, double * pose_y, double * pose_yaw,
+    GarbageList * chain_out) const;
+
+  /**
+   * 暴力排序之前反复收线。每条 G→G→…→E 锁住，不进入 reorder。
+   * 收不出下一条时，剩下的堆才调用 reorderNearestFirstThenSweep，车位用最后一条 En。
+   */
+  void planRayChainsBeforeSweep(double robot_x, double robot_y, double robot_yaw);
+
+  /** garbage_list_[begin_idx, end) 里落在 (ex,ey) 半径 extend_near_radius_m_ 内、最近的一堆 */
+  std::size_t nearestWaitingNear(double ex, double ey, std::size_t begin_idx) const;
+
+  /** 朝远离附近垃圾的一侧转 ray_offset_deg_，长度改为 garbage_extend_m_ + extend_extra_m_ */
+  void nudgeExtendAwayFromGarbage(
+    double gx, double gy, double yaw,
+    double near_x, double near_y,
+    double * yaw_out, double * extend_m_out) const;
+
+  enum class ExtendNearAction { Keep, Rewrite, Rechain };
+
+  /**
+   * 暴力排序生成的 E 附近还有垃圾时：先偏转并加长。
+   * 新 E 附近仍有正方向上的垃圾，则按射线收线并继续从新的 En 收，这些线写入列表前端且不再排序。
+   * Keep：沿用原来的 E。Rewrite：用 *yaw_out / *extend_m_out 重写这一堆。Rechain：列表已改成锁住的线在前。
+   */
+  ExtendNearAction considerExtendNear(
+    double gx, double gy, double extend_x, double extend_y, double path_yaw,
+    double * yaw_out, double * extend_m_out);
+
+  /** 队首连续「不生成 E」再加链尾，返回这条锁住的线的堆数；不是线则返回 0 */
+  std::size_t lockedChainLengthAtFront() const;
+
+  /** 从 garbage_list_ 和 pile_skip_extend_ 队首一起删掉 count 堆 */
+  void eraseGarbageFront(std::size_t count);
+
+  /** 一条锁住的线一次写入：G1…Gn，只在链尾加 E，参考点一起做一次删点 */
+  Goals insertRayChainIntoGoals(
+    InsertInfo & info,
+    const std::vector<std::pair<double, double>> & gxy,
+    double extend_m);
+
   /** 超过 kMaxGarbageSize 时截断，保留离机器人最近的若干堆 */
   void trimGarbageListToCap(double robot_x, double robot_y);
 
@@ -566,6 +630,12 @@ public:
   double confirm_sec_garbage_time_{1.0};
   /** 沿 path_yaw 相对垃圾再插一点的距离，默认 2.0m */
   double garbage_extend_m_{2.0};
+  /** 射线左右张角，默认 30°；也是 E 躲开附近垃圾时转过的角度 */
+  double ray_offset_deg_{30.0};
+  /** E 周围这个半径内还有未插入的垃圾，就认为太近，默认 1.5m */
+  double extend_near_radius_m_{1.5};
+  /** 躲开时加在 garbage_extend_m 上的长度，默认 1.0m */
+  double extend_extra_m_{1.0};
   /** 默认 E 不通时，左右各扫到此角度，默认 60° */
   double extend_max_yaw_deg_{60.0};
   /** 扇形扫角步长，默认 10° */
@@ -625,6 +695,8 @@ public:
   int next_g_num_{1};
   /** 上次清扫顺序（map xy），供 4-1 保留其余相对次序 */
   std::vector<std::pair<double, double>> last_sweep_xy_;
+  /** 与 garbage_list_ 对齐：1 表示链中间，不生成 E，顺序锁住；0 表示链尾或可暴力排序的堆 */
+  std::vector<char> pile_skip_extend_;
   /** 上一堆假设到达点   有 E 用 E，否则用 G，供下一堆算 E；新任务/整单重排时清空 */
   bool has_last_sweep_arrive_{false};
   std::pair<double, double> last_sweep_arrive_xy_{0.0, 0.0};
