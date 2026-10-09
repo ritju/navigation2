@@ -189,7 +189,7 @@ void InsertGarbagePose::garbageDetectCallback(
     if (age > confirm_sec_garbage_time_) {
       RCLCPP_INFO(
         node_->get_logger(),
-        "InsertGarbagePose: 删除待确认垃圾 (%.2f, %.2f), 超过 %.1f 秒没再看到",
+        "InsertGarbagePose: 垃圾 (%.2f, %.2f) 超过 %.1f 秒没有累计确认，删除",
         it->pose.pose.position.x, it->pose.pose.position.y, confirm_sec_garbage_time_);
       it = tmp_list_.erase(it);
       continue;
@@ -202,7 +202,7 @@ void InsertGarbagePose::garbageDetectCallback(
     tmp_list_.pop_front();
   }
   tmp_list_.push_back(item);
-
+  // 取算术平均坐标
   double sum_x = 0.0;
   double sum_y = 0.0;
   std::size_t match_n = 0;
@@ -216,10 +216,6 @@ void InsertGarbagePose::garbageDetectCallback(
     }
   }
   if (static_cast<int>(match_n) < confirm_match_num_) {
-    RCLCPP_INFO_THROTTLE(
-      node_->get_logger(), *(node_->get_clock()), 2000,
-      "InsertGarbagePose: 垃圾待确认 坐标=(%.2f, %.2f) 同堆帧数=%zu/%d",
-      gx, gy, match_n, confirm_match_num_);
     return;
   }
 
@@ -234,16 +230,11 @@ void InsertGarbagePose::garbageDetectCallback(
       ++it;
     }
   }
-  RCLCPP_INFO(
-    node_->get_logger(),
-    "InsertGarbagePose: 垃圾确认通过 帧数=%zu 平均坐标=(%.1f, %.1f)",
-    match_n, item.pose.pose.position.x, item.pose.pose.position.y);
-
   if (isDuplicateGarbage(item, garbage_list_)) {
     return;
   }
 
-  history_list_.push_back(std::move(item));
+  history_list_.push_back(std::move(item));  //塞进去，留着给后边做堆的
   while (history_list_.size() > kMaxHistorySize) {
     auto farthest_it = history_list_.begin();
     double farthest_d2 = -1.0;
@@ -296,7 +287,7 @@ void InsertGarbagePose::globalCostmapCallback(
   costmap_sub_->costmapCallback(msg);
 }
 
-InsertGarbagePose::InsertLoopAction InsertGarbagePose::insertLockedChainAtFront(
+InsertGarbagePose::InsertLoopAction InsertGarbagePose::insertLockedChainAtFront(  //射线锁住的垃圾链
   InsertBatch * batch,
   const geometry_msgs::msg::PoseStamped & robot_pose,
   double rx, double ry)
@@ -585,12 +576,9 @@ BT::NodeStatus InsertGarbagePose::tick()
     has_work_circle_ = false;
   }
 
-  if (garbage_list_.size() > 1 && last_sweep_xy_.empty()) {
+  if (!garbage_list_.empty() && last_sweep_xy_.empty()) {
     planRayChainsBeforeSweep(rx, ry, robot_yaw);
     logSweepOrder();
-  } else if (garbage_list_.size() == 1 && last_sweep_xy_.empty()) {
-    pile_skip_extend_.assign(1, 0);
-    syncLastSweepXyFromList();
   }
 
   if (garbage_list_.empty()) {
@@ -1718,48 +1706,51 @@ bool InsertGarbagePose::takeOneRayChain(
   return true;
 }
 
-void InsertGarbagePose::planRayChainsBeforeSweep(
-  double robot_x, double robot_y, double robot_yaw)
+std::size_t InsertGarbagePose::planChainsThenSweepFrom(
+  GarbageList remaining, double pose_x, double pose_y, double pose_yaw,
+  GarbageList * ordered, std::vector<char> * skip, const char * chain_log)
 {
-  GarbageList remaining = garbage_list_;
-  GarbageList chained;
-  std::vector<char> skip;
-  double pose_x = robot_x;
-  double pose_y = robot_y;
-  double pose_yaw = robot_yaw;
-  while (remaining.size() >= 2) {
+  std::size_t chained_n = 0;
+  for (;;) {
     GarbageList chain;
     if (!takeOneRayChain(&remaining, &pose_x, &pose_y, &pose_yaw, &chain)) {
       break;
     }
     RCLCPP_INFO(
       node_->get_logger(),
-      "InsertGarbagePose: lock ray chain n=%zu (%.2f, %.2f)->(%.2f, %.2f), "
+      "InsertGarbagePose: %s n=%zu (%.2f, %.2f)->(%.2f, %.2f), "
       "virtual E (%.2f, %.2f) yaw=%.3f",
-      chain.size(),
+      chain_log, chain.size(),
       chain.front().pose.pose.position.x, chain.front().pose.pose.position.y,
       chain.back().pose.pose.position.x, chain.back().pose.pose.position.y,
       pose_x, pose_y, pose_yaw);
-    appendChainWithSkip(chain, &chained, &skip);
+    chained_n += chain.size();
+    appendChainWithSkip(chain, ordered, skip);
   }
   garbage_list_ = std::move(remaining);
-  if (garbage_list_.size() > 1) {
-    reorderNearestFirstThenSweep(pose_x, pose_y, pose_yaw);
-  } else if (garbage_list_.size() == 1) {
-    syncLastSweepXyFromList();
+  reorderNearestFirstThenSweep(pose_x, pose_y, pose_yaw);
+  remaining = std::move(garbage_list_);
+  for (auto & pile : remaining) {
+    ordered->push_back(std::move(pile));
+    skip->push_back(0);
   }
-  GarbageList merged;
-  merged.reserve(chained.size() + garbage_list_.size());
-  merged.insert(merged.end(), chained.begin(), chained.end());
-  merged.insert(merged.end(), garbage_list_.begin(), garbage_list_.end());
-  garbage_list_ = std::move(merged);
-  skip.resize(garbage_list_.size(), 0);
+  return chained_n;
+}
+
+void InsertGarbagePose::planRayChainsBeforeSweep(
+  double robot_x, double robot_y, double robot_yaw)
+{
+  GarbageList ordered;
+  std::vector<char> skip;
+  const std::size_t chained_n = planChainsThenSweepFrom(
+    garbage_list_, robot_x, robot_y, robot_yaw, &ordered, &skip, "lock ray chain");
+  garbage_list_ = std::move(ordered);
   pile_skip_extend_ = std::move(skip);
   syncLastSweepXyFromList();
   RCLCPP_INFO(
     node_->get_logger(),
     "InsertGarbagePose: ray chains locked %zu, brute-force remainder %zu",
-    chained.size(), garbage_list_.size() - chained.size());
+    chained_n, garbage_list_.size() - chained_n);
 }
 
 std::size_t InsertGarbagePose::nearestWaitingNear(
@@ -1902,25 +1893,9 @@ InsertGarbagePose::ExtendNearAction InsertGarbagePose::considerExtendNear(
     "InsertGarbagePose: E still near garbage, lock line n=%zu from G (%.2f, %.2f), "
     "virtual E (%.2f, %.2f)",
     first_chain.size(), gx, gy, pose_x, pose_y);
-  while (remaining.size() >= 2) {
-    GarbageList next;
-    if (!takeOneRayChain(&remaining, &pose_x, &pose_y, &pose_yaw, &next)) {
-      break;
-    }
-    RCLCPP_INFO(
-      node_->get_logger(),
-      "InsertGarbagePose: lock follow-on ray chain n=%zu (%.2f, %.2f)->(%.2f, %.2f), "
-      "virtual E (%.2f, %.2f)",
-      next.size(),
-      next.front().pose.pose.position.x, next.front().pose.pose.position.y,
-      next.back().pose.pose.position.x, next.back().pose.pose.position.y,
-      pose_x, pose_y);
-    appendChainWithSkip(next, &ordered, &skip);
-  }
-  for (const auto & pile : remaining) {
-    ordered.push_back(pile);
-    skip.push_back(0);
-  }
+  planChainsThenSweepFrom(
+    std::move(remaining), pose_x, pose_y, pose_yaw, &ordered, &skip,
+    "lock follow-on ray chain");
   ordered.insert(ordered.end(), locked_suffix.begin(), locked_suffix.end());
   skip.insert(skip.end(), locked_suffix_skip.begin(), locked_suffix_skip.end());
   garbage_list_ = std::move(ordered);
@@ -1967,10 +1942,8 @@ void InsertGarbagePose::reorderNearestFirstThenSweep(
 {
   trimGarbageListToCap(robot_x, robot_y);
   const std::size_t n = garbage_list_.size();
+  // 没有第二堆可排：这一堆就是 first_garbage，直接返回
   if (n <= 1) {
-    if (n == 1) {
-      syncLastSweepXyFromList();
-    }
     return;
   }
 

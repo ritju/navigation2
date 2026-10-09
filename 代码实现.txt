@@ -1,0 +1,525 @@
+InsertGarbagePose 代码实现说明
+对应文件：
+  nav2_behavior_tree/include/nav2_behavior_tree/plugins/action/insert_garbage_pose_action.hpp
+  nav2_behavior_tree/plugins/action/insert_garbage_pose_action.cpp
+本文按现在的代码写，函数名和变量名都是代码里的原名。读的时候建议先看第一到第四部分，弄清楚整体流程，再按需要查第五部分的单个函数。
+
+
+一、这个节点是干什么的
+
+InsertGarbagePose 是一个行为树动作节点，挂在导航行为树里。它每被 tick 一次，就做下面这件事：
+从 input_goals（上游给的清扫路径点）出发，看看最近有没有识别到垃圾；有的话，把垃圾点 G 和延长点 E 插进路径里，同时删掉前方已经没必要走的原路径点，然后把新路径通过 output_goals 输出。
+
+插入的路径有三种形态：
+  1. 单堆：G → E。车开到垃圾 G，再往前开 garbage_extend_m 到 E，保证扫过垃圾。
+  2. 射线链：G1 → G2 → … → Gn → En。几堆垃圾在扫向前方大致成一条线时，一口气连着扫，只在最后一堆后面加一个 E。
+  3. 贴墙链：D → 采样点 → G → 采样点 → E。车到垃圾的直线走不通（垃圾贴着墙）时，沿墙切线方向从 D 扫过 G 到 E。
+
+插入的点 pose.position.z 都写成 -1，叫“哨兵点”，用来和普通路径点区分。普通路径点的 z 是它的下标 0、1、2……。
+哨兵点由下游的 RemovePassedGoals 节点在车走过以后删掉，本节点自己不删哨兵。
+
+
+二、关键数据和状态（成员变量）
+
+垃圾相关的三个列表，按处理先后：
+  tmp_list_        多帧确认用的缓冲。每收到一帧检测先放这里，凑够帧数才算确认。最多 15 条。
+  history_list_    确认通过的检测，等 tick 里做后处理。最多 15 条，多了删离车最远的。
+  garbage_list_    后处理（过滤、合堆）以后真正要插的垃圾堆，按清扫顺序排好。最多 6 堆。
+
+和 garbage_list_ 一一对应的标记：
+  pile_skip_extend_   每堆一个字符。1 表示这堆是射线链的中间点，插入时不单独做 E；0 表示单堆，或者射线链的最后一堆（链尾）。
+                      队首连续几个 1 后面跟一个 0，就是一条锁住的射线链。
+
+排序记录：
+  last_sweep_xy_      排好序以后的垃圾坐标列表。它不为空就表示“本任务已经排过序”，以后不再排。只在新任务时清空。
+
+插入过程中的记录：
+  reached_garbage_xy_     已经插进路径的 G、E、射线链各 G，以及因为走不通被放弃的垃圾坐标。
+                          两个用途：一是后处理时，合堆半径内的新检测直接丢掉，防止同一堆反复插；
+                          二是作为“保护点”，删点时按 0.1m 匹配到的点不删。
+  last_sweep_arrive_xy_   上一段插入以后的“离开点”（有 E 用 E，没有 E 用 G）。下一堆算 E 的方向时用它作为来向。
+  last_sweep_path_yaw_    上一段的清扫方向。
+  next_g_num_             G 的编号计数，每插一堆加 1，射线链占连续编号。只用于日志和 RViz 文字。
+  remembered_corner_xy_   删点时保留下来的角点 C 的坐标。
+
+任务和工作圈：
+  mission_stamp_record_   当前任务的时间戳。input_goals 队首的 stamp 变了，就认为外部下发了新任务。
+  has_work_circle_ / work_circle_x_ / work_circle_y_   工作圈：第一堆垃圾进表时以车的位置为圆心生成，后续垃圾必须在圈内。
+
+车体和代价图：
+  cached_footprint_base_ / cached_robot_length_m_   缓存的车体轮廓和车长。
+  collision_checker_      nav2 的 CostmapTopicCollisionChecker，用全局代价图做碰撞检查。
+
+常量（hpp 里）：
+  kMaxHistorySize = 15     tmp_list_ 和 history_list_ 上限
+  kMaxGarbageSize = 6      garbage_list_ 上限
+  kSweepBruteMaxN = 6      暴力穷举的上限，超过用贪心（实际不会超过）
+  kSentinelIdentityMatchM = 0.1   判断某个哨兵/保护点是不是同一个点的距离容差
+  kGarbageSentinelPoseZ = -1      哨兵点的 z 值
+  kMinExtendFromDistM = 0.5       来向点离 G 小于这个值时，认为方向不可靠
+
+
+三、参数（行为树输入口，括号里是默认值）
+
+话题和坐标系：
+  garbage_topic(/garbage_cord1)、special_terrain_topic(/cleaning_tool_retraction_areas 禁扫区)、
+  footprint_topic(local_costmap/published_footprint，只用来拿车体轮廓)、global_costmap_topic(global_costmap/costmap_raw，所有碰撞检查都用它)、
+  global_frame(map)、robot_base_frame(base_link)
+
+多帧确认：
+  confirm_match_num(2)          至少几帧
+  confirm_match_dist_m(1.0)     和当前帧距离小于它才算同一堆
+  confirm_sec_garbage_time(1.0) 待确认记录最多留几秒
+
+垃圾过滤和合堆：
+  max_garbage_robot_dist_m(5.0) 垃圾离车超过就丢
+  work_circle_radius_m(10.0)    工作圈半径
+  garbage_merge_radius_m(1.0)   合堆半径，也是判重和“已处理”的半径
+
+延长点：
+  garbage_extend_m(2.0)         G 到 E 的距离
+  extend_max_yaw_deg(60) / extend_step_yaw_deg(10)   默认 E 走不通时左右扇形找 E 的范围和步长
+
+射线链和 E 附近处理：
+  ray_offset_deg(30)            射线扇形的半角；也是 E 躲开附近垃圾时转过的角度
+  extend_near_radius_m(1.5)     E 这么近的范围内有别的垃圾，就认为 E 太近
+  extend_extra_m(1.0)           躲开时 E 额外加长的长度
+
+排序打分：
+  sweep_dist_weight(0.5) / sweep_turn_weight(0.5)    距离和转角的权重
+
+删点：
+  clip_extend_m(2.5)            从投影点再往前删的路程
+  corner_angle_deg(30)          转角超过它算角点
+  goaltotal_range_m(10)         找角点的路程范围
+  head_delete_robot_dist_m(4)   车离路径超过它，本次不删点
+
+贴墙：
+  enable_wall_edge_insert(true)、wall_edge_d_extend_m(2.0)、wall_edge_min_robot_dist_m(3.0)、
+  wall_edge_sample_m(0.5)、wall_edge_normal_offset_m(0.0)
+
+模式和可视化：
+  single_pile_insert(true)      单点模式：一次只插一段
+  enable_visualization(true)    RViz 总开关
+
+这些参数每次 tick 和每次收到垃圾消息时都会通过 refreshTunableInputPorts 重新读一遍，所以在行为树 xml 里改了能立刻生效（话题名和坐标系除外，只在构造时读）。
+
+
+四、整体流程
+
+4.1 垃圾消息进来（话题回调，和 tick 是两条线）
+
+garbage_topic 的回调 garbageDetectCallback 只做“多帧确认”：
+  1. 单点模式下，如果 input_goals 里还有 z=-1 的哨兵（上一段还没走完），直接丢掉这条消息。
+  2. 把检测转到 map 坐标系，取车的位置，任一失败就丢掉。
+  3. 删掉 tmp_list_ 里超过 confirm_sec_garbage_time 的旧记录（打印“超过多少秒没有累计确认，删除”）。
+  4. 当前帧放进 tmp_list_。
+  5. 数 tmp_list_ 里离当前帧小于 confirm_match_dist_m 的有几条（含自己）。不够 confirm_match_num 就结束，等下一帧。
+  6. 够了就取这几条的平均坐标作为垃圾位置，把它们从 tmp_list_ 删掉；如果和 garbage_list_ 里已有的垃圾重复就丢掉，否则放进 history_list_。
+
+注意：这个订阅挂在节点自己的 callback group 上，不会自动执行。tick 一开始会调用 spin_all 把积压的消息一次处理完，所以回调实际上是在 tick 里被触发的。
+
+4.2 每一拍 tick 的主线
+
+tick() 每次被调用，按顺序做：
+  1. spin_all：把积压的垃圾消息、footprint、代价图消息都处理掉（触发上面的回调）。
+  2. refreshTunableInputPorts：重读参数。
+  3. checkAndResetOnNewMission：input_goals 队首的时间戳变了，就清空所有状态（新任务）。
+  4. postProcessHistory：把 history_list_ 里的检测过滤、合堆，放进 garbage_list_。
+  5. 读 input_goals。少于 2 个点就只刷新可视化，结束。
+  6. 取车的位姿，刷新工作圈、H/C 锚点、待插垃圾小球等可视化。
+  7. 如果有工作圈、garbage_list_ 已空、路径里也没有哨兵了，取消工作圈并清空可视化。
+  8. 排序：garbage_list_ 有 2 堆以上并且 last_sweep_xy_ 为空（本任务没排过），调用 planRayChainsBeforeSweep 排序；只有 1 堆时直接标成单堆。
+  9. garbage_list_ 为空就结束。
+  10. 单点模式下，路径里还有哨兵就结束，本拍不插入。
+  11. 插入循环：复制一份 input_goals 作为 batch.goals，只要 garbage_list_ 不空就反复：
+        先调 insertLockedChainAtFront：队首是射线链就整条插入；
+        不是射线链就调 insertFrontPile 插队首这一堆（普通 G/E 或贴墙）。
+        单点模式插完一段就跳出循环。
+  12. 本拍至少插了一堆时：普通路径点的 z 按下标重写为 0、1、2……（哨兵保持 -1），所有点的 stamp 改成当前时间，记下这个时间作为任务时间戳（防止下一拍把自己的修改当成新任务），调用 emitOutputGoals 输出 output_goals。
+  13. 刷新可视化，返回 SUCCESS。
+
+tick 永远返回 SUCCESS，不会让行为树失败。
+
+4.3 排序：先射线收线，再暴力排序
+
+入口 planRayChainsBeforeSweep，真正干活的是 planChainsThenSweepFrom：
+  1. 循环调用 takeOneRayChain 收线：
+       在剩下的垃圾里找离“假设车位”最近的一堆当 G1（第一轮假设车位就是真实车位）；
+       射线方向 = 假设车位指向 G1，以 G1 为顶点左右各张开 ray_offset_deg；
+       其余垃圾中，G1 指向它的方向和射线夹角不超过 ray_offset_deg 的，收进来（G1 后面的不收，距离不限）；
+       除了 G1 至少还收到一堆，就按离 G1 由近到远排成一条链，从剩余列表拿掉；
+       用倒数第二堆指向最后一堆的方向，算出链尾的理想 En，把假设车位挪到 En、朝向设成 En 的方向，继续下一轮。
+     某一轮只收到 G1 自己，收线停止。
+  2. 剩下 2 堆以上：以最后的假设车位为起点，调用 reorderNearestFirstThenSweep 暴力排序。
+  3. 结果拼起来：射线链在前（中间堆标 1、链尾标 0），暴力排出来的堆在后（全标 0）。
+  4. syncLastSweepXyFromList 把顺序记进 last_sweep_xy_，表示已经排过序。
+
+暴力排序 reorderNearestFirstThenSweep（起点是传进来的假设车位）：
+  1. 队首 first：假设车位车头前方（base_link x>0）最近的一堆；前方没有就取最近的一堆。
+  2. 队尾 last：对其他每一堆，在当前 input_goals 上模拟一次删点（用理想 G、E），看能删到原路径的第几个点，删得最远的当队尾；删到同一位置取离车更远的；都删不了就取最远的一堆。
+     这样做的目的是：最后扫的那堆，正好在路径更前方，扫完能直接接上原路径。
+  3. 中间：调用 computeSweepOrder，把中间各堆所有排列都试一遍，每种排列算“理想 E 之间总距离 × 距离权重 + 总转角 × 转角权重”，取最小的。
+     打分用的 E 都是理想的（固定 garbage_extend_m，不查代价图），真实插入时才检查。
+
+排序只在本任务第一次凑够两堆时做一次（见第七部分第 1 条）。
+
+4.4 插入：三种写法
+
+插入循环每轮处理队首：
+
+队首是射线链 → insertLockedChainAtFront：
+  1. lockedChainLengthAtFront 根据 pile_skip_extend_ 算出这条链有几堆。
+  2. 从真实车位开始，依次检查车 → G1、G1 → G2……的车体长条能不能通过。已经处理过的跳过；走不通的从链里去掉并记入 reached_garbage_xy_，下一段从上一个保留的点接着查。
+  3. 剩 2 堆以上：调用 insertRayChainIntoGoals 一次写入 G1…Gn 和链尾 En。
+     剩 1 堆：放回队首，下一轮按单堆插。
+     一堆不剩：跳过。
+
+队首是单堆 → insertFrontPile：
+  1. 已经处理过的跳过；gatherInsertInfo 收集插入信息（主要是算 E 的方向）。
+  2. 检查真实车位 → G 的车体长条：
+       通过：insertGarbageIntoGoals 写入 G 和 E。写完后如果后面还有垃圾，调 considerExtendNear 看 E 附近有没有别的垃圾（见 4.5）。
+       不通过且开了贴墙：insertWallEdgeGarbageIntoGoals 写入贴墙链；失败就跳过并记入 reached_garbage_xy_。
+       不通过且没开贴墙：跳过并记入 reached_garbage_xy_。
+  3. 从 garbage_list_ 队首删掉这一堆，计数加 1。
+
+三种写入函数共同的做法：
+  1. splitAtLastProtected：把路径切成两段。前缀 = 从开头到最后一个哨兵（或保护点）为止；剩余 = 后面的普通路径。
+     新的点接在前缀后面，所以之前插过的 G/E 不会被动到。
+  2. prepareClipBase：准备在“剩余普通路径”上删点所需的信息。
+  3. 生成要插入的点（G、E 或链）。
+  4. clipWithRefs → clipReferencesInOrder：用插入的点当参考点，在剩余普通路径上算出要删哪些点。
+  5. assembleAndStamp：前缀 + 新点 + 删完的剩余路径拼起来，所有点 stamp 改成当前时间。
+  6. recordSweepArrive：记下这段的离开点和方向，给下一堆算 E 用。
+
+4.5 E 附近还有垃圾：considerExtendNear
+
+只在单堆普通插入、已经成功生成了 E、后面还有待插垃圾时调用。它有三种结果：
+  Keep（保留原 E）：
+    E 周围 extend_near_radius_m 内没有还没插的单堆（从当前这堆后面开始找，遇到已锁住的射线链就停）；
+    或者躲开以后的新 E 被车体检查挡住。
+  Rewrite（换一个 E）：
+    有一堆太近，就看它在 G→E 的哪一侧，往另一侧转 ray_offset_deg，长度改为 garbage_extend_m + extend_extra_m 得到新 E；
+    新 E 附近已经没有垃圾，或者从 G 沿新方向的扇形里收不到别的垃圾，就用新的方向和长度重新插入这一堆。
+  Rechain（改成射线链）：
+    新 E 附近还有垃圾，并且以当前 G 为顶点、沿新 E 方向、半角 ray_offset_deg 的扇形里正方向还有别的待插垃圾，
+    说明这几堆能连着扫：把当前 G 和扇形里的垃圾按离 G 由近到远锁成一条链，假设车放到链尾 En，再调 planChainsThenSweepFrom 继续收线、收不出就暴力排序；
+    新结果放在 garbage_list_ 最前面，后面原来锁住的链原样接上。
+
+insertFrontPile 在调 considerExtendNear 前，先用 InsertRollback::snapshot 存一份路径和相关状态。结果不是 Keep 时，先 restore 撤销刚才的插入：
+  Rewrite 就重新收集信息，用新方向和长度再插一次；
+  Rechain 就把 G 编号退回，结束本轮，下一轮循环由 insertLockedChainAtFront 插入新锁住的链。
+
+
+五、按模块逐个函数说明
+
+5.A 构造和话题回调
+
+InsertGarbagePose（构造函数）
+  读话题名、坐标系和参数；从黑板取 node 和 tf_buffer；建自己的 callback group 和 executor；
+  订阅垃圾话题、禁扫区话题（transient_local）、footprint 话题、全局代价图话题（transient_local）；
+  创建 CostmapSubscriber、FeedableFootprintSubscriber 和 CostmapTopicCollisionChecker；
+  创建四个可视化发布者：insert_workspace_circle、insert_anchor_point、insert_footprint_check、insert_garbage_pose。
+
+refreshTunableInputPorts
+  从行为树输入口重读所有可调参数。
+
+garbageDetectCallback
+  多帧确认，见 4.1。
+
+special_terrain_callback
+  收到禁扫区多边形，存进 special_terrain_polygons_。
+
+footprintCallback
+  收到车体轮廓，喂给 FeedableFootprintSubscriber，并标记缓存需要刷新。
+
+globalCostmapCallback
+  收到全局代价图，喂给 CostmapSubscriber。
+  这两个“喂”的设计，是因为订阅挂在自己的 callback group 上，tick 里 spin 完马上就能用最新数据。
+
+FeedableFootprintSubscriber（hpp 里的小类）
+  继承 nav2 的 FootprintSubscriber，只多一个 feed 函数，让外面能把消息直接塞进去。
+
+5.B 车体碰撞检查
+
+ensureCachedFootprint
+  拿车体轮廓（base_link 下），算车长 = max_x - min_x（最小 0.05m），缓存起来。
+  只有收到新轮廓才重取；取不到就继续用上一份缓存，避免一次 TF 抖动导致所有检查都失败。
+
+getRobotFootprintInBase
+  返回缓存的轮廓，给可视化画框用。
+
+isCollisionFreeAtPose / isFootprintClearAtPose
+  把车体放在 (x, y, yaw)，调 nav2 的 isCollisionFree 查全局代价图。轮廓碰到图外、未知区域或致命障碍就不通过。
+
+isFootprintSweepClear（最常用的检查）
+  “车体长条”检查：从起点到终点，朝向取连线方向，起点放一次车体，然后每隔一个车长放一次，终点再放一次，全部通过才算通过。
+  相当于把车从起点推到终点，看扫过的整条走廊有没有障碍。
+  车 → G、G → E、射线链相邻 G 之间、贴墙 D → E 都用它。
+
+isRobotGarbageSegmentClearOfLethal
+  比长条宽松的检查：只看车到垃圾这条线经过的代价图格子里有没有致命障碍，垃圾所在的那一格不算（垃圾常贴墙）。
+  只在开了贴墙时，后处理用它决定垃圾能不能进表。
+
+findNearestObstaclePixel
+  在垃圾周围 garbage_extend_m + 0.5m 范围内，找最近的致命障碍格。贴墙时用它确定墙的位置。
+
+5.C 垃圾后处理（history_list_ → garbage_list_）
+
+postProcessHistory
+  对 history_list_ 里每一条：
+    1. 转到 map，失败先留着下一拍再试。
+    2. 在禁扫区里 → 丢。
+    3. 离车超过 max_garbage_robot_dist_m → 丢（当成误识别）。
+    4. 没开贴墙：车到垃圾的车体长条不通过 → 丢，并画红色长条。
+       开了贴墙：车到垃圾连线穿过致命障碍 → 丢，并画红色连线。
+    5. 还没有工作圈、garbage_list_ 为空、路径里也没哨兵：以车的位置生成工作圈。
+    6. 有工作圈时，不在圈内 → 丢。
+    7. 剩下的作为候选。
+  然后 mergeGarbagePiles 合堆，每堆再查：
+    离 reached_garbage_xy_ 太近（已处理过）→ 丢；
+    和 garbage_list_ 已有的重复 → 丢；
+    tryInsertPreferCloserToRobot 放进 garbage_list_，放不进就丢。
+  被丢掉或成功进表的检测，都会从 history_list_ 删掉。
+
+mergeGarbagePiles
+  合堆：每次从剩下的点里取离车最近的当种子开新堆；不断找离当前堆质心最近的点，距离小于合堆半径就并进来并更新质心，最近的都并不进来就结束这一堆。
+  每堆的代表坐标是所有成员的质心。
+
+tryInsertPreferCloserToRobot
+  garbage_list_ 没满（6 堆）直接加到末尾；满了以后，新堆比离车最远的那堆更近才替换，否则不加。
+
+isDuplicateGarbage
+  和给定列表里任意一堆的距离小于合堆半径，就算重复。
+
+isNearReachedGarbage
+  和 reached_garbage_xy_ 里任意一点的距离小于合堆半径，就算已经处理过。
+
+transformGarbageToMap
+  把检测位姿和框的四个角点一起转到 map。frame_id 为空时当作 base_link。
+
+isPointInSpecialTerrain / isPointInPolygon
+  判断点在不在禁扫区多边形里（射线法）。
+
+5.D 哨兵和保护点
+
+isUnindexedSentinelPoseZ    这个点的 z 是不是 -1。
+hasUnindexedSentinel        路径里有没有任何哨兵。单点模式靠它判断上一段走没走完。
+findUnindexedSentinelIndex  在路径里找某个坐标附近（0.1m）的哨兵。用来判断上一段的离开点还在不在路径里、某段可视化该不该删。
+isProtectedGarbageXy        这个坐标是不是在 reached_garbage_xy_ 里（0.1m）。删点时不删这些点。
+addProtectedGarbageXy       把坐标加进 reached_garbage_xy_。
+
+5.E 排序
+
+planRayChainsBeforeSweep     排序入口，见 4.3。
+planChainsThenSweepFrom      收线 + 剩下的暴力排序，结果追加到输出列表。considerExtendNear 改成射线链时也调它。
+takeOneRayChain              收一条射线链，并把假设车位挪到链尾 En。
+collectSectorChain           以某点为顶点、朝某方向的扇形里，收集所有落在扇形内的垃圾，加上种子，按离顶点由近到远排序；除了种子没收到别的就返回空。
+inForwardRaySector           判断一个点是否在扇形内：在顶点前方，且夹角不超过 ray_offset_deg。
+appendChainWithSkip          把一条链追加到列表，中间堆标 1、最后一堆标 0。
+reorderNearestFirstThenSweep 暴力排序，见 4.3。
+computeSweepOrder            中间堆的全排列打分（超过 6 堆用贪心）。
+routeExtendScore             给一种排列打分：依次算理想 E，累加 E 之间的距离和转角。
+extendBeyondGarbage          从来向点经过 G 往前延长一段，算出 E 和方向。排序和射线链的理想 E 都用它。
+trimGarbageListToCap         超过 6 堆时只留离车最近的 6 堆（暴力排序前调用）。
+syncLastSweepXyFromList      把当前顺序记进 last_sweep_xy_。
+lockedChainLengthAtFront     根据 pile_skip_extend_ 判断队首是不是射线链、有几堆；不是返回 0。
+eraseGarbageFront            从 garbage_list_ 和 pile_skip_extend_ 队首一起删掉若干堆。
+
+5.F 插入信息和删点
+
+gatherInsertInfo
+  为一堆垃圾收集插入需要的信息，最重要的是 E 的方向 path_yaw：
+    来向点 from：上一段的离开点如果还以哨兵形式留在路径里，就用它；否则用车的当前位置。
+    from 离 G 小于 0.5m 时方向不可靠，改用上一段的清扫方向（没有就用车头方向）。
+    方向 = from 指向 G；如果这样算出的 E 落在来向的同一侧，就翻到另一侧（preferExtendYawAwayFromRobot）。
+  另外它还会找当前路径边的首点 A 和终点 C（goala/goalc）、垃圾在 A-C 线上的垂足，这些主要给可视化和删点基准用。
+  找不到 A-C 时调 fillAcWhenOriginalPathGone 兜底，兜底基本总能成功，所以这个函数几乎总是返回有效。
+
+fillAcWhenOriginalPathGone
+  原路径删光时补一条 A-C 线：优先用最后两个哨兵，其次车到剩下的某个原路径点，最后车到 G。
+
+preferExtendYawAwayFromRobot
+  E 和来向点在 G 的同一侧时，把方向翻 180 度。
+
+splitAtLastProtected
+  把路径切成“前缀（到最后一个哨兵或保护点为止）”和“剩余普通路径”。
+
+prepareClipBase
+  有前缀时，在剩余路径上重新算删点基准；剩余路径不足 2 个点就不删点。
+
+clipWithRefs
+  调 clipReferencesInOrder 算出要删的下标，按下标删掉，返回删完的路径，并把被删的点记进 info.goaltotal。
+
+clipReferencesInOrder（删点核心）
+  先看车离路径折线的最近距离，超过 head_delete_robot_dist_m 就一个都不删。
+  然后对每个参考点（单堆是 G、E；射线链是 G1…Gn、En；贴墙只用 G），各自在同一份原始路径的副本上算：
+    H = 第一个普通点，C = H 之后第一个角点（找不到用最后一个普通点）；
+    把参考点投影到 H-C 直线上，看投影位置 t：
+      t < 0（在 H 后面）：这个参考点不删。
+      0 ≤ t ≤ 1（在 H 和 C 之间）：删掉投影点之前的普通点，再从投影点往前删到累计 clip_extend_m 为止，碰到 C 停，C 保留。
+      t > 1（越过了 C）：删掉 H 到 C 之前的普通点，C 保留，在这个参考点自己的副本上把 C 当新的 H，继续看下一条边。
+    哨兵点和保护点永远不删。
+  所有参考点要删的下标取并集，由调用方一次删除。这样各参考点互不影响，不会因为下标变化删多。
+  删点时保留下来的角点 C 会记进 remembered_corner_xy_。
+
+projectPointToInfiniteLine / lineParameterT
+  点到直线的垂足，以及垂足在 A→B 上的位置 t（A 处为 0，B 处为 1）。
+
+5.G 角点和路径几何
+
+isGoalNotCorner
+  判断一个普通点是不是角点：取它前后最近的两个普通点，夹角小于 180° - corner_angle_deg 就是角点。哨兵不能当角点；最后一个普通点算角点（收尾）。
+ordinaryQueueHead
+  路径里第一个普通点的下标（当前正在走的边的起点 H）。
+findFirstCornerFromRobot
+  从 H 开始，在 goaltotal_range_m 路程内找第一个角点。如果 H 本身是记住的角点、车还没开上下一条边，就把 H 当 C。
+findNextCornerAfter
+  从某个下标之后，在 goaltotal_range_m 路程内找下一个角点。
+findLastGoalWithinPathRange
+  从 H 沿路径量 goaltotal_range_m，返回范围内最后一个点。没有角点时用它当 C。
+isRememberedCorner / rememberCornerXy / forgetCornerXy
+  角点记忆的查询、添加、删除（容差 0.08m）。
+robotEnteredNextSide
+  车是否已经开上 H 之后那条边（离这条边 1.5m 以内，并且沿边走过 0.25m 以上）。开上了就忘掉这个角点。
+
+5.H 普通插入和射线链插入
+
+insertLockedChainAtFront   插入队首的射线链，见 4.4。
+insertFrontPile            插入队首的单堆，见 4.4 和 4.5。
+
+insertGarbageIntoGoals（单堆）
+  生成 G（z=-1，朝向 path_yaw）和 E（G 沿 path_yaw 往前 garbage_extend_m，Rewrite 时用加长后的长度）；
+  G → E 车体长条不通过时，用 tryYawFan 左右按 extend_step_yaw_deg 扫到 extend_max_yaw_deg 找能通的方向，找不到就只插 G；
+  E 记入保护点，记下离开点；用 G、E 删点；拼接输出。
+
+insertRayChainIntoGoals（射线链）
+  每个 G 的朝向指向下一个 G；链尾 E = 倒数第二堆指向最后一堆的方向往前 garbage_extend_m；
+  Gn → En 车体长条不通过就不加 En（不做扇形）；
+  用 G1…Gn、En 一起删点；拼接输出。
+
+tryYawFan
+  从中心方向开始，按 +step、-step、+2step、-2step……顺序试，直到最大角度，返回第一个能通过的方向。
+
+considerExtendNear          见 4.5。
+nearestWaitingNear          E 周围 extend_near_radius_m 内，还没插的单堆里最近的一堆（遇到锁住的射线链就停）。
+nudgeExtendAwayFromGarbage  算躲开后的方向（往远离那堆的一侧转 ray_offset_deg）和长度（garbage_extend_m + extend_extra_m）。
+InsertRollback::snapshot / restore
+  插入前保存路径、reached_garbage_xy_、角点记忆、离开点和方向，需要撤销时原样恢复。
+recordSweepArrive           记下离开点和清扫方向。
+assembleAndStamp            前缀 + 新点 + 剩余路径拼起来，统一 stamp，并更新任务时间戳。
+
+5.I 贴墙插入
+
+buildWallEdgeExtendChain（生成贴墙链）
+  1. findNearestObstaclePixel 找垃圾附近最近的墙格 P；法向 = P 指向 G，切向 = 和法向垂直（沿墙方向）。
+  2. 定 E：切线两个方向各试一个点（距离 garbage_extend_m），离来向点更远的方向作为 E 的方向（两边差不到 0.3m 时取和进近方向同向的一侧），再按同样规则保证 E 不在来向同侧。
+     E 位置车体检查不通过时，围绕这个方向扇形扫角；还不行整条链放弃。
+  3. 定 D：在 E 的反方向，先放 wall_edge_d_extend_m 远；离来向点不足 wall_edge_min_robot_dist_m 就继续往外推。
+     D 本身车体检查要通过、D → E 车体长条也要通过；不通过先扫角，再沿原方向多推几步，还不行整条链放弃。E 定了以后不再动。
+  4. 在 D-E 线上每隔 wall_edge_sample_m 取一个点，把 G 插进对应位置。
+  5. 整条链沿法向平移 wall_edge_normal_offset_m（正数离墙更远），不为 0 时平移后再查一次 D 和 D → E。
+
+insertWallEdgeGarbageIntoGoals（写入贴墙链）
+  链上所有点都写成哨兵（z=-1），朝向统一为 E 的方向；只用 G 删点；拼接输出。
+
+5.J 可视化（enable_visualization 为 false 时全部跳过，并在四个话题上清空）
+
+四个话题：
+  insert_garbage_pose       已插入的 G（红球 + G 编号）、射线链各 G、待插垃圾小红球
+  insert_anchor_point       E（蓝球 + E 编号）、G-E 蓝色虚线、射线链红色连线、贴墙 D 和采样点（蓝球）、当前 H（浅绿）和 C（深绿）
+  insert_footprint_check    车 → G 橙色长条、G → E 蓝色长条、后处理失败的红色长条或红色连线、车体检查失败时的蓝色空心框
+  insert_workspace_circle   工作圈（深绿）、跟随识别圈（浅绿，半径 max_garbage_robot_dist_m），只在有工作圈时画
+
+主要函数：
+  publishVisualization            插入一段后画这段的 G、E、链、长条，并记进 viz_tracks_。
+  pruneFinishedPileVisualization  每拍检查 viz_tracks_，某段的 G（射线链用最后一个 G）和 E 都不在路径的哨兵里了，就删掉这段的标记。
+  publishPendingGarbageDots       按当前 garbage_list_ 画待插垃圾。
+  refreshClipAnchorVisualization  按当前路径重新算 H 和 C 并画出来。
+  publishRangeCircles             画工作圈和跟随圈。
+  publishFootprintCheckBox        画车体检查失败时的车体框。
+  publishFailedSweepVisualization / publishBlockedSegmentVisualization   画后处理时的失败长条 / 失败连线。
+  clearMissionVisualization / clearVisualizationTopics / skipVisualization   清空全部标记（新任务、工作圈结束、关闭开关时）。
+
+5.K 任务和输出
+
+checkAndResetOnNewMission
+  input_goals 队首 stamp 和记录的不一样就是新任务：清空 history_list_、tmp_list_、garbage_list_、reached_garbage_xy_、last_sweep_xy_、pile_skip_extend_、离开点和方向、G 编号、角点记忆、工作圈和全部可视化。
+receiveGoals                读 input_goals。
+getRobotPose / getRobotPoseXY   通过 TF 取车在 map 下的位姿。
+emitOutputGoals             打一条日志并 setOutput("output_goals")。
+
+
+六、几个贯穿全局的约定
+
+1. z=-1 是本节点插入的点的唯一标记。单点模式阻塞、新点插在哪里、哪些点不能删、可视化什么时候删，都靠它判断。
+2. 本节点不判断“某堆扫完了没有”。扫完靠下游删哨兵；防止重复插入靠 reached_garbage_xy_（插入时就记，不等扫完）。
+3. 单点模式没有单独的阻塞标志，每次都直接看路径里有没有哨兵。
+4. 排序阶段（射线收线、暴力排序）只看几何、用理想 E，不查代价图；车体检查全部放在插入阶段。
+5. 删点总是“各参考点在同一份原始路径上分别算、最后一次删除”。
+
+
+七、读代码时值得注意的地方（代码现状和设计文档、代码注释对不上的地方）
+
+1. 每个任务只排一次序。
+   last_sweep_xy_ 只在新任务时清空。第一次排序后（哪怕第一次只来了一堆），同一任务里后来进表的垃圾都不再射线收线、不再暴力排序，只按进表顺序当单堆插入，插入时才可能通过 considerExtendNear 改成射线链。
+   如果希望每批新垃圾都重新排序，需要在 garbage_list_ 清空时把 last_sweep_xy_ 也清掉。
+
+2. 删点时不用角点记忆，也不限 goaltotal_range_m。
+   clipReferencesInOrder 自己找 H 和 C：C 是 H 之后的第一个角点，没有范围限制，也不读 remembered_corner_xy_。
+   角点记忆和 goaltotal_range_m 只在 gatherInsertInfo（算 A-C）和 H/C 可视化里起作用。所以 RViz 上画的 C 不一定是删点时实际用的 C，设计文档 2.4 说的“车没进下一条边前一直把记住的角点当 C”在删点里并没有生效。
+
+3. 墙格 P 不会画出来。
+   viz_obstacle_pixels_ 代码里只有清空、没有写入，所以 RViz 上的红色 P 方块实际不会出现。
+
+4. 两个参数的注释和实际行为不符。
+   confirm_match_dist_m 的注释说“<=0 关闭多帧确认”，实际 <=0 时同堆帧永远匹配不上，垃圾永远确认不了。
+   confirm_sec_garbage_time 的注释说“<=0 不按时间删除”，实际 <=0 时任何旧记录都会马上被删，同样很难凑够帧数。
+   想关闭多帧确认，应该把 confirm_match_num 设成 1。
+
+5. 车 → G 的车体检查总是从真实车位出发。
+   一拍里连续插多堆时，后面的堆也是从车当前位置检查到 G，而不是从上一堆的 E。
+
+
+
+========================================================================
+以下是原来的需求笔记（原样保留）
+========================================================================
+
+1在暴力穷举排序之前需要做的内容
+获取需要清扫的垃圾列表garbage_list_，找到最近的垃圾，first_garbage，获取它的位姿first_garbage_pose，获取当前机器人的位姿garbage_pose，
+以garbage_pose指向first_garbage_pose生成以后射线，garbage_pose为端点，在生成first_garbage的extend_pose之前，先进行判断，如果
+在此射线，按照一个垃圾射线偏移角度参数，左右扫动，遍历 garbage_list_，如果这个范围内，有别的垃圾，不生成G1的E1，生成从G1->G2的路径点，
+将所有符合条件的garbage_pose，按照离机器人的距离，近远的进行排序，最近的在最前，此时拟插入的路径的是 G1 → G2 → … → Gn → En，En是最后最远的垃圾Gn，生成的延长点
+En的方向为上一个点指向这个延长点的方向， 然后机器人假设挪到En的位置，然后方向继承En的方向，
+把已经G1 → G2 → … → Gn → En，逆插入，从garbage_list_中排除，然后，再次执行上述方法，如果没有找到除了新的first_garbage以外满足新的射线的扫域中有别的垃圾的条件，
+直接进入原来的暴力排序设定，生成对应垃圾假设为G4 的 E4，生成延长点以后增加一个判断，判断此E4周围范围内，半径延长点周围是否有垃圾参数，如果有G5在E4内，往远离
+G5的方向挪动垃圾射线偏移角度参数，并再延长一个延长点二次延长的参数，再次生成新的E4，如果还有垃圾在这个延长后的延长点附近，说明这个垃圾，可以和G4一起扫，
+按照前面的方法，生成射线并且继续判断，但是这里是射线，逻辑在于，如果在射线后面的垃圾点即使在扫域内，但是仍然是不符合条件的，一定是在正方向上的垃圾才可以满足
+
+
+
+
+
+按文档里的顺序是这样：
+
+在还没被收走的 garbage_list_ 里找离当前假设车位最近的一堆，作为这一轮的 G1。第一条线的假设车位是真实机器人。射线从假设车位指向 G1，
+左右按 ray_offset_deg（默认 30 度）张开。扇形里、并且在射线正方向上还有别的垃圾时，不给 G1 单独做 E。
+这些垃圾按离当前假设车位由近到远排成 G1 → G2 → … → Gn → En。中间的 G 指向下一个 G，这个顺序固定。En 只加在最远的 Gn 后面，方向是上一个点指向 Gn。
+这一整段从 garbage_list_ 里拿掉，排在已收好的线后面，不再交给 reorderNearestFirstThenSweep。
+假设车放到 En 的位置，朝向用 En 的方向，从第 1 步再做一遍。又能收出一条线，就再锁住一条 G → G → … → E，再把假设车挪到新的 En，继续。
+某一轮扇形里除了新的最近垃圾以外没有别人，收链停止。剩下的垃圾，包括这个没能连上线的最近垃圾，
+才进入原来的暴力排序。这些堆各自会生成延长点，顺序可以变。
+暴力排序给某一堆生成 E4 之后，若 E4 半径 extend_near_radius_m 里还有垃圾 G5，就朝远离 G5 的方向转 ray_offset_deg，
+并再加长 extend_extra_m。新的 E4 附近如果还有垃圾，就说明可以一起扫，改回前面的射线：只收正方向上的点，反方向即使落在扫域里也不要。
+一旦这样连成 G → G，这条新线也按第 3、4 步锁住，假设车再放到它的 En 上继续收，不再回到暴力排序里打乱。
+
+
+
+现在完整的执行顺序
+接收所有的垃圾的话题，进行前处理，得到history_list，然后进行后处理得到garbage_list，取garbage_list，
+把所有的垃圾找最近的垃圾，生成从机器人指向最近垃圾的角度，以最近垃圾的坐标，取这个方向，生成一条射线，
+然后遍历garbage_list，看有没有在这个射线返回内的垃圾，如果有的话就生成从垃圾指向垃圾最后增加延长点的路径
+如果没有的话，正常生成垃圾的延长点，正常生成的时候会判断这个延长点附近是否有垃圾，如果有的话，反向挪一下，如果还是有的话，
+就生成垃圾指向垃圾的路径，然后生成这个E以后，然后假设机器人已经走到这个E，然后暴力计算垃圾顺序，然后返回的顺序
+机器人再去重新射线判断，然后射线判断可能会修改这大概暴力计算的结果，这时候就反复的射线判断，暴力计算循环，直到垃圾扫完

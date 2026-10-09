@@ -525,6 +525,14 @@ private:
    */
   void planRayChainsBeforeSweep(double robot_x, double robot_y, double robot_yaw);
 
+  /**
+   * 从假设车位反复收线，收不出时剩下的堆从最后一条 En 暴力排序。
+   * 结果追加到 ordered / skip，返回收进线里的堆数。
+   */
+  std::size_t planChainsThenSweepFrom(
+    GarbageList remaining, double pose_x, double pose_y, double pose_yaw,
+    GarbageList * ordered, std::vector<char> * skip, const char * chain_log);
+
   /** garbage_list_[begin_idx, end) 里落在 (ex,ey) 半径 extend_near_radius_m_ 内、最近的一堆 */
   std::size_t nearestWaitingNear(double ex, double ey, std::size_t begin_idx) const;
 
