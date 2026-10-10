@@ -364,6 +364,14 @@ private:
   void splitAtLastProtected(const Goals & goals, Goals * prefix, Goals * path) const;
 
   /**
+   * 本批删点用的尾巴还在 goals 末尾时，前缀只取尾巴之前的点。
+   * 对不上时退回 splitAtLastProtected。
+   */
+  void splitFrozenTail(
+    const Goals & goals, const Goals * frozen_tail,
+    Goals * prefix, Goals * path) const;
+
+  /**
    * 有前缀时在剩余路径上重算删点基准。
    * saved_garbage 非空时写进基准，贴墙和普通插入需要；整线插入传空。
    */
@@ -373,13 +381,17 @@ private:
     const capella_ros_msg::msg::GarbageDetect * saved_garbage,
     InsertInfo * info, InsertInfo * frozen);
 
-  /** 用参考点删剩余路径，把删点结果写回 info，返回删完的路径 */
+  /**
+   * 用参考点判断剩余路径，把本堆要删的点写进 info->goaltotal。
+   * defer_delete 非空时只把原始下标并进该集合，返回的路径不删点。
+   */
   Goals clipWithRefs(
     const Goals & work,
     const std::vector<std::pair<double, double>> & refs,
     const InsertInfo & frozen,
     InsertInfo * info,
-    const char * log_tag);
+    const char * log_tag,
+    std::set<std::size_t> * defer_delete);
 
   /** 前缀、新插入点、剩余路径拼成一条，并统一时间戳 */
   Goals assembleAndStamp(
@@ -411,6 +423,10 @@ private:
     std::size_t inserted_count{0};
     std::size_t deleted_goals_total{0};
     std::ostringstream inserted_xy;
+    /** 本批开始时的普通路径，各堆的删点下标都对着它 */
+    Goals clip_tail;
+    /** 各堆判断完的并集，本批插完后再从 clip_tail 上删一次 */
+    std::set<std::size_t> pending_delete;
   };
 
   /** 队首是锁住的线时插入整条；不是线时交给单堆插入 */
@@ -426,7 +442,10 @@ private:
     double rx, double ry);
 
   /** 插入真实垃圾、统一时间戳；G-E 接到剩余路径队首，角点和对边留下 */
-  Goals insertGarbageIntoGoals(InsertInfo & info);
+  Goals insertGarbageIntoGoals(
+    InsertInfo & info,
+    std::set<std::size_t> * pending_delete,
+    const Goals * frozen_tail);
 
   /** 2.11：单点 footprint 能否落在该位姿 */
   bool isFootprintClearAtPose(
@@ -436,7 +455,10 @@ private:
   WallEdgeExtendChain buildWallEdgeExtendChain(const InsertInfo & info);
 
   /** 贴墙：把延长链写入 goals */
-  Goals insertWallEdgeGarbageIntoGoals(InsertInfo & info);
+  Goals insertWallEdgeGarbageIntoGoals(
+    InsertInfo & info,
+    std::set<std::size_t> * pending_delete,
+    const Goals * frozen_tail);
 
   /** 把单个垃圾从 base_link 转到 map */
   bool transformGarbageToMap(capella_ros_msg::msg::GarbageDetect & garbage) const;
@@ -563,7 +585,9 @@ private:
   Goals insertRayChainIntoGoals(
     InsertInfo & info,
     const std::vector<std::pair<double, double>> & gxy,
-    double extend_m);
+    double extend_m,
+    std::set<std::size_t> * pending_delete,
+    const Goals * frozen_tail);
 
   /** 超过 kMaxGarbageSize 时截断，保留离机器人最近的若干堆 */
   void trimGarbageListToCap(double robot_x, double robot_y);

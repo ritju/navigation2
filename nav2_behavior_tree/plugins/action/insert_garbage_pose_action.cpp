@@ -342,17 +342,18 @@ InsertGarbagePose::InsertLoopAction InsertGarbagePose::insertLockedChainAtFront(
       info.ray_chain_xy = gxy;
       info.garbage = kept_piles.front();
       const std::size_t goals_before_pile = batch->goals.size();
-      batch->goals = insertRayChainIntoGoals(info, gxy, garbage_extend_m_);
-      const std::size_t pile_deleted = info.goaltotal.size();
-      batch->deleted_goals_total += pile_deleted;
+      batch->goals = insertRayChainIntoGoals(
+        info, gxy, garbage_extend_m_,
+        &batch->pending_delete, &batch->clip_tail);
+      const std::size_t pile_marked = info.goaltotal.size();
       RCLCPP_INFO(
         node_->get_logger(),
         "InsertGarbagePose: insert ray chain n=%zu G%d (%.2f, %.2f)->(%.2f, %.2f) "
-        "extend=%d, deleted %zu path goals, goals %zu -> %zu",
+        "extend=%d, marked %zu path goals, goals %zu -> %zu",
         gxy.size(), info.dist_label,
         gxy.front().first, gxy.front().second, gxy.back().first, gxy.back().second,
         info.extend_inserted ? 1 : 0,
-        pile_deleted, goals_before_pile, batch->goals.size());
+        pile_marked, goals_before_pile, batch->goals.size());
       publishVisualization(info);
       publishRangeCircles(rx, ry);
       for (const auto & p : gxy) {
@@ -402,7 +403,9 @@ InsertGarbagePose::InsertLoopAction InsertGarbagePose::insertFrontPile(
     robot_pose.pose.position.x, robot_pose.pose.position.y, gx, gy, &fp_reason);
   if (footprint_ok) {
     const InsertRollback saved = InsertRollback::snapshot(*this, batch->goals);
-    batch->goals = insertGarbageIntoGoals(info);
+    const std::set<std::size_t> pending_saved = batch->pending_delete;
+    batch->goals = insertGarbageIntoGoals(
+      info, &batch->pending_delete, &batch->clip_tail);
     if (info.extend_inserted && garbage_list_.size() > 1) {
       double yaw_out = info.path_yaw;
       double ext_out = info.extend_used_m;
@@ -410,6 +413,7 @@ InsertGarbagePose::InsertLoopAction InsertGarbagePose::insertFrontPile(
         gx, gy, info.extend_x, info.extend_y, info.path_yaw, &yaw_out, &ext_out);
       if (action != ExtendNearAction::Keep) {
         saved.restore(*this, &batch->goals);
+        batch->pending_delete = pending_saved;
         if (action == ExtendNearAction::Rechain) {
           --next_g_num_;
           return InsertLoopAction::Continue;
@@ -423,7 +427,8 @@ InsertGarbagePose::InsertLoopAction InsertGarbagePose::insertFrontPile(
         info2.extend_length_override = true;
         info2.extend_length_m = ext_out;
         info2.dist_label = info.dist_label;
-        batch->goals = insertGarbageIntoGoals(info2);
+        batch->goals = insertGarbageIntoGoals(
+          info2, &batch->pending_delete, &batch->clip_tail);
         info = std::move(info2);
       }
     }
@@ -434,7 +439,8 @@ InsertGarbagePose::InsertLoopAction InsertGarbagePose::insertFrontPile(
       "InsertGarbagePose: footprint sweep fail robot->G (%.2f, %.2f): %s, wall-edge insert",
       gx, gy, fp_reason.c_str());
     publishFootprintCheckBox(gx, gy, info.path_yaw);
-    batch->goals = insertWallEdgeGarbageIntoGoals(info);
+    batch->goals = insertWallEdgeGarbageIntoGoals(
+      info, &batch->pending_delete, &batch->clip_tail);
     if (!info.wall_edge_inserted) {
       addProtectedGarbageXy(gx, gy);
       eraseGarbageFront(1);
@@ -450,16 +456,15 @@ InsertGarbagePose::InsertLoopAction InsertGarbagePose::insertFrontPile(
     eraseGarbageFront(1);
     return InsertLoopAction::Continue;
   }
-  const std::size_t pile_deleted = info.goaltotal.size();
-  batch->deleted_goals_total += pile_deleted;
+  const std::size_t pile_marked = info.goaltotal.size();
   RCLCPP_INFO(
     node_->get_logger(),
-    "InsertGarbagePose: insert G%d (%.2f, %.2f) extend=%d, deleted %zu path goals, "
+    "InsertGarbagePose: insert G%d (%.2f, %.2f) extend=%d, marked %zu path goals, "
     "goals %zu -> %zu",
     info.dist_label,
     info.garbage.pose.pose.position.x, info.garbage.pose.pose.position.y,
     info.extend_inserted ? 1 : 0,
-    pile_deleted, goals_before_pile, batch->goals.size());
+    pile_marked, goals_before_pile, batch->goals.size());
   publishVisualization(info);
   publishRangeCircles(rx, ry);
   addProtectedGarbageXy(gx, gy);
@@ -593,6 +598,10 @@ BT::NodeStatus InsertGarbagePose::tick()
   const std::size_t goals_before_batch = goals_now.size();
   InsertBatch batch;
   batch.goals = std::move(goals_now);
+  {
+    Goals clip_prefix;
+    splitAtLastProtected(batch.goals, &clip_prefix, &batch.clip_tail);
+  }
   while (!garbage_list_.empty()) {
     if (pile_skip_extend_.size() < garbage_list_.size()) {
       pile_skip_extend_.resize(garbage_list_.size(), 0);
@@ -607,6 +616,48 @@ BT::NodeStatus InsertGarbagePose::tick()
     }
     if (insertFrontPile(&batch, robot_pose, rx, ry) == InsertLoopAction::BreakLoop) {
       break;
+    }
+  }
+  if (!batch.pending_delete.empty() && !batch.clip_tail.empty() &&
+    batch.goals.size() >= batch.clip_tail.size())
+  {
+    const std::size_t tail_n = batch.clip_tail.size();
+    const std::size_t off = batch.goals.size() - tail_n;
+    bool suffix_ok = true;
+    for (std::size_t i = 0; i < tail_n; ++i) {
+      const auto & got = batch.goals[off + i].pose.position;
+      const auto & expect = batch.clip_tail[i].pose.position;
+      if (std::hypot(got.x - expect.x, got.y - expect.y) > 1e-3) {
+        suffix_ok = false;
+        break;
+      }
+    }
+    if (suffix_ok) {
+      Goals kept_tail;
+      kept_tail.reserve(tail_n);
+      std::size_t removed = 0;
+      for (std::size_t i = 0; i < tail_n; ++i) {
+        if (batch.pending_delete.count(i) != 0) {
+          ++removed;
+          continue;
+        }
+        kept_tail.push_back(batch.goals[off + i]);
+      }
+      Goals merged;
+      merged.reserve(off + kept_tail.size());
+      merged.insert(merged.end(), batch.goals.begin(), batch.goals.begin() + static_cast<std::ptrdiff_t>(off));
+      merged.insert(merged.end(), kept_tail.begin(), kept_tail.end());
+      batch.goals = std::move(merged);
+      batch.deleted_goals_total = removed;
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "InsertGarbagePose: deferred clip removed %zu path goals from tail %zu",
+        removed, tail_n);
+    } else {
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "InsertGarbagePose: deferred clip suffix mismatch, pending=%zu tail=%zu",
+        batch.pending_delete.size(), tail_n);
     }
   }
   goals_now = std::move(batch.goals);
@@ -2578,7 +2629,8 @@ struct ClipNode
 }  // namespace
 
 // 判断和删除分开。每个参考点都从同一份原始路径算自己的垂足，互不看到对方要删的点。
-// 垂足在线段上时，从垂足沿后续普通点累加路程，超过 clip_extend_m 或碰到角点就停。
+// 垂足在线段上时，先收当前边首点到垂足，再从垂足沿后续普通点累加路程，
+// 超过 clip_extend_m 或碰到角点就停。两截只写入 delete_idx，不改这份路径。
 // 垂足在正向延长线上时，只在这个参考点自己的副本上重算下一条边。
 // delete_idx 是各参考点原始下标的并集，由调用方一次删除。
 void InsertGarbagePose::clipReferencesInOrder(
@@ -2761,6 +2813,17 @@ void InsertGarbagePose::clipReferencesInOrder(
           break;
         }
       }
+      std::size_t head_drop = 0;
+      for (std::size_t k = 0; k < next_k; ++k) {
+        const std::size_t j = edge[k];
+        if (j == C) {
+          break;
+        }
+        if (canDelete(j)) {
+          drop_orig.push_back(nodes[j].orig);
+          ++head_drop;
+        }
+      }
       double prev_x = fx;
       double prev_y = fy;
       double accumulated = 0.0;
@@ -2785,8 +2848,9 @@ void InsertGarbagePose::clipReferencesInOrder(
       RCLCPP_INFO(
         node_->get_logger(),
         "InsertGarbagePose: clip on-seg t=%.3f H=%zu C=%zu walked=%.2f "
-        "drop=%zu ref=(%.2f, %.2f)",
-        t, nodes[H].orig, nodes[C].orig, accumulated, drop_orig.size(), ref_x, ref_y);
+        "head_drop=%zu drop=%zu ref=(%.2f, %.2f)",
+        t, nodes[H].orig, nodes[C].orig, accumulated, head_drop, drop_orig.size(),
+        ref_x, ref_y);
       for (const std::size_t orig : drop_orig) {
         delete_idx.insert(orig);
       }
@@ -3125,6 +3189,33 @@ void InsertGarbagePose::splitAtLastProtected(
   }
 }
 
+void InsertGarbagePose::splitFrozenTail(
+  const Goals & goals, const Goals * frozen_tail,
+  Goals * prefix, Goals * path) const
+{
+  if (frozen_tail != nullptr && !frozen_tail->empty() &&
+    goals.size() >= frozen_tail->size())
+  {
+    const std::size_t off = goals.size() - frozen_tail->size();
+    bool suffix = true;
+    for (std::size_t i = 0; i < frozen_tail->size(); ++i) {
+      const auto & got = goals[off + i].pose.position;
+      const auto & expect = (*frozen_tail)[i].pose.position;
+      if (std::hypot(got.x - expect.x, got.y - expect.y) > 1e-3) {
+        suffix = false;
+        break;
+      }
+    }
+    if (suffix) {
+      prefix->assign(
+        goals.begin(), goals.begin() + static_cast<std::ptrdiff_t>(off));
+      *path = *frozen_tail;
+      return;
+    }
+  }
+  splitAtLastProtected(goals, prefix, path);
+}
+
 bool InsertGarbagePose::prepareClipBase(
   const Goals & prefix, const Goals & path,
   double gx, double gy, double saved_yaw,
@@ -3165,7 +3256,8 @@ InsertGarbagePose::Goals InsertGarbagePose::clipWithRefs(
   const std::vector<std::pair<double, double>> & refs,
   const InsertInfo & frozen,
   InsertInfo * info,
-  const char * log_tag)
+  const char * log_tag,
+  std::set<std::size_t> * defer_delete)
 {
   InsertInfo cinfo = frozen;
   cinfo.goals = work;
@@ -3182,13 +3274,24 @@ InsertGarbagePose::Goals InsertGarbagePose::clipWithRefs(
   info->goala = cinfo.goala;
   info->goaltotal.clear();
   info->goaltotal.reserve(del.size());
+  for (const std::size_t idx : del) {
+    if (idx < work.size()) {
+      info->goaltotal.push_back(work[idx]);
+    }
+  }
+  if (defer_delete != nullptr) {
+    defer_delete->insert(del.begin(), del.end());
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: %s defer %zu refs=%zu, path %zu unchanged",
+      log_tag, del.size(), refs.size(), work.size());
+    return work;
+  }
   Goals clipped;
   clipped.reserve(work.size());
   for (std::size_t i = 0; i < work.size(); ++i) {
     if (del.count(i) == 0) {
       clipped.push_back(work[i]);
-    } else {
-      info->goaltotal.push_back(work[i]);
     }
   }
   RCLCPP_INFO(
@@ -3289,13 +3392,16 @@ void InsertGarbagePose::appendChainWithSkip(
 }
 
 // 插入真实垃圾、统一时间戳；
-InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & info)
+InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(
+  InsertInfo & info,
+  std::set<std::size_t> * pending_delete,
+  const Goals * frozen_tail)
 {
   const double yaw_max_deg = extend_max_yaw_deg_;
   const double yaw_step_deg = extend_step_yaw_deg_;
   Goals prefix;
   Goals path;
-  splitAtLastProtected(info.goals, &prefix, &path);
+  splitFrozenTail(info.goals, frozen_tail, &prefix, &path);
 
   const double saved_yaw = info.path_yaw;
   const auto saved_garbage = info.garbage;
@@ -3404,7 +3510,9 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
       refs.emplace_back(
         extend_pose.pose.position.x, extend_pose.pose.position.y);
     }
-    out = clipWithRefs(work, refs, frozen, &info, "union delete");
+    const Goals & judge =
+      (frozen_tail != nullptr && frozen_tail->size() >= 2) ? *frozen_tail : work;
+    out = clipWithRefs(judge, refs, frozen, &info, "union delete", pending_delete);
   }
 
   Goals inserted;
@@ -3425,7 +3533,9 @@ InsertGarbagePose::Goals InsertGarbagePose::insertGarbageIntoGoals(InsertInfo & 
 InsertGarbagePose::Goals InsertGarbagePose::insertRayChainIntoGoals(
   InsertInfo & info,
   const std::vector<std::pair<double, double>> & gxy,
-  double extend_m)
+  double extend_m,
+  std::set<std::size_t> * pending_delete,
+  const Goals * frozen_tail)
 {
   info.ray_chain_xy = gxy;
   if (gxy.size() < 2) {
@@ -3435,7 +3545,7 @@ InsertGarbagePose::Goals InsertGarbagePose::insertRayChainIntoGoals(
 
   Goals prefix;
   Goals path;
-  splitAtLastProtected(info.goals, &prefix, &path);
+  splitFrozenTail(info.goals, frozen_tail, &prefix, &path);
 
   const double saved_yaw = info.path_yaw;
   Goals work = path;
@@ -3511,7 +3621,10 @@ InsertGarbagePose::Goals InsertGarbagePose::insertRayChainIntoGoals(
     if (add_extend) {
       refs.emplace_back(ex, ey);
     }
-    out = clipWithRefs(work, refs, frozen, &info, "ray chain union delete");
+    const Goals & judge =
+      (frozen_tail != nullptr && frozen_tail->size() >= 2) ? *frozen_tail : work;
+    out = clipWithRefs(
+      judge, refs, frozen, &info, "ray chain union delete", pending_delete);
   } else {
     info.goaltotal.clear();
   }
@@ -3803,7 +3916,9 @@ InsertGarbagePose::WallEdgeExtendChain InsertGarbagePose::buildWallEdgeExtendCha
 }
 
 InsertGarbagePose::Goals InsertGarbagePose::insertWallEdgeGarbageIntoGoals(
-  InsertInfo & info)
+  InsertInfo & info,
+  std::set<std::size_t> * pending_delete,
+  const Goals * frozen_tail)
 {
   const WallEdgeExtendChain chain = buildWallEdgeExtendChain(info);
   if (!chain.valid) {
@@ -3836,7 +3951,7 @@ InsertGarbagePose::Goals InsertGarbagePose::insertWallEdgeGarbageIntoGoals(
 
   Goals prefix;
   Goals path;
-  splitAtLastProtected(info.goals, &prefix, &path);
+  splitFrozenTail(info.goals, frozen_tail, &prefix, &path);
   const double saved_yaw = info.path_yaw;
   const auto saved_garbage = info.garbage;
   Goals out = path;
@@ -3845,7 +3960,9 @@ InsertGarbagePose::Goals InsertGarbagePose::insertWallEdgeGarbageIntoGoals(
     prefix, path, gx, gy, saved_yaw, &saved_garbage, &info, &frozen);
   if (have_clip_base && path.size() >= 2) {
     const std::vector<std::pair<double, double>> refs = {{gx, gy}};
-    out = clipWithRefs(path, refs, frozen, &info, "union delete");
+    const Goals & judge =
+      (frozen_tail != nullptr && frozen_tail->size() >= 2) ? *frozen_tail : path;
+    out = clipWithRefs(judge, refs, frozen, &info, "union delete", pending_delete);
   }
   info.path_yaw = saved_yaw;
   info.garbage = saved_garbage;
