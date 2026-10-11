@@ -543,12 +543,23 @@ private:
 
   /**
    * 暴力排序之前反复收线。每条 G→G→…→E 锁住，不进入 reorder。
-   * 收不出下一条时，剩下的堆才调用 reorderNearestFirstThenSweep，车位用最后一条 En。
+   * 收不出下一条时，剩下的堆进入排序，并沿理想 E 继续收线。
    */
   void planRayChainsBeforeSweep(double robot_x, double robot_y, double robot_yaw);
 
   /**
-   * 从假设车位反复收线，收不出时剩下的堆从最后一条 En 暴力排序。
+   * 暴力排序结果上沿理想 E 的来向再收一条线。来向是上一个点指向当前堆。
+   * 锁到第一条就返回：链前的堆在 prefix，没进线的后续堆在 tail，车位改到链尾 En。
+   */
+  bool lockFirstChainAlongExtend(
+    const GarbageList & ordered,
+    double pose_x, double pose_y,
+    GarbageList * prefix, GarbageList * chain, GarbageList * tail,
+    double * pose_x_out, double * pose_y_out, double * pose_yaw_out) const;
+
+  /**
+   * 从假设车位反复收线，收不出时剩下的堆暴力排序。
+   * 排序后再沿理想 E 收线；收到就把后续堆再排序、再检查，直到收不出。
    * 结果追加到 ordered / skip，返回收进线里的堆数。
    */
   std::size_t planChainsThenSweepFrom(

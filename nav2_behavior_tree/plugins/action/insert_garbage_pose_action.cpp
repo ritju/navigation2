@@ -1757,6 +1757,94 @@ bool InsertGarbagePose::takeOneRayChain(
   return true;
 }
 
+bool InsertGarbagePose::lockFirstChainAlongExtend(
+  const GarbageList & ordered,
+  double pose_x, double pose_y,
+  GarbageList * prefix, GarbageList * chain, GarbageList * tail,
+  double * pose_x_out, double * pose_y_out, double * pose_yaw_out) const
+{
+  const std::size_t n = ordered.size();
+  if (n < 2 || prefix == nullptr || chain == nullptr || tail == nullptr) {
+    return false;
+  }
+  std::vector<double> from_x(n);
+  std::vector<double> from_y(n);
+  double cx = pose_x;
+  double cy = pose_y;
+  for (std::size_t i = 0; i < n; ++i) {
+    from_x[i] = cx;
+    from_y[i] = cy;
+    double ex = 0.0;
+    double ey = 0.0;
+    double yaw = 0.0;
+    extendBeyondGarbage(
+      cx, cy,
+      ordered[i].pose.pose.position.x, ordered[i].pose.pose.position.y,
+      garbage_extend_m_, ex, ey, yaw);
+    cx = ex;
+    cy = ey;
+  }
+  for (std::size_t i = 0; i + 1 < n; ++i) {
+    const double gix = ordered[i].pose.pose.position.x;
+    const double giy = ordered[i].pose.pose.position.y;
+    const double vx = gix - from_x[i];
+    const double vy = giy - from_y[i];
+    if (std::hypot(vx, vy) < 1e-6) {
+      continue;
+    }
+    const std::size_t suffix_n = n - i;
+    const std::vector<std::size_t> hits = collectSectorChain(
+      gix, giy, gix + vx, giy + vy, suffix_n, 0,
+      [&](std::size_t j) {
+        const auto & pile = ordered[i + j];
+        return std::make_pair(
+          pile.pose.pose.position.x, pile.pose.pose.position.y);
+      });
+    if (hits.empty()) {
+      continue;
+    }
+    std::vector<char> used(suffix_n, 0);
+    chain->clear();
+    chain->reserve(hits.size());
+    for (const std::size_t j : hits) {
+      chain->push_back(ordered[i + j]);
+      used[j] = 1;
+    }
+    prefix->clear();
+    prefix->reserve(i);
+    for (std::size_t k = 0; k < i; ++k) {
+      prefix->push_back(ordered[k]);
+    }
+    tail->clear();
+    tail->reserve(suffix_n);
+    for (std::size_t j = 1; j < suffix_n; ++j) {
+      if (!used[j]) {
+        tail->push_back(ordered[i + j]);
+      }
+    }
+    const auto & prev = (*chain)[chain->size() - 2];
+    const auto & last = chain->back();
+    double ex = 0.0;
+    double ey = 0.0;
+    double yaw = 0.0;
+    extendBeyondGarbage(
+      prev.pose.pose.position.x, prev.pose.pose.position.y,
+      last.pose.pose.position.x, last.pose.pose.position.y,
+      garbage_extend_m_, ex, ey, yaw);
+    if (pose_x_out != nullptr) {
+      *pose_x_out = ex;
+    }
+    if (pose_y_out != nullptr) {
+      *pose_y_out = ey;
+    }
+    if (pose_yaw_out != nullptr) {
+      *pose_yaw_out = yaw;
+    }
+    return true;
+  }
+  return false;
+}
+
 std::size_t InsertGarbagePose::planChainsThenSweepFrom(
   GarbageList remaining, double pose_x, double pose_y, double pose_yaw,
   GarbageList * ordered, std::vector<char> * skip, const char * chain_log)
@@ -1778,12 +1866,46 @@ std::size_t InsertGarbagePose::planChainsThenSweepFrom(
     chained_n += chain.size();
     appendChainWithSkip(chain, ordered, skip);
   }
-  garbage_list_ = std::move(remaining);
-  reorderNearestFirstThenSweep(pose_x, pose_y, pose_yaw);
-  remaining = std::move(garbage_list_);
-  for (auto & pile : remaining) {
-    ordered->push_back(std::move(pile));
-    skip->push_back(0);
+  // 收不出射线后才暴力排序。排序结果再沿理想 E 的来向收一条线。
+  // 没收到就停；收到就把没进线的后续堆再排序、再检查。
+  while (!remaining.empty()) {
+    garbage_list_ = std::move(remaining);
+    reorderNearestFirstThenSweep(pose_x, pose_y, pose_yaw);
+    remaining = std::move(garbage_list_);
+    GarbageList prefix;
+    GarbageList chain;
+    GarbageList tail;
+    double next_x = pose_x;
+    double next_y = pose_y;
+    double next_yaw = pose_yaw;
+    if (!lockFirstChainAlongExtend(
+        remaining, pose_x, pose_y, &prefix, &chain, &tail,
+        &next_x, &next_y, &next_yaw))
+    {
+      for (auto & pile : remaining) {
+        ordered->push_back(std::move(pile));
+        skip->push_back(0);
+      }
+      break;
+    }
+    for (auto & pile : prefix) {
+      ordered->push_back(std::move(pile));
+      skip->push_back(0);
+    }
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: %s after sweep n=%zu (%.2f, %.2f)->(%.2f, %.2f), "
+      "virtual E (%.2f, %.2f) yaw=%.3f",
+      chain_log, chain.size(),
+      chain.front().pose.pose.position.x, chain.front().pose.pose.position.y,
+      chain.back().pose.pose.position.x, chain.back().pose.pose.position.y,
+      next_x, next_y, next_yaw);
+    chained_n += chain.size();
+    appendChainWithSkip(chain, ordered, skip);
+    remaining = std::move(tail);
+    pose_x = next_x;
+    pose_y = next_y;
+    pose_yaw = next_yaw;
   }
   return chained_n;
 }
