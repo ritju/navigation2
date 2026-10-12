@@ -582,7 +582,12 @@ BT::NodeStatus InsertGarbagePose::tick()
   }
 
   if (!garbage_list_.empty() && last_sweep_xy_.empty()) {
-    planRayChainsBeforeSweep(rx, ry, robot_yaw);
+    if (single_pile_insert_) {
+      garbageSortSingle(rx, ry, robot_yaw);
+    } else {
+      garbageSort(rx, ry, robot_yaw);
+    }
+    syncLastSweepXyFromList();
     logSweepOrder();
   }
 
@@ -1634,40 +1639,6 @@ double routeExtendScore(
 
 }  // namespace
 
-void InsertGarbagePose::trimGarbageListToCap(double robot_x, double robot_y)
-{
-  if (garbage_list_.size() <= kMaxGarbageSize) {
-    return;
-  }
-  std::vector<std::size_t> by_dist(garbage_list_.size());
-  for (std::size_t i = 0; i < by_dist.size(); ++i) {
-    by_dist[i] = i;
-  }
-  std::stable_sort(
-    by_dist.begin(), by_dist.end(),
-    [this, robot_x, robot_y](std::size_t a, std::size_t b) {
-      return squaredDistanceXY(
-        garbage_list_[a].pose.pose.position.x,
-        garbage_list_[a].pose.pose.position.y, robot_x, robot_y) <
-      squaredDistanceXY(
-        garbage_list_[b].pose.pose.position.x,
-        garbage_list_[b].pose.pose.position.y, robot_x, robot_y);
-    });
-  // 留下离车最近的 kMaxGarbageSize 堆，保持它们原来的相对次序
-  std::vector<std::size_t> keep(by_dist.begin(), by_dist.begin() + kMaxGarbageSize);
-  std::sort(keep.begin(), keep.end());
-  GarbageList trimmed;
-  trimmed.reserve(kMaxGarbageSize);
-  for (const std::size_t i : keep) {
-    trimmed.push_back(garbage_list_[i]);
-  }
-  RCLCPP_INFO(
-    node_->get_logger(),
-    "InsertGarbagePose: garbage_list 超上限 %zu -> %zu, 丢掉离车最远的几堆",
-    garbage_list_.size(), trimmed.size());
-  garbage_list_ = std::move(trimmed);
-}
-
 bool InsertGarbagePose::inForwardRaySector(
   double ox, double oy, double tx, double ty, double px, double py) const
 {
@@ -1757,98 +1728,11 @@ bool InsertGarbagePose::takeOneRayChain(
   return true;
 }
 
-bool InsertGarbagePose::lockFirstChainAlongExtend(
-  const GarbageList & ordered,
-  double pose_x, double pose_y,
-  GarbageList * prefix, GarbageList * chain, GarbageList * tail,
-  double * pose_x_out, double * pose_y_out, double * pose_yaw_out) const
+void InsertGarbagePose::garbageSort(double pose_x, double pose_y, double pose_yaw)
 {
-  const std::size_t n = ordered.size();
-  if (n < 2 || prefix == nullptr || chain == nullptr || tail == nullptr) {
-    return false;
-  }
-  std::vector<double> from_x(n);
-  std::vector<double> from_y(n);
-  double cx = pose_x;
-  double cy = pose_y;
-  for (std::size_t i = 0; i < n; ++i) {
-    from_x[i] = cx;
-    from_y[i] = cy;
-    double ex = 0.0;
-    double ey = 0.0;
-    double yaw = 0.0;
-    extendBeyondGarbage(
-      cx, cy,
-      ordered[i].pose.pose.position.x, ordered[i].pose.pose.position.y,
-      garbage_extend_m_, ex, ey, yaw);
-    cx = ex;
-    cy = ey;
-  }
-  for (std::size_t i = 0; i + 1 < n; ++i) {
-    const double gix = ordered[i].pose.pose.position.x;
-    const double giy = ordered[i].pose.pose.position.y;
-    const double vx = gix - from_x[i];
-    const double vy = giy - from_y[i];
-    if (std::hypot(vx, vy) < 1e-6) {
-      continue;
-    }
-    const std::size_t suffix_n = n - i;
-    const std::vector<std::size_t> hits = collectSectorChain(
-      gix, giy, gix + vx, giy + vy, suffix_n, 0,
-      [&](std::size_t j) {
-        const auto & pile = ordered[i + j];
-        return std::make_pair(
-          pile.pose.pose.position.x, pile.pose.pose.position.y);
-      });
-    if (hits.empty()) {
-      continue;
-    }
-    std::vector<char> used(suffix_n, 0);
-    chain->clear();
-    chain->reserve(hits.size());
-    for (const std::size_t j : hits) {
-      chain->push_back(ordered[i + j]);
-      used[j] = 1;
-    }
-    prefix->clear();
-    prefix->reserve(i);
-    for (std::size_t k = 0; k < i; ++k) {
-      prefix->push_back(ordered[k]);
-    }
-    tail->clear();
-    tail->reserve(suffix_n);
-    for (std::size_t j = 1; j < suffix_n; ++j) {
-      if (!used[j]) {
-        tail->push_back(ordered[i + j]);
-      }
-    }
-    const auto & prev = (*chain)[chain->size() - 2];
-    const auto & last = chain->back();
-    double ex = 0.0;
-    double ey = 0.0;
-    double yaw = 0.0;
-    extendBeyondGarbage(
-      prev.pose.pose.position.x, prev.pose.pose.position.y,
-      last.pose.pose.position.x, last.pose.pose.position.y,
-      garbage_extend_m_, ex, ey, yaw);
-    if (pose_x_out != nullptr) {
-      *pose_x_out = ex;
-    }
-    if (pose_y_out != nullptr) {
-      *pose_y_out = ey;
-    }
-    if (pose_yaw_out != nullptr) {
-      *pose_yaw_out = yaw;
-    }
-    return true;
-  }
-  return false;
-}
-
-std::size_t InsertGarbagePose::planChainsThenSweepFrom(
-  GarbageList remaining, double pose_x, double pose_y, double pose_yaw,
-  GarbageList * ordered, std::vector<char> * skip, const char * chain_log)
-{
+  GarbageList remaining = std::move(garbage_list_);
+  GarbageList ordered;
+  std::vector<char> skip;
   std::size_t chained_n = 0;
   for (;;) {
     GarbageList chain;
@@ -1857,73 +1741,136 @@ std::size_t InsertGarbagePose::planChainsThenSweepFrom(
     }
     RCLCPP_INFO(
       node_->get_logger(),
-      "InsertGarbagePose: %s n=%zu (%.2f, %.2f)->(%.2f, %.2f), "
+      "InsertGarbagePose: lock ray chain n=%zu (%.2f, %.2f)->(%.2f, %.2f), "
       "virtual E (%.2f, %.2f) yaw=%.3f",
-      chain_log, chain.size(),
+      chain.size(),
       chain.front().pose.pose.position.x, chain.front().pose.pose.position.y,
       chain.back().pose.pose.position.x, chain.back().pose.pose.position.y,
       pose_x, pose_y, pose_yaw);
+    appendChainWithSkip(chain, &ordered, &skip);
     chained_n += chain.size();
-    appendChainWithSkip(chain, ordered, skip);
   }
-  // 收不出射线后才暴力排序。排序结果再沿理想 E 的来向收一条线。
-  // 没收到就停；收到就把没进线的后续堆再排序、再检查。
   while (!remaining.empty()) {
-    garbage_list_ = std::move(remaining);
-    reorderNearestFirstThenSweep(pose_x, pose_y, pose_yaw);
-    remaining = std::move(garbage_list_);
-    GarbageList prefix;
-    GarbageList chain;
-    GarbageList tail;
-    double next_x = pose_x;
-    double next_y = pose_y;
-    double next_yaw = pose_yaw;
-    if (!lockFirstChainAlongExtend(
-        remaining, pose_x, pose_y, &prefix, &chain, &tail,
-        &next_x, &next_y, &next_yaw))
-    {
+    remaining = forcegarbagesort(std::move(remaining), pose_x, pose_y, pose_yaw);
+    if (remaining.size() <= 1) {
       for (auto & pile : remaining) {
-        ordered->push_back(std::move(pile));
-        skip->push_back(0);
+        ordered.push_back(std::move(pile));
+        skip.push_back(0);
       }
       break;
     }
-    for (auto & pile : prefix) {
-      ordered->push_back(std::move(pile));
-      skip->push_back(0);
+    const std::size_t n = remaining.size();
+    std::vector<double> from_x(n);
+    std::vector<double> from_y(n);
+    double cx = pose_x;
+    double cy = pose_y;
+    for (std::size_t i = 0; i < n; ++i) {
+      from_x[i] = cx;
+      from_y[i] = cy;
+      double ex = 0.0;
+      double ey = 0.0;
+      double yaw = 0.0;
+      extendBeyondGarbage(
+        cx, cy,
+        remaining[i].pose.pose.position.x, remaining[i].pose.pose.position.y,
+        garbage_extend_m_, ex, ey, yaw);
+      cx = ex;
+      cy = ey;
     }
-    RCLCPP_INFO(
-      node_->get_logger(),
-      "InsertGarbagePose: %s after sweep n=%zu (%.2f, %.2f)->(%.2f, %.2f), "
-      "virtual E (%.2f, %.2f) yaw=%.3f",
-      chain_log, chain.size(),
-      chain.front().pose.pose.position.x, chain.front().pose.pose.position.y,
-      chain.back().pose.pose.position.x, chain.back().pose.pose.position.y,
-      next_x, next_y, next_yaw);
-    chained_n += chain.size();
-    appendChainWithSkip(chain, ordered, skip);
-    remaining = std::move(tail);
-    pose_x = next_x;
-    pose_y = next_y;
-    pose_yaw = next_yaw;
+    bool locked = false;
+    for (std::size_t i = 0; i + 1 < n; ++i) {
+      const double gix = remaining[i].pose.pose.position.x;
+      const double giy = remaining[i].pose.pose.position.y;
+      const double vx = gix - from_x[i];
+      const double vy = giy - from_y[i];
+      if (std::hypot(vx, vy) < 1e-6) {
+        continue;
+      }
+      const std::size_t suffix_n = n - i;
+      const std::vector<std::size_t> hits = collectSectorChain(
+        gix, giy, gix + vx, giy + vy, suffix_n, 0,
+        [&](std::size_t j) {
+          const auto & pile = remaining[i + j];
+          return std::make_pair(
+            pile.pose.pose.position.x, pile.pose.pose.position.y);
+        });
+      if (hits.empty()) {
+        continue;
+      }
+      std::vector<char> used(suffix_n, 0);
+      GarbageList chain;
+      chain.reserve(hits.size());
+      for (const std::size_t j : hits) {
+        chain.push_back(remaining[i + j]);
+        used[j] = 1;
+      }
+      for (std::size_t k = 0; k < i; ++k) {
+        ordered.push_back(remaining[k]);
+        skip.push_back(0);
+      }
+      const auto & prev = chain[chain.size() - 2];
+      const auto & last = chain.back();
+      extendBeyondGarbage(
+        prev.pose.pose.position.x, prev.pose.pose.position.y,
+        last.pose.pose.position.x, last.pose.pose.position.y,
+        garbage_extend_m_, pose_x, pose_y, pose_yaw);
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "InsertGarbagePose: lock ray chain after sweep n=%zu (%.2f, %.2f)->(%.2f, %.2f), "
+        "virtual E (%.2f, %.2f) yaw=%.3f",
+        chain.size(),
+        chain.front().pose.pose.position.x, chain.front().pose.pose.position.y,
+        chain.back().pose.pose.position.x, chain.back().pose.pose.position.y,
+        pose_x, pose_y, pose_yaw);
+      appendChainWithSkip(chain, &ordered, &skip);
+      chained_n += chain.size();
+      GarbageList tail;
+      for (std::size_t j = 1; j < suffix_n; ++j) {
+        if (!used[j]) {
+          tail.push_back(remaining[i + j]);
+        }
+      }
+      remaining = std::move(tail);
+      locked = true;
+      break;
+    }
+    if (!locked) {
+      for (auto & pile : remaining) {
+        ordered.push_back(std::move(pile));
+        skip.push_back(0);
+      }
+      break;
+    }
   }
-  return chained_n;
-}
-
-void InsertGarbagePose::planRayChainsBeforeSweep(
-  double robot_x, double robot_y, double robot_yaw)
-{
-  GarbageList ordered;
-  std::vector<char> skip;
-  const std::size_t chained_n = planChainsThenSweepFrom(
-    garbage_list_, robot_x, robot_y, robot_yaw, &ordered, &skip, "lock ray chain");
-  garbage_list_ = std::move(ordered);
-  pile_skip_extend_ = std::move(skip);
-  syncLastSweepXyFromList();
   RCLCPP_INFO(
     node_->get_logger(),
     "InsertGarbagePose: ray chains locked %zu, brute-force remainder %zu",
-    chained_n, garbage_list_.size() - chained_n);
+    chained_n, ordered.size() - chained_n);
+  garbage_list_ = std::move(ordered);
+  pile_skip_extend_ = std::move(skip);
+}
+
+void InsertGarbagePose::garbageSortSingle(double pose_x, double pose_y, double pose_yaw)
+{
+  GarbageList remaining = std::move(garbage_list_);
+  GarbageList ordered;
+  std::vector<char> skip;
+  GarbageList chain;
+  if (takeOneRayChain(&remaining, &pose_x, &pose_y, &pose_yaw, &chain)) {
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: single mode lock ray chain n=%zu (%.2f, %.2f)->(%.2f, %.2f)",
+      chain.size(),
+      chain.front().pose.pose.position.x, chain.front().pose.pose.position.y,
+      chain.back().pose.pose.position.x, chain.back().pose.pose.position.y);
+    appendChainWithSkip(chain, &ordered, &skip);
+  }
+  for (auto & pile : remaining) {
+    ordered.push_back(std::move(pile));
+    skip.push_back(0);
+  }
+  garbage_list_ = std::move(ordered);
+  pile_skip_extend_ = std::move(skip);
 }
 
 std::size_t InsertGarbagePose::nearestWaitingNear(
@@ -2066,9 +2013,11 @@ InsertGarbagePose::ExtendNearAction InsertGarbagePose::considerExtendNear(
     "InsertGarbagePose: E still near garbage, lock line n=%zu from G (%.2f, %.2f), "
     "virtual E (%.2f, %.2f)",
     first_chain.size(), gx, gy, pose_x, pose_y);
-  planChainsThenSweepFrom(
-    std::move(remaining), pose_x, pose_y, pose_yaw, &ordered, &skip,
-    "lock follow-on ray chain");
+  garbage_list_ = std::move(remaining);
+  pile_skip_extend_.clear();
+  garbageSort(pose_x, pose_y, pose_yaw);
+  ordered.insert(ordered.end(), garbage_list_.begin(), garbage_list_.end());
+  skip.insert(skip.end(), pile_skip_extend_.begin(), pile_skip_extend_.end());
   ordered.insert(ordered.end(), locked_suffix.begin(), locked_suffix.end());
   skip.insert(skip.end(), locked_suffix_skip.begin(), locked_suffix_skip.end());
   garbage_list_ = std::move(ordered);
@@ -2110,80 +2059,98 @@ void InsertGarbagePose::eraseGarbageFront(std::size_t count)
   }
 }
 
-void InsertGarbagePose::reorderNearestFirstThenSweep(
-  double robot_x, double robot_y, double robot_yaw)
+InsertGarbagePose::GarbageList InsertGarbagePose::forcegarbagesort(
+  GarbageList piles, double pose_x, double pose_y, double pose_yaw)
 {
-  trimGarbageListToCap(robot_x, robot_y);
-  const std::size_t n = garbage_list_.size();
-  // 没有第二堆可排：这一堆就是 first_garbage，直接返回
-  if (n <= 1) {
-    return;
+  double extend_m = garbage_extend_m_;
+  double w_dist = sweep_dist_weight_;
+  double w_turn = sweep_turn_weight_;
+  getInput("garbage_extend_m", extend_m);
+  getInput("sweep_dist_weight", w_dist);
+  getInput("sweep_turn_weight", w_turn);
+
+  if (piles.size() > kMaxGarbageSize) {
+    std::vector<std::size_t> by_dist(piles.size());
+    for (std::size_t i = 0; i < by_dist.size(); ++i) {
+      by_dist[i] = i;
+    }
+    std::stable_sort(
+      by_dist.begin(), by_dist.end(),
+      [&piles, pose_x, pose_y](std::size_t a, std::size_t b) {
+        return squaredDistanceXY(
+          piles[a].pose.pose.position.x, piles[a].pose.pose.position.y,
+          pose_x, pose_y) <
+        squaredDistanceXY(
+          piles[b].pose.pose.position.x, piles[b].pose.pose.position.y,
+          pose_x, pose_y);
+      });
+    std::vector<std::size_t> keep(by_dist.begin(), by_dist.begin() + kMaxGarbageSize);
+    std::sort(keep.begin(), keep.end());
+    GarbageList trimmed;
+    trimmed.reserve(kMaxGarbageSize);
+    for (const std::size_t i : keep) {
+      trimmed.push_back(piles[i]);
+    }
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "InsertGarbagePose: garbage_list 超上限 %zu -> %zu, 丢掉离车最远的几堆",
+      piles.size(), trimmed.size());
+    piles = std::move(trimmed);
   }
 
-  const double c = std::cos(robot_yaw);
-  const double s = std::sin(robot_yaw);
-  auto dist2ToRobot = [&](std::size_t i) {
+  const std::size_t n = piles.size();
+  if (n <= 1) {
+    return piles;
+  }
+
+  const double heading_c = std::cos(pose_yaw);
+  const double heading_s = std::sin(pose_yaw);
+  auto dist2ToPose = [&](std::size_t i) {
     return squaredDistanceXY(
-      garbage_list_[i].pose.pose.position.x,
-      garbage_list_[i].pose.pose.position.y,
-      robot_x, robot_y);
+      piles[i].pose.pose.position.x, piles[i].pose.pose.position.y,
+      pose_x, pose_y);
   };
-  // base_link 的 x：正值在车头前方
-  auto baseX = [&](std::size_t i) {
-    const double dx = garbage_list_[i].pose.pose.position.x - robot_x;
-    const double dy = garbage_list_[i].pose.pose.position.y - robot_y;
-    return dx * c + dy * s;
+  auto forwardX = [&](std::size_t i) {
+    const double dx = piles[i].pose.pose.position.x - pose_x;
+    const double dy = piles[i].pose.pose.position.y - pose_y;
+    return dx * heading_c + dy * heading_s;
   };
 
   bool have_front = false;
   std::size_t first_idx = 0;
   double best_front_d2 = std::numeric_limits<double>::infinity();
-  double best_any_d2 = std::numeric_limits<double>::infinity();
-  std::size_t nearest_idx = 0;
   for (std::size_t i = 0; i < n; ++i) {
-    const double d2 = dist2ToRobot(i);
-    if (d2 < best_any_d2) {
-      best_any_d2 = d2;
-      nearest_idx = i;
-    }
-    if (baseX(i) > 0.0 && d2 < best_front_d2) {
+    const double d2 = dist2ToPose(i);
+    if (forwardX(i) > 0.0 && d2 < best_front_d2) {
       best_front_d2 = d2;
       first_idx = i;
       have_front = true;
     }
   }
-  if (!have_front) {
-    first_idx = nearest_idx;
-  }
 
-  // 每堆各自在原始 input_goals 副本上跑 2.5。有延长点则同一副本先 G 后 E。
   const Goals goals = receiveGoals();
-  geometry_msgs::msg::PoseStamped robot_pose_for_clip;
-  robot_pose_for_clip.header.frame_id = global_frame_;
-  robot_pose_for_clip.pose.position.x = robot_x;
-  robot_pose_for_clip.pose.position.y = robot_y;
-  robot_pose_for_clip.pose.orientation =
-    nav2_util::geometry_utils::orientationAroundZAxis(robot_yaw);
-  const double extend_m = garbage_extend_m_;
+  geometry_msgs::msg::PoseStamped pose_for_clip;
+  pose_for_clip.header.frame_id = global_frame_;
+  pose_for_clip.pose.position.x = pose_x;
+  pose_for_clip.pose.position.y = pose_y;
+  pose_for_clip.pose.orientation =
+    nav2_util::geometry_utils::orientationAroundZAxis(pose_yaw);
   auto clipReach = [&](double gx, double gy, std::size_t & reach) -> bool {
     std::vector<std::pair<double, double>> refs;
     refs.emplace_back(gx, gy);
-    {
-      double ex = gx;
-      double ey = gy;
-      double yaw = robot_yaw;
-      extendBeyondGarbage(robot_x, robot_y, gx, gy, extend_m, ex, ey, yaw);
-      if (std::hypot(ex - gx, ey - gy) > 1e-6) {
-        refs.emplace_back(ex, ey);
-      }
+    double ex = gx;
+    double ey = gy;
+    double yaw = pose_yaw;
+    extendBeyondGarbage(pose_x, pose_y, gx, gy, extend_m, ex, ey, yaw);
+    if (std::hypot(ex - gx, ey - gy) > 1e-6) {
+      refs.emplace_back(ex, ey);
     }
     InsertInfo clip_info;
     clip_info.valid = true;
     clip_info.goals = goals;
-    clip_info.robot_pose = robot_pose_for_clip;
+    clip_info.robot_pose = pose_for_clip;
     std::set<std::size_t> del;
-    clipReferencesInOrder(
-      goals, robot_pose_for_clip, refs, del, clip_info, false);
+    clipReferencesInOrder(goals, pose_for_clip, refs, del, clip_info, false);
     if (del.empty()) {
       return false;
     }
@@ -2192,20 +2159,18 @@ void InsertGarbagePose::reorderNearestFirstThenSweep(
   };
 
   bool have_last = false;
-  std::size_t last_idx = first_idx;
+  std::size_t last_idx = 0;
   std::size_t best_path_i = 0;
   double best_last_d2 = -1.0;
   bool have_reach = false;
   for (std::size_t i = 0; i < n; ++i) {
-    if (i == first_idx) {
+    if (have_front && i == first_idx) {
       continue;
     }
     std::size_t reach = 0;
     const bool ok = clipReach(
-      garbage_list_[i].pose.pose.position.x,
-      garbage_list_[i].pose.pose.position.y,
-      reach);
-    const double d2 = dist2ToRobot(i);
+      piles[i].pose.pose.position.x, piles[i].pose.pose.position.y, reach);
+    const double d2 = dist2ToPose(i);
     if (!ok) {
       continue;
     }
@@ -2221,10 +2186,10 @@ void InsertGarbagePose::reorderNearestFirstThenSweep(
   }
   if (!have_reach) {
     for (std::size_t i = 0; i < n; ++i) {
-      if (i == first_idx) {
+      if (have_front && i == first_idx) {
         continue;
       }
-      const double d2 = dist2ToRobot(i);
+      const double d2 = dist2ToPose(i);
       if (!have_last || d2 > best_last_d2) {
         have_last = true;
         last_idx = i;
@@ -2239,140 +2204,122 @@ void InsertGarbagePose::reorderNearestFirstThenSweep(
   GarbageList middle;
   middle.reserve(n);
   for (std::size_t i = 0; i < n; ++i) {
-    if (i == first_idx || (have_last && i == last_idx)) {
+    if ((have_front && i == first_idx) || (have_last && i == last_idx)) {
       continue;
     }
-    middle.push_back(garbage_list_[i]);
+    middle.push_back(piles[i]);
   }
 
-  const double fx = garbage_list_[first_idx].pose.pose.position.x;
-  const double fy = garbage_list_[first_idx].pose.pose.position.y;
-  double start_x = fx;
-  double start_y = fy;
-  double start_yaw = robot_yaw;
-  extendBeyondGarbage(
-    robot_x, robot_y, fx, fy, garbage_extend_m_,
-    start_x, start_y, start_yaw);
+  double start_x = pose_x;
+  double start_y = pose_y;
+  double start_yaw = pose_yaw;
+  if (have_front) {
+    extendBeyondGarbage(
+      pose_x, pose_y,
+      piles[first_idx].pose.pose.position.x,
+      piles[first_idx].pose.pose.position.y,
+      extend_m, start_x, start_y, start_yaw);
+  }
 
-  GarbageList reordered;
-  reordered.reserve(n);
-  reordered.push_back(garbage_list_[first_idx]);
-  if (!middle.empty()) {
-    const capella_ros_msg::msg::GarbageDetect * locked_last =
-      have_last ? &garbage_list_[last_idx] : nullptr;
-    const auto sub = computeSweepOrder(
-      middle, start_x, start_y, start_yaw, locked_last);
-    for (const std::size_t k : sub) {
-      if (k < middle.size()) {
-        reordered.push_back(middle[k]);
+  const capella_ros_msg::msg::GarbageDetect * locked_last =
+    have_last ? &piles[last_idx] : nullptr;
+  std::vector<std::size_t> middle_order(middle.size());
+  for (std::size_t i = 0; i < middle.size(); ++i) {
+    middle_order[i] = i;
+  }
+  if (middle.size() > 1) {
+    auto scoreOf = [&](const std::vector<std::size_t> & perm) {
+      GarbageList scored;
+      std::vector<std::size_t> scored_idx;
+      scored.reserve(perm.size() + (locked_last != nullptr ? 1u : 0u));
+      scored_idx.reserve(scored.capacity());
+      for (const std::size_t k : perm) {
+        if (k < middle.size()) {
+          scored_idx.push_back(scored.size());
+          scored.push_back(middle[k]);
+        }
       }
+      if (locked_last != nullptr) {
+        scored_idx.push_back(scored.size());
+        scored.push_back(*locked_last);
+      }
+      return routeExtendScore(
+        scored, scored_idx, start_x, start_y, start_yaw,
+        extend_m, w_dist, w_turn);
+    };
+    if (middle.size() <= kSweepBruteMaxN) {
+      std::vector<std::size_t> perm = middle_order;
+      double best_score = std::numeric_limits<double>::infinity();
+      do {
+        const double score = scoreOf(perm);
+        if (score < best_score - 1e-9) {
+          best_score = score;
+          middle_order = perm;
+        }
+      } while (std::next_permutation(perm.begin(), perm.end()));
+    } else {
+      std::vector<std::size_t> pool = middle_order;
+      std::vector<std::size_t> greedy;
+      greedy.reserve(middle.size());
+      double cur_x = start_x;
+      double cur_y = start_y;
+      double cur_yaw = start_yaw;
+      while (!pool.empty()) {
+        std::size_t best_pos = 0;
+        double best_step = std::numeric_limits<double>::infinity();
+        for (std::size_t p = 0; p < pool.size(); ++p) {
+          GarbageList step;
+          std::vector<std::size_t> step_idx{0};
+          step.push_back(middle[pool[p]]);
+          if (locked_last != nullptr) {
+            step_idx.push_back(1);
+            step.push_back(*locked_last);
+          }
+          const double score = routeExtendScore(
+            step, step_idx, cur_x, cur_y, cur_yaw,
+            extend_m, w_dist, w_turn);
+          if (score < best_step - 1e-9) {
+            best_step = score;
+            best_pos = p;
+          }
+        }
+        const std::size_t chosen = pool[best_pos];
+        greedy.push_back(chosen);
+        pool.erase(pool.begin() + static_cast<std::ptrdiff_t>(best_pos));
+        extendBeyondGarbage(
+          cur_x, cur_y,
+          middle[chosen].pose.pose.position.x,
+          middle[chosen].pose.pose.position.y,
+          extend_m, cur_x, cur_y, cur_yaw);
+      }
+      middle_order = std::move(greedy);
+    }
+  }
+
+  GarbageList ordered;
+  ordered.reserve(n);
+  if (have_front) {
+    ordered.push_back(piles[first_idx]);
+  }
+  for (const std::size_t k : middle_order) {
+    if (k < middle.size()) {
+      ordered.push_back(middle[k]);
     }
   }
   if (have_last) {
-    reordered.push_back(garbage_list_[last_idx]);
+    ordered.push_back(piles[last_idx]);
   }
-
-  garbage_list_ = std::move(reordered);
-  syncLastSweepXyFromList();
   RCLCPP_INFO(
     node_->get_logger(),
-    "InsertGarbagePose: sweep order front=%d first=(%.2f, %.2f) last=(%.2f, %.2f) n=%zu",
+    "InsertGarbagePose: force garbage sort front=%d first=(%.2f, %.2f) "
+    "last=(%.2f, %.2f) n=%zu",
     have_front ? 1 : 0,
-    garbage_list_.front().pose.pose.position.x,
-    garbage_list_.front().pose.pose.position.y,
-    garbage_list_.back().pose.pose.position.x,
-    garbage_list_.back().pose.pose.position.y,
-    garbage_list_.size());
-}
-// 返回清扫先后下标，[0] 对应下一堆；输入只读
-std::vector<std::size_t> InsertGarbagePose::computeSweepOrder(
-  const GarbageList & garbage_list,
-  double robot_x, double robot_y,
-  double robot_yaw,
-  const capella_ros_msg::msg::GarbageDetect * locked_last)
-{
-  const std::size_t n = garbage_list.size();
-  std::vector<std::size_t> garbage_order(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    garbage_order[i] = i;
-  }
-  if (n == 0) {
-    return garbage_order;
-  }
-
-  const double extend_m = garbage_extend_m_;
-  auto scoreOf = [&](const std::vector<std::size_t> & middle) {
-    GarbageList scored;
-    scored.reserve(middle.size() + (locked_last ? 1u : 0u));
-    std::vector<std::size_t> scored_idx;
-    scored_idx.reserve(scored.capacity());
-    for (const std::size_t k : middle) {
-      if (k < garbage_list.size()) {
-        scored_idx.push_back(scored.size());
-        scored.push_back(garbage_list[k]);
-      }
-    }
-    if (locked_last) {
-      scored_idx.push_back(scored.size());
-      scored.push_back(*locked_last);
-    }
-    return routeExtendScore(
-      scored, scored_idx, robot_x, robot_y, robot_yaw,
-      extend_m, sweep_dist_weight_, sweep_turn_weight_);
-  };
-
-  if (n <= 1) {
-    return garbage_order;
-  }
-
-  std::vector<std::size_t> best = garbage_order;
-  if (n <= kSweepBruteMaxN) {
-    std::vector<std::size_t> perm = garbage_order;
-    double best_score = std::numeric_limits<double>::infinity();
-    do {
-      const double score = scoreOf(perm);
-      if (score < best_score - 1e-9) {
-        best_score = score;
-        best = perm;
-      }
-    } while (std::next_permutation(perm.begin(), perm.end()));
-  } else {
-    std::vector<std::size_t> remaining = garbage_order;
-    std::vector<std::size_t> greedy;
-    greedy.reserve(n);
-    double cur_x = robot_x;
-    double cur_y = robot_y;
-    double cur_yaw = robot_yaw;
-    while (!remaining.empty()) {
-      std::size_t best_pos = 0;
-      double best_step = std::numeric_limits<double>::infinity();
-      for (std::size_t p = 0; p < remaining.size(); ++p) {
-        GarbageList step;
-        std::vector<std::size_t> step_idx{0};
-        step.push_back(garbage_list[remaining[p]]);
-        if (locked_last) {
-          step_idx.push_back(1);
-          step.push_back(*locked_last);
-        }
-        const double score = routeExtendScore(
-          step, step_idx, cur_x, cur_y, cur_yaw,
-          extend_m, sweep_dist_weight_, sweep_turn_weight_);
-        if (score < best_step - 1e-9) {
-          best_step = score;
-          best_pos = p;
-        }
-      }
-      const std::size_t chosen = remaining[best_pos];
-      greedy.push_back(chosen);
-      remaining.erase(remaining.begin() + static_cast<std::ptrdiff_t>(best_pos));
-      const double gx = garbage_list[chosen].pose.pose.position.x;
-      const double gy = garbage_list[chosen].pose.pose.position.y;
-      extendBeyondGarbage(cur_x, cur_y, gx, gy, extend_m, cur_x, cur_y, cur_yaw);
-    }
-    best = std::move(greedy);
-  }
-
-  return best;
+    ordered.front().pose.pose.position.x,
+    ordered.front().pose.pose.position.y,
+    ordered.back().pose.pose.position.x,
+    ordered.back().pose.pose.position.y,
+    ordered.size());
+  return ordered;
 }
 
 void InsertGarbagePose::syncLastSweepXyFromList() // 把排好的顺序保存下来

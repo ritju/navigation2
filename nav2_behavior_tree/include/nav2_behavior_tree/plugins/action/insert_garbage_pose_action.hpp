@@ -498,22 +498,12 @@ private:
     std::vector<std::vector<std::size_t>> * groups_out = nullptr);
 
   /**
-   * 中间堆的清扫顺序。起点是 first_garbage 的延长点。
-   * locked_last 非空时固定为队尾，参与延长点评分，不参与中间排列。
+   * 暴力排序并返回新列表，不改 garbage_list_。
+   * 正方向最近的一堆固定为队首；正方向没有则不锁队首。
+   * 队尾取删点最远的一堆。中间全排列，按延长点路程和转角打分。
    */
-  std::vector<std::size_t> computeSweepOrder(
-    const GarbageList & garbage_list,
-    double robot_x, double robot_y,
-    double robot_yaw,
-    const capella_ros_msg::msg::GarbageDetect * locked_last = nullptr);
-
-  /**
-   * 队首是车头前方最近的一堆，正前方没有则用离车最近的。
-   * 队尾按 2.7.1 在原始路径副本上跑 2.5，取删除下标最大的一堆。
-   * 中间按 computeSweepOrder 重排，评分含队尾延长点。
-   */
-  void reorderNearestFirstThenSweep(
-    double robot_x, double robot_y, double robot_yaw);
+  GarbageList forcegarbagesort(
+    GarbageList piles, double pose_x, double pose_y, double pose_yaw);
 
   /** 点相对射线起点是否落在正方向、且夹角不超过 ray_offset_deg_ */
   bool inForwardRaySector(
@@ -542,29 +532,16 @@ private:
     GarbageList * chain_out) const;
 
   /**
-   * 暴力排序之前反复收线。每条 G→G→…→E 锁住，不进入 reorder。
-   * 收不出下一条时，剩下的堆进入排序，并沿理想 E 继续收线。
+   * 多堆排序。先反复收射线链，收不出再暴力排序，再沿理想 E 收线。
+   * 收到线就把后续堆再排序、再收，直到收不出。结果写入 garbage_list_ 和 pile_skip_extend_。
    */
-  void planRayChainsBeforeSweep(double robot_x, double robot_y, double robot_yaw);
+  void garbageSort(double pose_x, double pose_y, double pose_yaw);
 
   /**
-   * 暴力排序结果上沿理想 E 的来向再收一条线。来向是上一个点指向当前堆。
-   * 锁到第一条就返回：链前的堆在 prefix，没进线的后续堆在 tail，车位改到链尾 En。
+   * 单堆开关打开时的排序。只尝试收一条射线链。
+   * 收不出就保持原顺序，每堆标 0。收到一条就只锁这一条，其余接在后面标 0。
    */
-  bool lockFirstChainAlongExtend(
-    const GarbageList & ordered,
-    double pose_x, double pose_y,
-    GarbageList * prefix, GarbageList * chain, GarbageList * tail,
-    double * pose_x_out, double * pose_y_out, double * pose_yaw_out) const;
-
-  /**
-   * 从假设车位反复收线，收不出时剩下的堆暴力排序。
-   * 排序后再沿理想 E 收线；收到就把后续堆再排序、再检查，直到收不出。
-   * 结果追加到 ordered / skip，返回收进线里的堆数。
-   */
-  std::size_t planChainsThenSweepFrom(
-    GarbageList remaining, double pose_x, double pose_y, double pose_yaw,
-    GarbageList * ordered, std::vector<char> * skip, const char * chain_log);
+  void garbageSortSingle(double pose_x, double pose_y, double pose_yaw);
 
   /** garbage_list_[begin_idx, end) 里落在 (ex,ey) 半径 extend_near_radius_m_ 内、最近的一堆 */
   std::size_t nearestWaitingNear(double ex, double ey, std::size_t begin_idx) const;
@@ -599,9 +576,6 @@ private:
     double extend_m,
     std::set<std::size_t> * pending_delete,
     const Goals * frozen_tail);
-
-  /** 超过 kMaxGarbageSize 时截断，保留离机器人最近的若干堆 */
-  void trimGarbageListToCap(double robot_x, double robot_y);
 
   /** 把当前 garbage_list_ 顺序记入 last_sweep_xy_ */
   void syncLastSweepXyFromList();
