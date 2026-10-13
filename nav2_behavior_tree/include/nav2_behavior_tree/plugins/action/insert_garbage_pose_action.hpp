@@ -510,6 +510,16 @@ private:
     double ox, double oy, double tx, double ty, double px, double py) const;
 
   /**
+   * 点到有向直线的夹角不超过 ray_offset_deg_（正反方向都算）。
+   * proj_out 为沿 yaw 的投影，起点为 0，正方向为正。
+   */
+  bool onOpenRayAxis(
+    double ox, double oy, double yaw, double px, double py, double * proj_out) const;
+
+  /** 是否落在某条还开着的射线上，不区分车前车后 */
+  bool isOnAnyOpenRay(double x, double y) const;
+
+  /**
    * 种子一定进链。其余下标落在原点指向 (tx,ty) 的扇形里才进链。
    * 按离原点由近到远排序。除种子外没有别人时返回空。
    */
@@ -532,10 +542,16 @@ private:
     GarbageList * chain_out) const;
 
   /**
+   * 打印当前 garbage_list_。一行一堆，有 E 的跟在该堆后面。
+   * 锁住的链另打，一条链一行。pose 是这次排序开始时的假设车位。
+   */
+  void logSortedInsertList(double pose_x, double pose_y) const;
+
+  /**
    * 多堆排序。先反复收射线链，收不出再暴力排序，再沿理想 E 收线。
    * 收到线就把后续堆再排序、再收，直到收不出。结果写入 garbage_list_ 和 pile_skip_extend_。
    */
-  void garbageSort(double pose_x, double pose_y, double pose_yaw);
+  void garbageSortTotal(double pose_x, double pose_y, double pose_yaw);
 
   /**
    * 单堆开关打开时的排序。只尝试收一条射线链。
@@ -544,7 +560,7 @@ private:
   void garbageSortSingle(double pose_x, double pose_y, double pose_yaw);
 
   /** garbage_list_[begin_idx, end) 里落在 (ex,ey) 半径 extend_near_radius_m_ 内、最近的一堆 */
-  std::size_t nearestWaitingNear(double ex, double ey, std::size_t begin_idx) const;
+  std::size_t nearestExtendGarbage(double ex, double ey, std::size_t begin_idx) const;
 
   /** 朝远离附近垃圾的一侧转 ray_offset_deg_，长度改为 garbage_extend_m_ + extend_extra_m_ */
   void nudgeExtendAwayFromGarbage(
@@ -569,6 +585,30 @@ private:
   /** 从 garbage_list_ 和 pile_skip_extend_ 队首一起删掉 count 堆 */
   void eraseGarbageFront(std::size_t count);
 
+  /**
+   * 记下已写入 goals 的 G 和它的扫向。G 还在 goals 里就保持这条射线。
+   * has_e 为真时 (ex,ey) 是这条射线当前的延长点。
+   */
+  void rememberOpenGarbageRay(
+    double gx, double gy, double yaw, bool has_e, double ex, double ey);
+
+  /** G 和 E 都不在 goals 里时关掉这条射线。G 已过但 E 还在则保持 */
+  void pruneOpenGarbageRays(const Goals & goals);
+
+  /**
+   * 射线还开着时，把落在同一条直线上、且还在车前方的新垃圾接进这条链。
+   * 投影大于 0 的插在 G 与 E 之间，投影小于 0 的插在 G 前面。扫向不变，只留链尾一个 E。
+   * G 已被经过删掉、E 还在时，接到 E 前面。已经在车后方的不折返。返回 true 表示改写了 goals。
+   */
+  bool attachNewGarbageToOpenRays(
+    Goals * goals, const geometry_msgs::msg::PoseStamped & robot_pose);
+
+  /** (x,y) 是某条还开着的射线的 E，而不是 G */
+  bool isOpenRayExtendPoint(double x, double y) const;
+
+  /** 从已插入点里去掉这个坐标，挪走 E 时用 */
+  void forgetProtectedGarbageXy(double x, double y);
+
   /** 一条锁住的线一次写入：G1…Gn，只在链尾加 E，参考点一起做一次删点 */
   Goals insertRayChainIntoGoals(
     InsertInfo & info,
@@ -577,7 +617,7 @@ private:
     std::set<std::size_t> * pending_delete,
     const Goals * frozen_tail);
 
-  /** 把当前 garbage_list_ 顺序记入 last_sweep_xy_ */
+  /** 把当前 garbage_list_ 顺序记入 last_sorting_list_ */
   void syncLastSweepXyFromList();
 
   /** 点到无限直线 AB 的垂足 */
@@ -776,11 +816,25 @@ public:
   bool viz_have_head_{false};
   bool viz_have_corner_{false};
   bool viz_have_fail_strip_{false};
+  /** 工作圈曾经生成过。取消后仍用上次圆心画圈，不随 has_work_circle_ 擦除 */
+  bool viz_work_circle_center_set_{false};
   int next_g_num_{1};
   /** 上次清扫顺序（map xy），供 4-1 保留其余相对次序 */
-  std::vector<std::pair<double, double>> last_sweep_xy_;
+  std::vector<std::pair<double, double>> last_sorting_list_;
   /** 与 garbage_list_ 对齐：1 表示链中间，不生成 E，顺序锁住；0 表示链尾或可暴力排序的堆 */
   std::vector<char> pile_skip_extend_;
+  /** 已写入 goals、G 还在队列里的射线。新垃圾用它判断能不能接成同一条链 */
+  struct OpenGarbageRay
+  {
+    double gx{0.0};
+    double gy{0.0};
+    double yaw{0.0};
+    bool has_e{false};
+    double ex{0.0};
+    double ey{0.0};
+  };
+  std::vector<OpenGarbageRay> open_garbage_rays_;
+
   /** 上一堆假设到达点   有 E 用 E，否则用 G，供下一堆算 E；新任务/整单重排时清空 */
   bool has_last_sweep_arrive_{false};
   std::pair<double, double> last_sweep_arrive_xy_{0.0, 0.0};
