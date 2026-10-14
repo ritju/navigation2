@@ -393,6 +393,22 @@ private:
     const char * log_tag,
     std::set<std::size_t> * defer_delete);
 
+  /** 接射线的新 G、新 E 对这份尾巴做一次并集，下标只写入 pending_delete */
+  void deferOpenRayClip(
+    const Goals & clip_tail,
+    const std::vector<std::pair<double, double>> & refs,
+    const geometry_msgs::msg::PoseStamped & robot_pose,
+    std::set<std::size_t> * pending_delete);
+
+  /**
+   * pending_delete 的下标对着 clip_tail。
+   * goals 末尾仍是这份尾巴时按并集删一次，对不上则不删。返回删掉的点数。
+   */
+  std::size_t applyDeferredTailDelete(
+    Goals * goals,
+    const Goals & clip_tail,
+    const std::set<std::size_t> & pending_delete);
+
   /** 前缀、新插入点、剩余路径拼成一条，并统一时间戳 */
   Goals assembleAndStamp(
     const Goals & prefix, const Goals & inserted, const Goals & rest);
@@ -599,9 +615,11 @@ private:
    * 射线还开着时，把落在同一条直线上、且还在车前方的新垃圾接进这条链。
    * 投影大于 0 的插在 G 与 E 之间，投影小于 0 的插在 G 前面。扫向不变，只留链尾一个 E。
    * G 已被经过删掉、E 还在时，接到 E 前面。已经在车后方的不折返。返回 true 表示改写了 goals。
+   * clip_refs 收这一次写进链的新 G；链尾新 E 生成了才追加。不在这里删原路径。
    */
   bool attachNewGarbageToOpenRays(
-    Goals * goals, const geometry_msgs::msg::PoseStamped & robot_pose);
+    Goals * goals, const geometry_msgs::msg::PoseStamped & robot_pose,
+    std::vector<std::pair<double, double>> * clip_refs);
 
   /** (x,y) 是某条还开着的射线的 E，而不是 G */
   bool isOpenRayExtendPoint(double x, double y) const;

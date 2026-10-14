@@ -558,8 +558,10 @@ BT::NodeStatus InsertGarbagePose::tick()
 
   pruneOpenGarbageRays(goals_now);
   bool open_ray_goals_changed = false;
+  std::vector<std::pair<double, double>> open_ray_clip_refs;
   if (!garbage_list_.empty()) {
-    open_ray_goals_changed = attachNewGarbageToOpenRays(&goals_now, robot_pose);
+    open_ray_goals_changed = attachNewGarbageToOpenRays(
+      &goals_now, robot_pose, &open_ray_clip_refs);
   }
 
   if (!garbage_list_.empty() && last_sorting_list_.empty()) {
@@ -574,6 +576,12 @@ BT::NodeStatus InsertGarbagePose::tick()
 
   if (garbage_list_.empty()) {
     if (open_ray_goals_changed) {
+      Goals clip_prefix;
+      Goals clip_tail;
+      splitAtLastProtected(goals_now, &clip_prefix, &clip_tail);
+      std::set<std::size_t> pending_delete;
+      deferOpenRayClip(clip_tail, open_ray_clip_refs, robot_pose, &pending_delete);
+      applyDeferredTailDelete(&goals_now, clip_tail, pending_delete);
       const rclcpp::Time now_stamp = node_->now();
       for (std::size_t i = 0; i < goals_now.size(); ++i) {
         if (!isUnindexedSentinelPoseZ(goals_now[i])) {
@@ -600,6 +608,8 @@ BT::NodeStatus InsertGarbagePose::tick()
     Goals clip_prefix;
     splitAtLastProtected(batch.goals, &clip_prefix, &batch.clip_tail);
   }
+  deferOpenRayClip(
+    batch.clip_tail, open_ray_clip_refs, robot_pose, &batch.pending_delete);
   while (!garbage_list_.empty()) {
     if (pile_skip_extend_.size() < garbage_list_.size()) {
       pile_skip_extend_.resize(garbage_list_.size(), 0);
@@ -616,48 +626,8 @@ BT::NodeStatus InsertGarbagePose::tick()
       break;
     }
   }
-  if (!batch.pending_delete.empty() && !batch.clip_tail.empty() &&
-    batch.goals.size() >= batch.clip_tail.size())
-  {
-    const std::size_t tail_n = batch.clip_tail.size();
-    const std::size_t off = batch.goals.size() - tail_n;
-    bool suffix_ok = true;
-    for (std::size_t i = 0; i < tail_n; ++i) {
-      const auto & got = batch.goals[off + i].pose.position;
-      const auto & expect = batch.clip_tail[i].pose.position;
-      if (std::hypot(got.x - expect.x, got.y - expect.y) > 1e-3) {
-        suffix_ok = false;
-        break;
-      }
-    }
-    if (suffix_ok) {
-      Goals kept_tail;
-      kept_tail.reserve(tail_n);
-      std::size_t removed = 0;
-      for (std::size_t i = 0; i < tail_n; ++i) {
-        if (batch.pending_delete.count(i) != 0) {
-          ++removed;
-          continue;
-        }
-        kept_tail.push_back(batch.goals[off + i]);
-      }
-      Goals merged;
-      merged.reserve(off + kept_tail.size());
-      merged.insert(merged.end(), batch.goals.begin(), batch.goals.begin() + static_cast<std::ptrdiff_t>(off));
-      merged.insert(merged.end(), kept_tail.begin(), kept_tail.end());
-      batch.goals = std::move(merged);
-      batch.deleted_goals_total = removed;
-      RCLCPP_INFO(
-        node_->get_logger(),
-        "InsertGarbagePose: deferred clip removed %zu path goals from tail %zu",
-        removed, tail_n);
-    } else {
-      RCLCPP_INFO(
-        node_->get_logger(),
-        "InsertGarbagePose: deferred clip suffix mismatch, pending=%zu tail=%zu",
-        batch.pending_delete.size(), tail_n);
-    }
-  }
+  batch.deleted_goals_total = applyDeferredTailDelete(
+    &batch.goals, batch.clip_tail, batch.pending_delete);
   goals_now = std::move(batch.goals);
 
   if (batch.inserted_count > 0 || open_ray_goals_changed) {
@@ -1627,7 +1597,8 @@ bool InsertGarbagePose::isOnAnyOpenRay(double x, double y) const
 }
 
 bool InsertGarbagePose::attachNewGarbageToOpenRays(
-  Goals * goals, const geometry_msgs::msg::PoseStamped & robot_pose)
+  Goals * goals, const geometry_msgs::msg::PoseStamped & robot_pose,
+  std::vector<std::pair<double, double>> * clip_refs)
 {
   if (goals == nullptr || open_garbage_rays_.empty() || garbage_list_.empty()) {
     return false;
@@ -1966,6 +1937,9 @@ bool InsertGarbagePose::attachNewGarbageToOpenRays(
         kSentinelIdentityMatchM * kSentinelIdentityMatchM;
       rememberOpenGarbageRay(pt.x, pt.y, yaw, tail, ex, ey);
       addProtectedGarbageXy(pt.x, pt.y);
+      if (clip_refs != nullptr) {
+        clip_refs->emplace_back(pt.x, pt.y);
+      }
       InsertInfo info;
       info.garbage = garbage_list_[pt.list_idx];
       info.garbage.pose.header.frame_id = frame_id;
@@ -1985,6 +1959,9 @@ bool InsertGarbagePose::attachNewGarbageToOpenRays(
     }
     if (place_e) {
       addProtectedGarbageXy(ex, ey);
+      if (clip_refs != nullptr) {
+        clip_refs->emplace_back(ex, ey);
+      }
       recordSweepArrive(ex, ey, yaw);
     } else if (had_e) {
       recordSweepArrive(far_x, far_y, yaw);
@@ -3899,6 +3876,71 @@ InsertGarbagePose::Goals InsertGarbagePose::clipWithRefs(
     "InsertGarbagePose: %s %zu refs=%zu, path %zu -> %zu",
     log_tag, del.size(), refs.size(), work.size(), clipped.size());
   return clipped;
+}
+
+void InsertGarbagePose::deferOpenRayClip(
+  const Goals & clip_tail,
+  const std::vector<std::pair<double, double>> & refs,
+  const geometry_msgs::msg::PoseStamped & robot_pose,
+  std::set<std::size_t> * pending_delete)
+{
+  if (pending_delete == nullptr || refs.empty() || clip_tail.size() < 2) {
+    return;
+  }
+  InsertInfo info;
+  info.valid = true;
+  info.robot_pose = robot_pose;
+  info.goals = clip_tail;
+  const InsertInfo frozen = info;
+  clipWithRefs(
+    clip_tail, refs, frozen, &info, "open ray union delete", pending_delete);
+}
+
+std::size_t InsertGarbagePose::applyDeferredTailDelete(
+  Goals * goals,
+  const Goals & clip_tail,
+  const std::set<std::size_t> & pending_delete)
+{
+  if (goals == nullptr || pending_delete.empty() || clip_tail.empty() ||
+    goals->size() < clip_tail.size())
+  {
+    return 0;
+  }
+  const std::size_t tail_n = clip_tail.size();
+  const std::size_t off = goals->size() - tail_n;
+  for (std::size_t i = 0; i < tail_n; ++i) {
+    const auto & got = (*goals)[off + i].pose.position;
+    const auto & expect = clip_tail[i].pose.position;
+    if (std::hypot(got.x - expect.x, got.y - expect.y) > 1e-3) {
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "InsertGarbagePose: deferred clip suffix mismatch, pending=%zu tail=%zu",
+        pending_delete.size(), tail_n);
+      return 0;
+    }
+  }
+  Goals kept_tail;
+  kept_tail.reserve(tail_n);
+  std::size_t removed = 0;
+  for (std::size_t i = 0; i < tail_n; ++i) {
+    if (pending_delete.count(i) != 0) {
+      ++removed;
+      continue;
+    }
+    kept_tail.push_back((*goals)[off + i]);
+  }
+  Goals merged;
+  merged.reserve(off + kept_tail.size());
+  merged.insert(
+    merged.end(), goals->begin(),
+    goals->begin() + static_cast<std::ptrdiff_t>(off));
+  merged.insert(merged.end(), kept_tail.begin(), kept_tail.end());
+  *goals = std::move(merged);
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "InsertGarbagePose: deferred clip removed %zu path goals from tail %zu",
+    removed, tail_n);
+  return removed;
 }
 
 InsertGarbagePose::Goals InsertGarbagePose::assembleAndStamp(
