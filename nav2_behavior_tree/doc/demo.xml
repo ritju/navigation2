@@ -21,7 +21,7 @@
               clip_extend_m="2.5"
               corner_angle_deg="30.0"
               goaltotal_range_m="10.0"
-              head_delete_robot_dist_m="4.0"
+              head_delete_robot_dist_m="12.0"
               max_garbage_robot_dist_m="5.0"
               work_circle_radius_m="10.0"
               garbage_merge_radius_m="1.1"

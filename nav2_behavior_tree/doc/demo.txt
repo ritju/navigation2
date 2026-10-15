@@ -1,0 +1,35 @@
+            <InsertGarbagePose
+              input_goals="{goals}"
+              output_goals="{goals}"
+              garbage_topic="/garbage_rectangle_points"
+              special_terrain_topic="/cleaning_tool_retraction_areas"
+              footprint_topic="local_costmap/published_footprint"
+              global_costmap_topic="global_costmap/costmap_raw"
+              clip_extend_m="2.5"  // 每个垃圾点投影到路径点上后，往后删的距离
+              corner_angle_deg="30.0"   // 判断路径在某点的转向超过度数，这个点算拐角
+              goaltotal_range_m="10.0"   // 每次判断的时候取该参数的路径长度
+              head_delete_robot_dist_m="12.0"  // 车离最近的input_goals点超过此参数，不做删除判断
+              max_garbage_robot_dist_m="5.0"   // 检测到的垃圾，离机器人大于这个参数，丢掉
+              work_circle_radius_m="10.0"   //圆的半径，第一堆被接受时，以当时车的位置画一个工作圈。圈外的新垃圾丢掉，直到这批清完
+              garbage_merge_radius_m="1.1"    // 半径，离同一堆代表点半径以内的点合成一堆，代表点是这些点的质心
+              garbage_extend_m="2.5"   // 垃圾点的延长点距离
+              ray_offset_deg="30.0"  // 偏转角度
+              extend_near_radius_m="2.5"   //半径，算出来的 E 半径周围还有下一堆，就触发偏转，避免 E 压到下一堆上
+              extend_extra_m="1.0"  // 偏转时，延长点格外增加的距离
+              confirm_match_dist_m="1.0"  // 距离，距离多远的半径内的垃圾通过连续性检查
+              confirm_match_num="3"     // 在有效时间内，连续检测到多少帧才算合格
+              confirm_sec_garbage_time="1.5"  //多少时间内，通过连续性检查
+              single_pile_insert="false"   //是否开启单堆清扫模式
+              sweep_dist_weight="0.2"  //暴力遍历时 距离权重
+              sweep_turn_weight="0.8"   //暴力遍历时，角度权重
+              extend_max_yaw_deg="30.0"  //  默认方向的 E 被障碍挡住时，左右各扫的角度，找一个轮廓能通过的方向。
+              extend_step_yaw_deg="10.0"   //  E被障碍物挡住时，每次扫的时候的步长
+              enable_wall_edge_insert="false"   //是否在垃圾过于贴近障碍物的时候，生成一条贴近障碍物的线的功能
+              wall_edge_d_extend_m="2.0"  //贴边起始点 每次沿切向往外推的距离
+              wall_edge_min_robot_dist_m="1.0"  //最小离机器人的距离参数，如果起始点离机器人较近，继续往外推
+              wall_edge_sample_m="0.5" // 从起点到终点，沿着此路径添加的路径点的采样距离，每隔此参数，放置一个点
+              wall_edge_normal_offset_m="0.7"  //让整条清扫路径沿这个方向再平移的距离
+              enable_visualization="true"  // 是否开启可视化
+              global_frame="map"
+              robot_base_frame="base_link"
+            />
