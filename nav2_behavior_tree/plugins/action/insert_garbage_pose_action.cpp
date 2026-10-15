@@ -367,7 +367,8 @@ InsertGarbagePose::InsertLoopAction InsertGarbagePose::insertLockedChainAtFront(
         const bool tail = (i + 1 == gxy.size());
         rememberOpenGarbageRay(
           gxy[i].first, gxy[i].second, info.path_yaw,
-          tail && info.extend_inserted, info.extend_x, info.extend_y);
+          tail && info.extend_inserted, info.extend_x, info.extend_y,
+          info.extend_from_x, info.extend_from_y);
       }
       batch->inserted_count += kept_piles.size();
       if (single_pile_insert_) {
@@ -397,13 +398,9 @@ InsertGarbagePose::InsertLoopAction InsertGarbagePose::insertFrontPile(
     eraseGarbageFront(1);
     return InsertLoopAction::Continue;
   }
-  // 还开着的射线上的点只由 attachNewGarbageToOpenRays 接入，避免再生成一条反向 G-E
-  if (isOnAnyOpenRay(gx, gy)) {
-    RCLCPP_INFO(
-      node_->get_logger(),
-      "InsertGarbagePose: open ray 上的垃圾 (%.2f, %.2f) 不另起反向路线",
-      gx, gy);
-    eraseGarbageFront(1);
+  // 落在 from 到链头这一段上的，并进已有的链，不再自己开一条 G-E。
+  // 落在 from 后面的当新堆，往下走正常插入。
+  if (attachNewGarbageToOpenRays(&batch->goals, robot_pose, nullptr)) {
     return InsertLoopAction::Continue;
   }
   InsertInfo info = gatherInsertInfo(batch->goals, robot_pose, gx, gy);
@@ -490,7 +487,8 @@ InsertGarbagePose::InsertLoopAction InsertGarbagePose::insertFrontPile(
   }
   rememberOpenGarbageRay(
     info.garbage.pose.pose.position.x, info.garbage.pose.pose.position.y,
-    info.path_yaw, info.extend_inserted, info.extend_x, info.extend_y);
+    info.path_yaw, info.extend_inserted, info.extend_x, info.extend_y,
+    info.extend_from_x, info.extend_from_y);
   eraseGarbageFront(1);
   ++batch->inserted_count;
   batch->inserted_xy << "(" << gx << ", " << gy << ") ";
@@ -1517,7 +1515,8 @@ bool InsertGarbagePose::isOpenRayExtendPoint(double x, double y) const
 }
 
 void InsertGarbagePose::rememberOpenGarbageRay(
-  double gx, double gy, double yaw, bool has_e, double ex, double ey)
+  double gx, double gy, double yaw, bool has_e, double ex, double ey,
+  double fx, double fy)
 {
   const double thresh2 = kSentinelIdentityMatchM * kSentinelIdentityMatchM;
   for (auto & ray : open_garbage_rays_) {
@@ -1528,6 +1527,8 @@ void InsertGarbagePose::rememberOpenGarbageRay(
     ray.has_e = has_e;
     ray.ex = ex;
     ray.ey = ey;
+    ray.fx = fx;
+    ray.fy = fy;
     return;
   }
   OpenGarbageRay ray;
@@ -1537,11 +1538,54 @@ void InsertGarbagePose::rememberOpenGarbageRay(
   ray.has_e = has_e;
   ray.ex = ex;
   ray.ey = ey;
+  ray.fx = fx;
+  ray.fy = fy;
   open_garbage_rays_.push_back(ray);
   RCLCPP_INFO(
     node_->get_logger(),
-    "InsertGarbagePose: open ray on G=(%.2f, %.2f) yaw=%.3f",
-    gx, gy, yaw);
+    "InsertGarbagePose: open ray on G=(%.2f, %.2f) yaw=%.3f from=(%.2f, %.2f)",
+    gx, gy, yaw, fx, fy);
+}
+
+void InsertGarbagePose::updateOpenRayFrom(double gx, double gy, double fx, double fy)
+{
+  const double thresh2 = kSentinelIdentityMatchM * kSentinelIdentityMatchM;
+  for (auto & ray : open_garbage_rays_) {
+    if (squaredDistanceXY(ray.gx, ray.gy, gx, gy) >= thresh2) {
+      continue;
+    }
+    ray.fx = fx;
+    ray.fy = fy;
+  }
+}
+
+bool InsertGarbagePose::onReverseApproachSegment(
+  double gx, double gy, double yaw, double fx, double fy,
+  double px, double py, double robot_x, double robot_y, double * proj_out) const
+{
+  double proj = 0.0;
+  if (!onOpenRayAxis(gx, gy, yaw, px, py, &proj) || proj > 1e-3) {
+    return false;
+  }
+  const double from_proj = (fx - gx) * std::cos(yaw) + (fy - gy) * std::sin(yaw);
+  // from 落在 G 前方时这段不存在，反向的点不并进这条链
+  if (from_proj >= -1e-3) {
+    return false;
+  }
+  double start_proj = from_proj - garbage_merge_radius_m_;
+  double robot_proj = 0.0;
+  const bool robot_on_ray = onOpenRayAxis(gx, gy, yaw, robot_x, robot_y, &robot_proj);
+  // 车已经开上 from 到 G 这一段：起点收到车的投影，车后面的不再折返
+  if (robot_on_ray && robot_proj > from_proj && robot_proj < 1e-3) {
+    start_proj = robot_proj - garbage_merge_radius_m_;
+  }
+  if (proj < start_proj) {
+    return false;
+  }
+  if (proj_out != nullptr) {
+    *proj_out = proj;
+  }
+  return true;
 }
 
 void InsertGarbagePose::pruneOpenGarbageRays(const Goals & goals)
@@ -1586,16 +1630,6 @@ bool InsertGarbagePose::onOpenRayAxis(
   return true;
 }
 
-bool InsertGarbagePose::isOnAnyOpenRay(double x, double y) const
-{
-  for (const OpenGarbageRay & ray : open_garbage_rays_) {
-    if (onOpenRayAxis(ray.gx, ray.gy, ray.yaw, x, y, nullptr)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 bool InsertGarbagePose::attachNewGarbageToOpenRays(
   Goals * goals, const geometry_msgs::msg::PoseStamped & robot_pose,
   std::vector<std::pair<double, double>> * clip_refs)
@@ -1627,12 +1661,23 @@ bool InsertGarbagePose::attachNewGarbageToOpenRays(
       if (!onOpenRayAxis(ray.gx, ray.gy, ray.yaw, px, py, &proj)) {
         continue;
       }
-      const double robot_proj =
-        (robot_x - ray.gx) * std::cos(ray.yaw) +
-        (robot_y - ray.gy) * std::sin(ray.yaw);
-      // 投影不比车更靠前：车已经开过，不再折返
-      if (proj <= robot_proj + 1e-3) {
-        passed = true;
+      // G 前方沿用原来的扇形。反方向只认 from 到链头这一段，from 后面的当新堆
+      if (proj <= 1e-3 &&
+        !onReverseApproachSegment(
+          ray.gx, ray.gy, ray.yaw, ray.fx, ray.fy,
+          px, py, robot_x, robot_y, &proj))
+      {
+        const double from_proj =
+          (ray.fx - ray.gx) * std::cos(ray.yaw) +
+          (ray.fy - ray.gy) * std::sin(ray.yaw);
+        double robot_proj = 0.0;
+        const bool robot_on_ray = onOpenRayAxis(
+          ray.gx, ray.gy, ray.yaw, robot_x, robot_y, &robot_proj);
+        if (robot_on_ray && robot_proj > from_proj && robot_proj < 1e-3 &&
+          proj <= robot_proj + 1e-3 && proj >= from_proj - garbage_merge_radius_m_)
+        {
+          passed = true;
+        }
         continue;
       }
       const double abs_proj = std::fabs(proj);
@@ -1928,6 +1973,40 @@ bool InsertGarbagePose::attachNewGarbageToOpenRays(
     open_garbage_rays_[ray_idx].has_e = place_e;
     open_garbage_rays_[ray_idx].ex = ex;
     open_garbage_rays_[ray_idx].ey = ey;
+    // 新链头插到最前面：这条链的 from 改成新链头前面那个点
+    double chain_fx = open_garbage_rays_[ray_idx].fx;
+    double chain_fy = open_garbage_rays_[ray_idx].fy;
+    if (!kept.empty() && kept.front().is_new) {
+      const double head_x = kept.front().x;
+      const double head_y = kept.front().y;
+      double prev_x = robot_x;
+      double prev_y = robot_y;
+      if (run_begin > 0) {
+        const auto & prev_goal = (*goals)[run_begin - 1];
+        prev_x = prev_goal.pose.position.x;
+        prev_y = prev_goal.pose.position.y;
+      }
+      const double back_m = std::max(garbage_extend_m_, kMinExtendFromDistM * 2.0);
+      if (std::hypot(head_x - prev_x, head_y - prev_y) < kMinExtendFromDistM) {
+        chain_fx = head_x - back_m * std::cos(yaw);
+        chain_fy = head_y - back_m * std::sin(yaw);
+      } else {
+        chain_fx = prev_x;
+        chain_fy = prev_y;
+      }
+      for (const ChainPt & old_pt : kept) {
+        if (old_pt.is_new) {
+          continue;
+        }
+        updateOpenRayFrom(old_pt.x, old_pt.y, chain_fx, chain_fy);
+      }
+      open_garbage_rays_[ray_idx].fx = chain_fx;
+      open_garbage_rays_[ray_idx].fy = chain_fy;
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "InsertGarbagePose: open ray from 更新为 (%.2f, %.2f), 新链头=(%.2f, %.2f)",
+        chain_fx, chain_fy, head_x, head_y);
+    }
     for (const ChainPt & pt : kept) {
       if (!pt.is_new) {
         continue;
@@ -1935,7 +2014,7 @@ bool InsertGarbagePose::attachNewGarbageToOpenRays(
       const bool tail = place_e &&
         squaredDistanceXY(pt.x, pt.y, far_x, far_y) <
         kSentinelIdentityMatchM * kSentinelIdentityMatchM;
-      rememberOpenGarbageRay(pt.x, pt.y, yaw, tail, ex, ey);
+      rememberOpenGarbageRay(pt.x, pt.y, yaw, tail, ex, ey, chain_fx, chain_fy);
       addProtectedGarbageXy(pt.x, pt.y);
       if (clip_refs != nullptr) {
         clip_refs->emplace_back(pt.x, pt.y);

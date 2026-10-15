@@ -532,8 +532,19 @@ private:
   bool onOpenRayAxis(
     double ox, double oy, double yaw, double px, double py, double * proj_out) const;
 
-  /** 是否落在某条还开着的射线上，不区分车前车后 */
-  bool isOnAnyOpenRay(double x, double y) const;
+  /**
+   * 反向延长只认 from 到链头这一段。
+   * 车已经开上这段时，起点收到车的投影；车和 from 之间算已开过。
+   * 落在 from 后面、或 G 前方的点不在这段里。
+   * 参数拆开传，避免声明出现在 OpenGarbageRay 定义之前。
+   */
+  bool onReverseApproachSegment(
+    double gx, double gy, double yaw, double fx, double fy,
+    double px, double py, double robot_x, double robot_y,
+    double * proj_out) const;
+
+  /** 链被延长、新链头插到最前面之后，这条链上每个 G 的 from 改成新链头前面那个点 */
+  void updateOpenRayFrom(double gx, double gy, double fx, double fy);
 
   /**
    * 种子一定进链。其余下标落在原点指向 (tx,ty) 的扇形里才进链。
@@ -602,19 +613,24 @@ private:
   void eraseGarbageFront(std::size_t count);
 
   /**
-   * 记下已写入 goals 的 G 和它的扫向。G 还在 goals 里就保持这条射线。
-   * has_e 为真时 (ex,ey) 是这条射线当前的延长点。
+   * 记下已写入 goals 的 G、扫向，以及这条链的进近起点 from。
+   * G 还在 goals 里就保持这条射线。has_e 为真时 (ex,ey) 是这条射线当前的延长点。
+   * from 是链头前面那个点：第一堆用车位，后面的堆用上一堆的 E。
    */
   void rememberOpenGarbageRay(
-    double gx, double gy, double yaw, bool has_e, double ex, double ey);
+    double gx, double gy, double yaw, bool has_e, double ex, double ey,
+    double fx, double fy);
 
   /** G 和 E 都不在 goals 里时关掉这条射线。G 已过但 E 还在则保持 */
   void pruneOpenGarbageRays(const Goals & goals);
 
   /**
-   * 射线还开着时，把落在同一条直线上、且还在车前方的新垃圾接进这条链。
-   * 投影大于 0 的插在 G 与 E 之间，投影小于 0 的插在 G 前面。扫向不变，只留链尾一个 E。
-   * G 已被经过删掉、E 还在时，接到 E 前面。已经在车后方的不折返。返回 true 表示改写了 goals。
+   * 射线还开着时，把落在 30° 内、且在 from 到链头这一段上的新垃圾接进这条链。
+   * 车已开上这段时起点收到车的投影，车和 from 之间不折返。
+   * 落在 from 后面的不当成这条链上的点，留在待插列表里当新堆。
+   * G 前方仍按原来的扇形接。扫向不变，只留链尾一个 E。
+   * 新链头插到最前面之后，这条链的 from 改成新链头前面那个点。
+   * 返回 true 表示改写了 goals。
    * clip_refs 收这一次写进链的新 G；链尾新 E 生成了才追加。不在这里删原路径。
    */
   bool attachNewGarbageToOpenRays(
@@ -850,6 +866,9 @@ public:
     bool has_e{false};
     double ex{0.0};
     double ey{0.0};
+    /** 链头前面那个点：第一堆是车位，后面的堆是上一堆的 E。反向延长只认 from 到链头 */
+    double fx{0.0};
+    double fy{0.0};
   };
   std::vector<OpenGarbageRay> open_garbage_rays_;
 
