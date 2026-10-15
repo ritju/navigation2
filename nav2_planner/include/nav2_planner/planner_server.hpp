@@ -44,8 +44,28 @@
 #include "std_msgs/msg/bool.hpp"
 #include "nav2_costmap_2d/footprint_collision_checker.hpp"
 #include "nav2_costmap_2d/exceptions.hpp"
+#include "nav2_planner/fast_path_planner.hpp"
+#include "nav2_planner/planning_debug_viz.hpp"
 namespace nav2_planner
 {
+
+/** How getPlan produced a path (or failed before returning one). */
+enum class GetPlanKind
+{
+  Failed = 0,
+  Straight,
+  Hybrid
+};
+
+struct GetPlanMeta
+{
+  GetPlanKind kind{GetPlanKind::Failed};
+  /** FastPath 交给 Hybrid 的 snapped_goal yaw（未走 Hybrid 则为 0）。 */
+  double snapped_yaw{0.0};
+  /** 近段航向裁尾失败而清空路径（丢中间 via）。 */
+  bool heading_rejected{false};
+};
+
 /**
  * @class nav2_planner::PlannerServer
  * @brief An action server implements the behavior tree's ComputePathToPose
@@ -75,7 +95,9 @@ public:
   nav_msgs::msg::Path getPlan(
     const geometry_msgs::msg::PoseStamped & start,
     const geometry_msgs::msg::PoseStamped & goal,
-    const std::string & planner_id);
+    const std::string & planner_id,
+    const FastPlanOptions & options,
+    GetPlanMeta * meta = nullptr);
 
 protected:
   /**
@@ -224,8 +246,39 @@ protected:
    */
   rcl_interfaces::msg::SetParametersResult
   dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters);
-  bool find_pose(geometry_msgs::msg::Pose2D original_pose, geometry_msgs::msg::Pose2D edge_pose, double d, geometry_msgs::msg::Pose2D &output_pose);
-  void calculate_line_param(double &x, double &y, double vx, double vy);
+
+  /**
+   * @brief 是否尝试直线捷径：仅看 enable_straight_expand。
+   * 会先更新窄通道 latch，供 allow_reverse 使用。
+   */
+  bool allowStraightExpand(
+    const geometry_msgs::msg::PoseStamped & start,
+    const geometry_msgs::msg::PoseStamped & goal);
+
+  /** 近段：距离与起点航向相对来向都小于阈值（转线/伸缩只在近段）。 */
+  bool isNearSegment(
+    const geometry_msgs::msg::PoseStamped & start,
+    const geometry_msgs::msg::PoseStamped & goal) const;
+
+  /** 近/远只看直线距离，不看 yaw（航向门禁 / 裁尾 / 丢 via）。 */
+  bool isNearByDistance(
+    const geometry_msgs::msg::PoseStamped & start,
+    const geometry_msgs::msg::PoseStamped & goal) const;
+
+  /**
+   * 是否把 G 改成 S→G 来向：总开关开启，且不是单点/最后一段，且直线距离为近段。
+   */
+  bool shouldRewriteGoalYawToApproach(
+    const geometry_msgs::msg::PoseStamped & start,
+    const geometry_msgs::msg::PoseStamped & goal,
+    bool is_terminal) const;
+
+  FastPlanOptions makeBaseFastOptions(
+    const geometry_msgs::msg::PoseStamped & start,
+    const geometry_msgs::msg::PoseStamped & goal,
+    bool allow_stretch,
+    bool allow_rotate,
+    bool is_terminal);
 
   // Dynamic parameters handler
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;
@@ -260,11 +313,32 @@ protected:
   // Service to deterime if the path is valid
   rclcpp::Service<nav2_msgs::srv::IsPathValid>::SharedPtr is_path_valid_service_;
 
-  bool rotation_goal_search_sigh_;
-  double accumulate_distance_threshold_;
   double _goal_occupied_tolerance;
   double _goal_search_resolution;
-  double _goal_close_to_obstacle_distance;
+  bool enable_straight_expand_{true};
+
+  double near_distance_threshold_{2.0};
+  double near_yaw_threshold_{0.35};
+  bool enable_line_rotate_{true};
+  int line_rotate_max_iters_{5};
+  double line_rotate_goal_shift_tol_{0.5};
+  bool enable_line_stretch_{true};
+  double line_stretch_max_{0.4};
+  double line_stretch_goal_window_{0.8};
+  bool line_stretch_allow_extend_{false};
+  bool rewrite_via_yaw_to_approach_{true};
+  double via_heading_tolerance_{0.35};
+  double via_heading_trim_length_{1.0};
+  int via_angle_span_{2};
+  double edge_colinear_angle_deg_{135.0};
+  double corner_angle_deg_{135.0};
+  double short_edge_length_{2.0};
+  double corner_sweep_scale_{1.2};
+  double corner_snap_tolerance_{1.5};
+  bool corner_snap_enable_{true};
+
+  std::unique_ptr<FastPathPlanner> fast_path_planner_;
+  std::shared_ptr<PlanningDebugViz> debug_viz_;
 };
 
 }  // namespace nav2_planner

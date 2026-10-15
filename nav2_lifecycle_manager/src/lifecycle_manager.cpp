@@ -86,22 +86,30 @@ LifecycleManager::LifecycleManager(const rclcpp::NodeOptions & options)
     std::string("Shutting down ");
 
   init_timer_ = this->create_wall_timer(
-    0s,
+    std::chrono::milliseconds(1),
     [this]() -> void {
       init_timer_->cancel();
+      if (initialized_.exchange(true)) {
+        return;
+      }
       createLifecycleServiceClients();
+      auto executor = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+      executor->add_callback_group(callback_group_, get_node_base_interface());
+      service_thread_ = std::make_unique<nav2_util::NodeThread>(executor);
       if (autostart_) {
+        // One-shot on the service thread. Do not use 0s period: it can fire twice
+        // before cancel, racing map_server configure/activate.
         init_timer_ = this->create_wall_timer(
-          0s,
+          std::chrono::milliseconds(1),
           [this]() -> void {
             init_timer_->cancel();
+            if (startup_started_.exchange(true)) {
+              return;
+            }
             startup();
           },
           callback_group_);
       }
-      auto executor = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
-      executor->add_callback_group(callback_group_, get_node_base_interface());
-      service_thread_ = std::make_unique<nav2_util::NodeThread>(executor);
     });
   diagnostics_updater_.setHardwareID("Nav2");
   diagnostics_updater_.add("Nav2 Health", this, &LifecycleManager::CreateActiveDiagnostic);
@@ -211,11 +219,55 @@ LifecycleManager::changeStateForNode(const std::string & node_name, std::uint8_t
 {
   message(transition_label_map_[transition] + node_name);
 
-  if (!node_map_[node_name]->change_state(transition) ||
-    !(node_map_[node_name]->get_state() == transition_state_map_[transition]))
-  {
-    RCLCPP_ERROR(get_logger(), "Failed to change state for node: %s", node_name.c_str());
-    return false;
+  const auto target_state = transition_state_map_[transition];
+  constexpr int kMaxAttempts = 20;
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    try {
+      const auto current = node_map_[node_name]->get_state();
+      if (current == target_state) {
+        break;
+      }
+      if (node_map_[node_name]->change_state(transition) &&
+        node_map_[node_name]->get_state() == target_state)
+      {
+        break;
+      }
+      const auto after = node_map_[node_name]->get_state();
+      if (after == target_state) {
+        break;
+      }
+      // Primary states are < 10; only wait out an in-flight transition.
+      if (after < 10 || attempt + 1 == kMaxAttempts) {
+        RCLCPP_ERROR(get_logger(), "Failed to change state for node: %s", node_name.c_str());
+        return false;
+      }
+      RCLCPP_WARN(
+        get_logger(),
+        "Retrying transition %u for node %s (%d/%d)",
+        static_cast<unsigned int>(transition), node_name.c_str(),
+        attempt + 1, kMaxAttempts);
+      rclcpp::sleep_for(100ms);
+    } catch (const std::runtime_error & e) {
+      const std::string what = e.what();
+      try {
+        if (node_map_[node_name]->get_state() == target_state) {
+          RCLCPP_WARN(
+            get_logger(),
+            "Node %s already in target state after: %s", node_name.c_str(), what.c_str());
+          break;
+        }
+      } catch (const std::runtime_error &) {
+      }
+      if (what.find("in transition") != std::string::npos && attempt + 1 < kMaxAttempts) {
+        RCLCPP_WARN(
+          get_logger(),
+          "Node %s still in transition, retrying (%d/%d): %s",
+          node_name.c_str(), attempt + 1, kMaxAttempts, what.c_str());
+        rclcpp::sleep_for(100ms);
+        continue;
+      }
+      throw;
+    }
   }
 
   if (transition == Transition::TRANSITION_ACTIVATE) {
@@ -276,11 +328,15 @@ LifecycleManager::shutdownAllNodes()
 bool
 LifecycleManager::startup()
 {
+  if (system_active_) {
+    return true;
+  }
   message("Starting managed nodes bringup...");
   if (!changeStateForAllNodes(Transition::TRANSITION_CONFIGURE) ||
     !changeStateForAllNodes(Transition::TRANSITION_ACTIVATE))
   {
     RCLCPP_ERROR(get_logger(), "Failed to bring up all requested nodes. Aborting bringup.");
+    startup_started_.store(false);
     return false;
   }
   message("Managed nodes are active");

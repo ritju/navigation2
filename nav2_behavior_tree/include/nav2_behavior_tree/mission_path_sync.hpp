@@ -22,7 +22,7 @@
 namespace nav2_behavior_tree
 {
 
-/** Incremented on each new NavigateThroughPoses goal / preempt. */
+/** Incremented on each new NavigateToPose / NavigateThroughPoses goal or preempt. */
 inline constexpr char kNavMissionGenerationIdKey[] = "nav_mission_generation_id";
 /** Set equal to nav_mission_generation_id when planner path is ready for that mission. */
 inline constexpr char kPathMissionGenerationIdKey[] = "path_mission_generation_id";
@@ -46,6 +46,12 @@ inline void markPathSyncedToCurrentMission(const BT::Blackboard::Ptr & blackboar
   uint64_t mission_id = 0;
   blackboard->get(kNavMissionGenerationIdKey, mission_id);
   blackboard->set(kPathMissionGenerationIdKey, mission_id);
+}
+
+/** Clear path sync so FollowPath will wait until the next non-empty plan. */
+inline void clearPathMissionSync(const BT::Blackboard::Ptr & blackboard)
+{
+  blackboard->set(kPathMissionGenerationIdKey, static_cast<uint64_t>(0));
 }
 
 inline bool isPathReadyForCurrentMission(const BT::Blackboard::Ptr & blackboard)

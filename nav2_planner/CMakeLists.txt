@@ -18,6 +18,8 @@ find_package(tf2_ros REQUIRED)
 find_package(nav2_costmap_2d REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(nav2_core REQUIRED)
+find_package(garage_utils_msgs REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
 
 nav2_package()
 
@@ -44,15 +46,29 @@ set(dependencies
   nav2_costmap_2d
   pluginlib
   nav2_core
+  garage_utils_msgs
+  tf2_geometry_msgs
 )
 
 add_library(${library_name} SHARED
   src/planner_server.cpp
+  src/fast_path_planner.cpp
+  src/planning_debug_viz.cpp
 )
 
 ament_target_dependencies(${library_name}
   ${dependencies}
 )
+
+# Humble's /opt/ros/.../include/nav2_smac_planner shadows workspace headers.
+# Link only the non-plugin hints library — never libnav2_smac_planner.so.
+# Linking the plugin .so into this composable node makes class_loader treat it as a
+# non-pure plugin library, so pluginlib factories (StaticLayer, SmacPlannerHybrid)
+# are not registered in component_container_isolated.
+target_include_directories(${library_name} PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../nav2_smac_planner/include")
+target_link_libraries(${library_name}
+  "${CMAKE_INSTALL_PREFIX}/lib/libnav2_smac_planner_hints.so")
 
 add_executable(${executable_name}
   src/main.cpp

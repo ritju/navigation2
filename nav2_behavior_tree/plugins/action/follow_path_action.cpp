@@ -182,6 +182,15 @@ BT::NodeStatus FollowPathAction::on_success()
     return BT::NodeStatus::RUNNING;
   }
 
+  nav_msgs::msg::Path path_on_blackboard;
+  getInput("path", path_on_blackboard);
+  if (path_on_blackboard.poses.empty()) {
+    RCLCPP_ERROR(
+      node_->get_logger(),
+      "FollowPathAction: controller succeeded but blackboard path is empty; failing");
+    return BT::NodeStatus::FAILURE;
+  }
+
   if (!mission_goals_stamp_valid_) {
     return BT::NodeStatus::SUCCESS;
   }
@@ -209,6 +218,35 @@ BT::NodeStatus FollowPathAction::on_success()
     "FollowPathAction: mission preempted after segment success, continuing with new path");
   requeueForNewGoalOnNextTick();
   return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus FollowPathAction::on_cancelled()
+{
+  if (!isPathReadyForCurrentMission(config().blackboard)) {
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "FollowPathAction: cancelled but path not synced to current mission; waiting");
+    requeueForNewGoalOnNextTick();
+    return BT::NodeStatus::RUNNING;
+  }
+
+  if (mission_goals_stamp_valid_) {
+    builtin_interfaces::msg::Time current_goals_stamp;
+    if (getCurrentInputGoalsStamp(current_goals_stamp) &&
+      !timeEqual(current_goals_stamp, mission_goals_stamp_at_send_))
+    {
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "FollowPathAction: cancelled after mission preempt; waiting for replanned path");
+      requeueForNewGoalOnNextTick();
+      return BT::NodeStatus::RUNNING;
+    }
+  }
+
+  RCLCPP_WARN(
+    node_->get_logger(),
+    "FollowPathAction: follow path cancelled; failing navigation");
+  return BT::NodeStatus::FAILURE;
 }
 
 }  // namespace nav2_behavior_tree

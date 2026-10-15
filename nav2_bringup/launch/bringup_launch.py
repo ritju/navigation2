@@ -17,9 +17,12 @@ import os
 from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
-from launch.actions import (DeclareLaunchArgument, GroupAction,
-                            IncludeLaunchDescription, SetEnvironmentVariable)
+from launch.actions import (DeclareLaunchArgument, EmitEvent, GroupAction,
+                            IncludeLaunchDescription, OpaqueFunction,
+                            RegisterEventHandler, SetEnvironmentVariable)
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
@@ -66,6 +69,9 @@ def generate_launch_description():
 
     stdout_linebuf_envvar = SetEnvironmentVariable(
         'RCUTILS_LOGGING_BUFFERED_STREAM', '1')
+    # Avoid Fast-DDS SHM leftover after composed-node _Exit blocking launch_ros.
+    fastdds_udp_envvar = SetEnvironmentVariable(
+        'FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4')
 
     declare_namespace_cmd = DeclareLaunchArgument(
         'namespace',
@@ -112,21 +118,23 @@ def generate_launch_description():
         'log_level', default_value='info',
         description='log level')
 
+    nav2_container = Node(
+        condition=IfCondition(use_composition),
+        name='nav2_container',
+        package='nav2_util',
+        executable='component_container_isolated',
+        parameters=[configured_params, {'autostart': autostart}],
+        arguments=['--ros-args', '--log-level', log_level],
+        remappings=remappings,
+        output='screen')
+
     # Specify the actions
     bringup_cmd_group = GroupAction([
         PushRosNamespace(
             condition=IfCondition(use_namespace),
             namespace=namespace),
 
-        Node(
-            condition=IfCondition(use_composition),
-            name='nav2_container',
-            package='rclcpp_components',
-            executable='component_container_isolated',
-            parameters=[configured_params, {'autostart': autostart}],
-            arguments=['--ros-args', '--log-level', log_level],
-            remappings=remappings,
-            output='screen'),
+        nav2_container,
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(launch_dir, 'slam_launch.py')),
@@ -166,6 +174,7 @@ def generate_launch_description():
 
     # Set environment variables
     ld.add_action(stdout_linebuf_envvar)
+    ld.add_action(fastdds_udp_envvar)
 
     # Declare the launch options
     ld.add_action(declare_namespace_cmd)
@@ -181,5 +190,19 @@ def generate_launch_description():
 
     # Add the actions to launch all of the navigation nodes
     ld.add_action(bringup_cmd_group)
+
+    def _shutdown_if_needed(context, *args, **kwargs):
+        # SIGINT already emits Shutdown; a second one crashes launch_ros:
+        # "Cannot shutdown a ROS adapter that is not running"
+        if context.is_shutdown:
+            return None
+        return [EmitEvent(event=Shutdown(reason='nav2_container exited'))]
+
+    ld.add_action(RegisterEventHandler(
+        OnProcessExit(
+            target_action=nav2_container,
+            on_exit=[OpaqueFunction(function=_shutdown_if_needed)],
+        )
+    ))
 
     return ld

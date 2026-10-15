@@ -27,6 +27,7 @@
 #include "nav2_util/robot_utils.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "nav2_util/odometry_utils.hpp"
+#include "std_msgs/msg/bool.hpp"
 
 namespace nav2_bt_navigator
 {
@@ -121,10 +122,14 @@ protected:
 
   void publishEmptyMissionPoses();
 
+  /** 单点导航关闭全局倒车开关，仅窄通道仍可后退。 */
+  void publishEnableBackward(bool enable);
+
   rclcpp::Time start_time_;
 
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr mission_poses_publisher_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr enable_backward_publisher_;
   rclcpp_action::Client<ActionT>::SharedPtr self_client_;
 
   std::string goal_blackboard_id_;

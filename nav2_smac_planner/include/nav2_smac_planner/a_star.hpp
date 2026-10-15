@@ -114,6 +114,12 @@ public:
   bool createPath(CoordinateVector & path, int & num_iterations, const float & tolerance);
 
   /**
+   * @brief Require goal heading within this |Δψ| (rad) for XY-tolerance early return.
+   * Negative disables (default): behave as stock XY-only tolerance.
+   */
+  void setGoalHeadingTolerance(const double heading_tolerance_rad);
+
+  /**
    * @brief Sets the collision checker to use
    * @param collision_checker Collision checker to use for checking state validity
    */
@@ -230,6 +236,11 @@ protected:
   inline float getHeuristicCost(const NodePtr & node);
 
   /**
+   * @brief Whether node heading is within _goal_heading_tolerance of the goal (true if disabled).
+   */
+  bool goalHeadingSatisfied(const NodePtr & node) const;
+
+  /**
    * @brief Check if inputs to planner are valid
    * @return Are valid
    */
@@ -253,6 +264,8 @@ protected:
   int _max_on_approach_iterations;
   double _max_planning_time;
   float _tolerance;
+  /** < 0: XY-only early return. >= 0: also require goal heading (radians). */
+  double _goal_heading_tolerance{-1.0};
   unsigned int _x_size;
   unsigned int _y_size;
   unsigned int _dim3_size;
@@ -267,6 +280,8 @@ protected:
 
   MotionModel _motion_model;
   NodeHeuristicPair _best_heuristic_node;
+  /** Best heuristic among nodes that also satisfy goal heading (when enabled). */
+  NodeHeuristicPair _best_heading_ok_node;
 
   GridCollisionChecker * _collision_checker;
   nav2_costmap_2d::Costmap2D * _costmap;

@@ -51,6 +51,7 @@ if(OPENMP_FOUND)
 endif()
 
 set(library_name nav2_smac_planner)
+set(hints_library_name nav2_smac_planner_hints)
 
 set(dependencies
   rclcpp
@@ -72,6 +73,17 @@ set(dependencies
   eigen3_cmake_module
 )
 
+# Non-plugin symbols shared with planner_server. Must not be in the plugin .so:
+# linking libnav2_smac_planner.so into a composable node makes class_loader skip
+# PLUGINLIB_EXPORT_CLASS factories (StaticLayer / SmacPlannerHybrid both fail).
+add_library(${hints_library_name} SHARED
+  src/hybrid_heading_hint.cpp
+)
+target_include_directories(${hints_library_name} PUBLIC
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+  "$<INSTALL_INTERFACE:include>"
+)
+
 # Hybrid plugin
 add_library(${library_name} SHARED
   src/smac_planner_hybrid.cpp
@@ -86,7 +98,12 @@ add_library(${library_name} SHARED
   src/node_basic.cpp
 )
 
-target_link_libraries(${library_name} ${OMPL_LIBRARIES} ${OpenMP_LIBRARIES}  OpenMP::OpenMP_CXX)
+target_link_libraries(${library_name}
+  ${hints_library_name}
+  ${OMPL_LIBRARIES}
+  ${OpenMP_LIBRARIES}
+  OpenMP::OpenMP_CXX
+)
 target_include_directories(${library_name} PUBLIC ${Eigen3_INCLUDE_DIRS})
 
 ament_target_dependencies(${library_name}
@@ -139,7 +156,7 @@ pluginlib_export_plugin_description_file(nav2_core smac_plugin_hybrid.xml)
 pluginlib_export_plugin_description_file(nav2_core smac_plugin_2d.xml)
 pluginlib_export_plugin_description_file(nav2_core smac_plugin_lattice.xml)
 
-install(TARGETS ${library_name} ${library_name}_2d ${library_name}_lattice
+install(TARGETS ${hints_library_name} ${library_name} ${library_name}_2d ${library_name}_lattice
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
@@ -160,6 +177,6 @@ if(BUILD_TESTING)
 endif()
 
 ament_export_include_directories(include ${OMPL_INCLUDE_DIRS})
-ament_export_libraries(${library_name} ${library_name}_2d ${library_name}_lattice)
+ament_export_libraries(${hints_library_name} ${library_name} ${library_name}_2d ${library_name}_lattice)
 ament_export_dependencies(${dependencies})
 ament_package()

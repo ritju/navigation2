@@ -6,11 +6,11 @@
             <Fallback>
               <ReactiveSequence>
                 <Inverter>
-                  <PathExpiringTimer seconds="1000" path="{path}"/>
-                </Inverter>
-                <Inverter>
                   <GlobalUpdatedGoal/>
                 </Inverter>
+                <Inverter>
+                  <PathExpiringTimer seconds="1000" path="{path}"/>
+                </Inverter>                
               </ReactiveSequence>
               <Sequence>
                  <ClearCostmapExceptRegion name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_except_global_costmap" reset_distance="2.0"/>

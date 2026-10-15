@@ -63,6 +63,12 @@ public:
   BT::NodeStatus on_success() override;
 
   /**
+   * @brief Cancel is not navigation success. Hold RUNNING on mission preempt;
+   * otherwise fail so NavigateToPose cannot report a false success.
+   */
+  BT::NodeStatus on_cancelled() override;
+
+  /**
    * @brief Creates list of BT ports
    * @return BT::PortsList Containing basic ports along with node-specific ports
    */

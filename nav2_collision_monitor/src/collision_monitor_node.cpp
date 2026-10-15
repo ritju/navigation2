@@ -785,9 +785,11 @@ std::optional<bool> CollisionMonitor::processLocalPlanCollision(
       break;
     }
 
+    // 强制检查路径首尾点，避免采样间距跳过端点
+    const bool is_endpoint = (i == 0) || (i + 1 == path.poses.size());
     const bool should_check =
       rotation_dominant_path ||
-      (i == 0) || (arc_length - last_sample_arc >= spacing);
+      is_endpoint || (arc_length - last_sample_arc >= spacing);
     if (!should_check) {
       continue;
     }

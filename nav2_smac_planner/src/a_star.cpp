@@ -84,6 +84,41 @@ void AStarAlgorithm<NodeT>::setPlanningLimits(const int max_iterations, const do
   _max_planning_time = max_planning_time;
 }
 
+template<typename NodeT>
+void AStarAlgorithm<NodeT>::setGoalHeadingTolerance(const double heading_tolerance_rad)
+{
+  _goal_heading_tolerance = heading_tolerance_rad;
+}
+
+template<typename NodeT>
+bool AStarAlgorithm<NodeT>::goalHeadingSatisfied(const NodePtr & node) const
+{
+  if (_goal_heading_tolerance < 0.0 || !node || !_goal) {
+    return true;
+  }
+  if constexpr (std::is_same<NodeT, NodeHybrid>::value) {
+    const double node_yaw = static_cast<double>(
+      NodeHybrid::motion_table.getAngleFromBin(
+        static_cast<unsigned int>(node->pose.theta)));
+    const double goal_yaw = static_cast<double>(
+      NodeHybrid::motion_table.getAngleFromBin(
+        static_cast<unsigned int>(_goal->pose.theta)));
+    return std::fabs(std::remainder(node_yaw - goal_yaw, 2.0 * M_PI)) <=
+           _goal_heading_tolerance;
+  } else if constexpr (std::is_same<NodeT, NodeLattice>::value) {
+    const double node_yaw = static_cast<double>(
+      NodeLattice::motion_table.getAngleFromBin(
+        static_cast<unsigned int>(node->pose.theta)));
+    const double goal_yaw = static_cast<double>(
+      NodeLattice::motion_table.getAngleFromBin(
+        static_cast<unsigned int>(_goal->pose.theta)));
+    return std::fabs(std::remainder(node_yaw - goal_yaw, 2.0 * M_PI)) <=
+           _goal_heading_tolerance;
+  } else {
+    return true;
+  }
+}
+
 template<>
 void AStarAlgorithm<Node2D>::initialize(
   const bool & allow_unknown,
@@ -248,6 +283,7 @@ bool AStarAlgorithm<NodeT>::createPath(
   steady_clock::time_point start_time = steady_clock::now();
   _tolerance = tolerance;
   _best_heuristic_node = {std::numeric_limits<float>::max(), 0};
+  _best_heading_ok_node = {std::numeric_limits<float>::max(), 0};
   clearQueue();
 
   if (!areInputsValid()) {
@@ -317,6 +353,13 @@ bool AStarAlgorithm<NodeT>::createPath(
     // 3) Check if we're at the goal, backtrace if required
     if (isGoal(current_node)) {
       return current_node->backtracePath(path);
+    } else if (_goal_heading_tolerance >= 0.0) {
+      if (_best_heading_ok_node.first < getToleranceHeuristic()) {
+        approach_iterations++;
+        if (approach_iterations >= getOnApproachMaxIterations()) {
+          return _graph.at(_best_heading_ok_node.second).backtracePath(path);
+        }
+      }
     } else if (_best_heuristic_node.first < getToleranceHeuristic()) {
       // Optimization: Let us find when in tolerance and refine within reason
       approach_iterations++;
@@ -346,6 +389,13 @@ bool AStarAlgorithm<NodeT>::createPath(
         addNode(g_cost + getHeuristicCost(neighbor), neighbor);
       }
     }
+  }
+
+  if (_goal_heading_tolerance >= 0.0) {
+    if (_best_heading_ok_node.first < getToleranceHeuristic()) {
+      return _graph.at(_best_heading_ok_node.second).backtracePath(path);
+    }
+    return false;
   }
 
   if (_best_heuristic_node.first < getToleranceHeuristic()) {
@@ -401,6 +451,12 @@ float AStarAlgorithm<NodeT>::getHeuristicCost(const NodePtr & node)
 
   if (heuristic < _best_heuristic_node.first) {
     _best_heuristic_node = {heuristic, node->getIndex()};
+  }
+  if (_goal_heading_tolerance >= 0.0 &&
+    heuristic < _best_heading_ok_node.first &&
+    goalHeadingSatisfied(node))
+  {
+    _best_heading_ok_node = {heuristic, node->getIndex()};
   }
 
   return heuristic;

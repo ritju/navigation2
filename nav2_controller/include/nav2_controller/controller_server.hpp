@@ -214,7 +214,11 @@ protected:
     return twist_thresh;
   }
 
-  bool pruneGlobalPlan(const geometry_msgs::msg::PoseStamped& global_pose, std::vector<geometry_msgs::msg::PoseStamped>& global_plan, double dist_behind_robot);
+  bool pruneGlobalPlan(
+    const geometry_msgs::msg::PoseStamped & global_pose,
+    std::vector<geometry_msgs::msg::PoseStamped> & global_plan,
+    double dist_behind_robot,
+    double max_prune_dist);
 
   /**
    * @brief Callback executed when a parameter change is detected
@@ -339,6 +343,8 @@ private:
   rclcpp::Time starttime;
   bool timeout_update;
   double prune_dist_behind_robot_;
+  double prune_max_accum_dist_;
+  double prune_angle_threshold_;
 };
 
 }  // namespace nav2_controller

@@ -235,21 +235,9 @@ void BtActionServer<ActionT>::executeCallback()
     if (rc == nav2_behavior_tree::BtStatus::SUCCEEDED &&
       !isPathReadyForCurrentMission(blackboard_))
     {
-      std::vector<geometry_msgs::msg::PoseStamped> remaining_goals;
-      bool has_remaining_goals = false;
-      try {
-        blackboard_->get("goals", remaining_goals);
-        has_remaining_goals = !remaining_goals.empty();
-      } catch (...) {
-      }
-
-      if (!has_remaining_goals) {
-        break;
-      }
-
       RCLCPP_INFO(
         logger_,
-        "BT succeeded but mission path is not synced; continuing navigation for new mission");
+        "BT succeeded but mission path is not synced; continuing navigation");
       bt_->haltAllActions(tree_.rootNode());
       continue;
     }

@@ -25,8 +25,9 @@ namespace nav2_behavior_tree
 {
 
 /**
- * @brief A BT::ConditionNode that returns SUCCESS every time a specified
- * time period passes and FAILURE otherwise
+ * @brief SUCCESS when the bound path is empty (invalid, must replan) or when
+ * the same non-empty path has been unchanged for [seconds]. FAILURE while a
+ * non-empty path is still fresh.
  */
 class PathExpiringTimerCondition : public BT::ConditionNode
 {
