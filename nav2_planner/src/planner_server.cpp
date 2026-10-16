@@ -1080,13 +1080,10 @@ PlannerServer::computePlanThroughPoses()
           curr_goal.pose.position.y,
           is_last ? "true" : "false");
         if (is_last) {
-          RCLCPP_ERROR(
+          RCLCPP_WARN(
             get_logger(),
-            "[ThroughPoses] last goal failed, terminating through-poses");
-          log_summary();
-          flush_dbg();
-          action_server_poses_->terminate_current();
-          return;
+            "[ThroughPoses] last goal failed, dropping it and keeping concat poses=%zu",
+            concat_path.poses.size());
         }
         continue;
       }
