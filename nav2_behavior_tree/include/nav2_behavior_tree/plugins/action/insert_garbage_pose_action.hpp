@@ -94,6 +94,10 @@ public:
     bool wall_edge_inserted{false};                       // 本堆是否走了贴边 D-G-E
     double wall_edge_d_x{0.0};                            // 贴边 D 点
     double wall_edge_d_y{0.0};
+    bool wall_edge_has_d{false};                          // 这条贴墙线是否真有 D
+    bool wall_edge_has_p{false};                          // 贴边用到的最近障碍格
+    double wall_edge_px{0.0};
+    double wall_edge_py{0.0};
     std::vector<std::pair<double, double>> wall_edge_chain_xy;  // D…G…E 采样点（可视化）
     bool hit_mid_case{false};                             // 垂足落在段中
     bool hit_forward_case{false};                         // 前方延长线
@@ -133,7 +137,80 @@ public:
     double px{0.0};
     double py{0.0};
     double normal_offset_m{0.0};
+    bool has_d{false};
+    bool has_e{false};
   };
+
+  /**
+   * 一次定稿的清扫：可选 D、一串 G、可选 E。
+   * 排序阶段算完，插入阶段按这里原样写入，不再重算贴墙或链尾 E。
+   */
+  struct SweepUnit
+  {
+    GarbageList piles;
+    bool has_d{false};
+    double dx{0.0};
+    double dy{0.0};
+    std::vector<std::pair<double, double>> gxy;
+    bool has_e{false};
+    double ex{0.0};
+    double ey{0.0};
+    double from_x{0.0};
+    double from_y{0.0};
+    double yaw{0.0};
+    bool has_p{false};
+    double px{0.0};
+    double py{0.0};
+    int head_label{0};
+  };
+
+  /**
+   * 假设这一堆的清扫段。先直线 E，车体不过再左右偏头，仍不过且贴墙开着才生成 D、E。
+   * 没生成的点不参与连线：有 D 有 E 用 D→E，只有 E 用 G→E，只有 D 用 D→G，都没有则只有 G。
+   */
+  struct AssumedSweep
+  {
+    bool has_d{false};
+    bool has_e{false};
+    double dx{0.0};
+    double dy{0.0};
+    double gx{0.0};
+    double gy{0.0};
+    double ex{0.0};
+    double ey{0.0};
+    double yaw{0.0};
+    bool has_p{false};
+    double px{0.0};
+    double py{0.0};
+
+    void endpoints(double & sx, double & sy, double & tx, double & ty) const
+    {
+      if (has_d && has_e) {
+        sx = dx;
+        sy = dy;
+        tx = ex;
+        ty = ey;
+      } else if (has_e) {
+        sx = gx;
+        sy = gy;
+        tx = ex;
+        ty = ey;
+      } else if (has_d) {
+        sx = dx;
+        sy = dy;
+        tx = gx;
+        ty = gy;
+      } else {
+        sx = gx;
+        sy = gy;
+        tx = gx;
+        ty = gy;
+      }
+    }
+  };
+
+  AssumedSweep assumeSweepSegment(
+    double from_x, double from_y, double from_yaw, double gx, double gy);
 
   InsertGarbagePose(
     const std::string & xml_tag_name,
@@ -274,9 +351,10 @@ private:
     double x0, double y0, double x1, double y1, std::string * reason) const;
 
   /**
-   * 在全局代价图上找离 (x,y) 最近的致命障碍格
+   * 在全局代价图上找离 (x,y) 最近的致命障碍格，搜索半径 search_radius_m
    */
-  bool findNearestObstaclePixel(double x, double y, double * ox, double * oy);
+  bool findNearestObstaclePixel(
+    double x, double y, double search_radius_m, double * ox, double * oy);
 
   /**
    * 2.12.4 贴墙进表：robot→garbage 连线在代价图上无致命障碍（不含垃圾格本身）。
@@ -560,25 +638,70 @@ private:
     const GarbageList & chain, GarbageList * out, std::vector<char> * skip);
 
   /**
-   * 取离假设车位最近的堆 G1，射线从 G1 出发、方向为假设车位指向 G1。
-   * 假设车位挪到链尾 En，朝向继承 En。
+   * 取离假设车位最近的堆。这一堆假设出 D/E 时，射线起点和方向用 AssumedSweep 的连线。
+   * 没有 D 也没有 E 时，射线仍从 G 沿假设车位指向 G。
+   * 收完后假设车挪到链尾连线的终点：有 E 用 E，否则用 G。
    */
   bool takeOneRayChain(
     GarbageList * remaining,
     double * pose_x, double * pose_y, double * pose_yaw,
-    GarbageList * chain_out) const;
+    GarbageList * chain_out);
 
   /**
    * 打印当前 garbage_list_。一行一堆，有 E 的跟在该堆后面。
    * 锁住的链另打，一条链一行。pose 是这次排序开始时的假设车位。
    */
-  void logSortedInsertList(double pose_x, double pose_y) const;
+  void logSortedInsertList(double pose_x, double pose_y, double pose_yaw);
 
   /**
    * 多堆排序。先反复收射线链，收不出再暴力排序，再沿理想 E 收线。
-   * 收到线就把后续堆再排序、再收，直到收不出。结果写入 garbage_list_ 和 pile_skip_extend_。
+   * 结果写入 planned_units_，garbage_list_ 按单元顺序展开。
    */
   void garbageSortTotal(double pose_x, double pose_y, double pose_yaw);
+
+  /** 规划全部清扫单元：链、暴力排序、再锁链、剩下的单堆 */
+  void planSweepUnits(double pose_x, double pose_y, double pose_yaw);
+
+  /** 有 E 用 G→E，否则有 D 用 D→G，都没有则上一个点指向 G */
+  static void rayFromAssumed(
+    const AssumedSweep & sweep, double from_x, double from_y,
+    double * ox, double * oy, double * tx, double * ty);
+
+  /** 正前方最近的一堆；正前方没有则离当前点最近。距离用 G */
+  std::size_t pickSeedIndex(
+    const GarbageList & piles, double pose_x, double pose_y, double pose_yaw) const;
+
+  /**
+   * 以 seed_idx 为链头组一条链。入链看 G。
+   * 射线：有 E 用 G→E，否则有 D 用 D→G，都没有则上一个点指向 G。
+   * 相邻 G 扫不过就截断；链尾 E 直伸和偏头都不过就把链尾放回剩余。
+   * 成功时从 remaining 删掉链上的堆。不足两堆返回 false，不改 remaining。
+   */
+  bool buildChainFromSeed(
+    GarbageList * remaining, std::size_t seed_idx,
+    double pose_x, double pose_y, double pose_yaw, SweepUnit * unit);
+
+  /** 单堆：直伸、偏头、贴墙。E 离其余堆太近只偏开 */
+  SweepUnit planSingleUnit(
+    const capella_ros_msg::msg::GarbageDetect & pile,
+    double pose_x, double pose_y, double pose_yaw,
+    const GarbageList & others);
+
+  /** 链尾 E：沿前一堆指向本堆直伸，不过再偏头。附近还有垃圾则只偏开 E */
+  bool makeChainTailExtend(
+    double prev_x, double prev_y, double gx, double gy,
+    const GarbageList & others,
+    double * ex, double * ey, double * yaw) const;
+
+  /** 有 E 用 E，否则用最后一个 G，作为下一单元的上一个点 */
+  static void advancePoseFromUnit(
+    const SweepUnit & unit, double * pose_x, double * pose_y, double * pose_yaw);
+
+  /** 按单元写入 D、G、E。贴墙不限于单堆 */
+  InsertLoopAction insertSweepUnit(
+    InsertBatch * batch,
+    const geometry_msgs::msg::PoseStamped & robot_pose,
+    double rx, double ry);
 
   /**
    * 单堆开关打开时的排序。只尝试收一条射线链。
@@ -857,6 +980,8 @@ public:
   std::vector<std::pair<double, double>> last_sorting_list_;
   /** 与 garbage_list_ 对齐：1 表示链中间，不生成 E，顺序锁住；0 表示链尾或可暴力排序的堆 */
   std::vector<char> pile_skip_extend_;
+  /** 本批已定稿、尚未插入的清扫单元，顺序与 garbage_list_ 展开一致 */
+  std::vector<SweepUnit> planned_units_;
   /** 已写入 goals、G 还在队列里的射线。新垃圾用它判断能不能接成同一条链 */
   struct OpenGarbageRay
   {

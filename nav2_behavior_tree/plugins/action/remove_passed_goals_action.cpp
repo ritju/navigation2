@@ -431,19 +431,34 @@ RemovePassedGoals::Goals RemovePassedGoals::pruneByMissionPose(
   pruned.reserve(candidates.size());
   // Inner scan assumes mission is ordered by non-decreasing indexed z.
   // Unindexed sentinel z < 0 matches only other unindexed poses (XY/yaw), never as uint32.
+  // Two sentinels inside match_xy must keep their own poses: take the closest unused
+  // mission pose, so an earlier neighbor cannot replace the later point.
+  std::vector<char> used(mission.size(), 0);
   for (const auto & gpp : candidates) {
     uint32_t z_gpp = 0;
     const bool gpp_unindexed = !tryGoalZ(gpp, z_gpp);
-    for (const auto & m : mission) {
+    int best = -1;
+    double best_d = std::numeric_limits<double>::infinity();
+    for (std::size_t mi = 0; mi < mission.size(); ++mi) {
+      if (used[mi]) {
+        continue;
+      }
+      const auto & m = mission[mi];
       uint32_t z_m = 0;
       const bool m_unindexed = !tryGoalZ(m, z_m);
       if (gpp_unindexed) {
         if (!m_unindexed) {
           continue;
         }
-        if (posesMatch(gpp.pose, m.pose, match_xy, match_yaw)) {
-          pruned.push_back(m);
-          break;
+        if (!posesMatch(gpp.pose, m.pose, match_xy, match_yaw)) {
+          continue;
+        }
+        const double d = std::hypot(
+          gpp.pose.position.x - m.pose.position.x,
+          gpp.pose.position.y - m.pose.position.y);
+        if (d < best_d) {
+          best_d = d;
+          best = static_cast<int>(mi);
         }
         continue;
       }
@@ -457,9 +472,13 @@ RemovePassedGoals::Goals RemovePassedGoals::pruneByMissionPose(
         break;
       }
       if (posesMatch(gpp.pose, m.pose, match_xy, match_yaw)) {
-        pruned.push_back(m);
+        best = static_cast<int>(mi);
       }
       break;
+    }
+    if (best >= 0) {
+      pruned.push_back(mission[static_cast<std::size_t>(best)]);
+      used[static_cast<std::size_t>(best)] = 1;
     }
   }
   return pruned;
