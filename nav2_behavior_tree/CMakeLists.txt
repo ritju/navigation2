@@ -207,7 +207,15 @@ list(APPEND plugin_libs nav2_navigate_through_poses_action_bt_node)
 add_library(nav2_remove_passed_goals_action_bt_node SHARED plugins/action/remove_passed_goals_action.cpp)
 list(APPEND plugin_libs nav2_remove_passed_goals_action_bt_node)
 
-add_library(nav2_insert_garbage_pose_action_bt_node SHARED plugins/action/insert_garbage_pose_action.cpp)
+add_library(nav2_insert_garbage_pose_action_bt_node SHARED
+  plugins/action/insert_garbage_pose_action.cpp
+  plugins/action/insert_garbage_detect.cpp
+  plugins/action/insert_garbage_collision.cpp
+  plugins/action/insert_garbage_open_ray.cpp
+  plugins/action/insert_garbage_plan.cpp
+  plugins/action/insert_garbage_clip.cpp
+  plugins/action/insert_garbage_goals.cpp
+  plugins/action/insert_garbage_visualization.cpp)
 list(APPEND plugin_libs nav2_insert_garbage_pose_action_bt_node)
 
 add_library(nav2_pipeline_sequence_bt_node SHARED plugins/control/pipeline_sequence.cpp)

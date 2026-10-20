@@ -88,8 +88,6 @@ public:
     double extend_used_m{0.0};                            // 实际采用的延伸距离，可与参数不同
     double extend_x{0.0};                                 // 实际写入 goals 的 E 点 x，墙切向后与 path_yaw 重算可能不同
     double extend_y{0.0};                                 // 实际写入 goals 的 E 点 y
-    bool extend_length_override{false};                   // 为真时 E 的长度用 extend_length_m，不用 garbage_extend_m
-    double extend_length_m{0.0};
     std::vector<std::pair<double, double>> ray_chain_xy;  // 一条锁住的线：G1…Gn，只有链尾生成 E
     bool wall_edge_inserted{false};                       // 本堆是否走了贴边 D-G-E
     double wall_edge_d_x{0.0};                            // 贴边 D 点
@@ -494,22 +492,7 @@ private:
   /** 记下这一堆扫完后的离开点和朝向，供下一堆算来向 */
   void recordSweepArrive(double x, double y, double yaw);
 
-  enum class InsertLoopAction { Continue, BreakLoop, RunSinglePile };
-
-  /** 插入前记下 goals 和会在「E 太近」回滚时恢复的状态 */
-  struct InsertRollback
-  {
-    Goals goals;
-    std::vector<std::pair<double, double>> reached;
-    std::vector<std::pair<double, double>> corners;
-    std::pair<double, double> arrive{0.0, 0.0};
-    bool has_arrive{false};
-    double path_yaw{0.0};
-    bool has_path_yaw{false};
-
-    static InsertRollback snapshot(const InsertGarbagePose & self, const Goals & goals);
-    void restore(InsertGarbagePose & self, Goals * goals) const;
-  };
+  enum class InsertLoopAction { Continue, BreakLoop };
 
   struct InsertBatch
   {
@@ -523,36 +506,12 @@ private:
     std::set<std::size_t> pending_delete;
   };
 
-  /** 队首是锁住的线时插入整条；不是线时交给单堆插入 */
-  InsertLoopAction insertLockedChainAtFront(
-    InsertBatch * batch,
-    const geometry_msgs::msg::PoseStamped & robot_pose,
-    double rx, double ry);
-
-  /** 插入队首这一堆。footprint 不过时改走贴墙或跳过 */
-  InsertLoopAction insertFrontPile(
-    InsertBatch * batch,
-    const geometry_msgs::msg::PoseStamped & robot_pose,
-    double rx, double ry);
-
-  /** 插入真实垃圾、统一时间戳；G-E 接到剩余路径队首，角点和对边留下 */
-  Goals insertGarbageIntoGoals(
-    InsertInfo & info,
-    std::set<std::size_t> * pending_delete,
-    const Goals * frozen_tail);
-
   /** 2.11：单点 footprint 能否落在该位姿 */
   bool isFootprintClearAtPose(
     double x, double y, double yaw, std::string * reason) const;
 
   /** 生成贴边 D、G、E 及 D-E 间隔点，含法向偏移 */
   WallEdgeExtendChain buildWallEdgeExtendChain(const InsertInfo & info);
-
-  /** 贴墙：把延长链写入 goals */
-  Goals insertWallEdgeGarbageIntoGoals(
-    InsertInfo & info,
-    std::set<std::size_t> * pending_delete,
-    const Goals * frozen_tail);
 
   /** 把单个垃圾从 base_link 转到 map */
   bool transformGarbageToMap(capella_ros_msg::msg::GarbageDetect & garbage) const;
@@ -633,24 +592,7 @@ private:
     std::size_t count, std::size_t seed,
     const std::function<std::pair<double, double>(std::size_t)> & at) const;
 
-  /** 一条线追加到列表：中间堆标 1，链尾标 0 */
-  static void appendChainWithSkip(
-    const GarbageList & chain, GarbageList * out, std::vector<char> * skip);
-
-  /**
-   * 取离假设车位最近的堆。这一堆假设出 D/E 时，射线起点和方向用 AssumedSweep 的连线。
-   * 没有 D 也没有 E 时，射线仍从 G 沿假设车位指向 G。
-   * 收完后假设车挪到链尾连线的终点：有 E 用 E，否则用 G。
-   */
-  bool takeOneRayChain(
-    GarbageList * remaining,
-    double * pose_x, double * pose_y, double * pose_yaw,
-    GarbageList * chain_out);
-
-  /**
-   * 打印当前 garbage_list_。一行一堆，有 E 的跟在该堆后面。
-   * 锁住的链另打，一条链一行。pose 是这次排序开始时的假设车位。
-   */
+  /** 打印已规划的清扫单元，一行一个 */
   void logSortedInsertList(double pose_x, double pose_y, double pose_yaw);
 
   /**
@@ -703,36 +645,13 @@ private:
     const geometry_msgs::msg::PoseStamped & robot_pose,
     double rx, double ry);
 
-  /**
-   * 单堆开关打开时的排序。只尝试收一条射线链。
-   * 收不出就保持原顺序，每堆标 0。收到一条就只锁这一条，其余接在后面标 0。
-   */
-  void garbageSortSingle(double pose_x, double pose_y, double pose_yaw);
-
-  /** garbage_list_[begin_idx, end) 里落在 (ex,ey) 半径 extend_near_radius_m_ 内、最近的一堆 */
-  std::size_t nearestExtendGarbage(double ex, double ey, std::size_t begin_idx) const;
-
   /** 朝远离附近垃圾的一侧转 ray_offset_deg_，长度改为 garbage_extend_m_ + extend_extra_m_ */
   void nudgeExtendAwayFromGarbage(
     double gx, double gy, double yaw,
     double near_x, double near_y,
     double * yaw_out, double * extend_m_out) const;
 
-  enum class ExtendNearAction { Keep, Rewrite, Rechain };
-
-  /**
-   * 暴力排序生成的 E 附近还有垃圾时：先偏转并加长。
-   * 新 E 附近仍有正方向上的垃圾，则按射线收线并继续从新的 En 收，这些线写入列表前端且不再排序。
-   * Keep：沿用原来的 E。Rewrite：用 *yaw_out / *extend_m_out 重写这一堆。Rechain：列表已改成锁住的线在前。
-   */
-  ExtendNearAction considerExtendNear(
-    double gx, double gy, double extend_x, double extend_y, double path_yaw,
-    double * yaw_out, double * extend_m_out);
-
-  /** 队首连续「不生成 E」再加链尾，返回这条锁住的线的堆数；不是线则返回 0 */
-  std::size_t lockedChainLengthAtFront() const;
-
-  /** 从 garbage_list_ 和 pile_skip_extend_ 队首一起删掉 count 堆 */
+  /** 从 garbage_list_ 队首删掉 count 堆 */
   void eraseGarbageFront(std::size_t count);
 
   /**
@@ -765,17 +684,6 @@ private:
 
   /** 从已插入点里去掉这个坐标，挪走 E 时用 */
   void forgetProtectedGarbageXy(double x, double y);
-
-  /** 一条锁住的线一次写入：G1…Gn，只在链尾加 E，参考点一起做一次删点 */
-  Goals insertRayChainIntoGoals(
-    InsertInfo & info,
-    const std::vector<std::pair<double, double>> & gxy,
-    double extend_m,
-    std::set<std::size_t> * pending_delete,
-    const Goals * frozen_tail);
-
-  /** 把当前 garbage_list_ 顺序记入 last_sorting_list_ */
-  void syncLastSweepXyFromList();
 
   /** 点到无限直线 AB 的垂足 */
   static void projectPointToInfiniteLine(
@@ -976,10 +884,6 @@ public:
   /** 工作圈曾经生成过。取消后仍用上次圆心画圈，不随 has_work_circle_ 擦除 */
   bool viz_work_circle_center_set_{false};
   int next_g_num_{1};
-  /** 上次清扫顺序（map xy），供 4-1 保留其余相对次序 */
-  std::vector<std::pair<double, double>> last_sorting_list_;
-  /** 与 garbage_list_ 对齐：1 表示链中间，不生成 E，顺序锁住；0 表示链尾或可暴力排序的堆 */
-  std::vector<char> pile_skip_extend_;
   /** 本批已定稿、尚未插入的清扫单元，顺序与 garbage_list_ 展开一致 */
   std::vector<SweepUnit> planned_units_;
   /** 已写入 goals、G 还在队列里的射线。新垃圾用它判断能不能接成同一条链 */
