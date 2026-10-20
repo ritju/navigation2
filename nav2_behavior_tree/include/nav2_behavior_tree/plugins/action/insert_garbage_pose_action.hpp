@@ -220,7 +220,7 @@ public:
       BT::InputPort<Goals>("input_goals", "Input goals list (e.g. {goals})"),
       BT::OutputPort<Goals>("output_goals", "Goals after inserting garbage poses"),
       BT::InputPort<std::string>(
-        "garbage_topic", std::string("/garbage_cord1"), "Garbage detection topic"),
+        "garbage_topic", std::string("/garbage_rectangle_points"), "Garbage detection topic"),
       BT::InputPort<std::string>(
         "special_terrain_topic", std::string("/cleaning_tool_retraction_areas"),
         "Special / retraction area polygons topic"),
@@ -316,8 +316,8 @@ private:
   /** 垃圾检测话题回调：转到 map；单堆占用中直接丢弃新消息 */
   void garbageDetectCallback(const capella_ros_msg::msg::GarbageDetect::SharedPtr msg);
 
-  /** 从 BT 输入口刷新可调参数 */
-  void refreshTunableInputPorts();
+  /** 从行为树输入口读取可调参数到成员变量 */
+  void getBehaviorTreeParameters();
 
   /** 特殊清扫/禁扫区域话题回调 */
   void special_terrain_callback(const garage_utils_msgs::msg::Polygons::SharedPtr msg);
@@ -368,8 +368,8 @@ private:
   /** 接收完整的 {goals} 路径点 */
   Goals receiveGoals();
 
-  /** 对比 goals 时间戳，外部重发任务时清空 history 和 garbage */
-  void checkAndResetOnNewMission();
+  /** 队首 stamp 变了视为新任务，清空本节点状态并更新 mission_stamp_record_ */
+  void isNewMission();
 
   /** 取机器人当前位姿*/
   bool getRobotPose(geometry_msgs::msg::PoseStamped & pose) const;
@@ -388,7 +388,7 @@ private:
     const geometry_msgs::msg::PoseStamped & pose_stamped_goal);
 
   /** goals 里是否还有本节点插入的 z=-1 哨兵点 */
-  static bool hasUnindexedSentinel(const Goals & goals);
+  static bool hasGoalsZpoints(const Goals & goals);
 
   /**
    * 按下标找这堆在 {goals} 里的槽：该格 z=-1，xy 仅确认同一颗。
@@ -723,7 +723,13 @@ private:
     std::size_t * nearest_seg_out = nullptr,
     std::size_t * start_idx_out = nullptr) const;
 
-  /** 插入一堆时按话题分开画 G、锚点、footprint */
+  /** 插入结果：G、E、连线、障碍 P、贴墙 D。只画已经进入链式、穷举或删点的结果 */
+  void visPublishGarbageExtend(const InsertInfo & info);
+  /** 每拍刷新贴墙障碍红块和文字 P */
+  void visPublishGarbageExtend();
+  /** 删除 G、E、连线、障碍 P、贴墙点。直接发 DELETE，关可视化时也能清掉 */
+  void visDeleteGarbageExtend();
+  /** 插入时画车到 G、G 到 E 的 footprint 长条 */
   void publishVisualization(const InsertInfo & info);
 
   /** 总开关关掉时清空四个话题并跳过后续发布 */
@@ -736,19 +742,19 @@ private:
   /** 清空四个可视化话题，并丢掉本节点可视化状态 */
   void clearMissionVisualization();
   void resetVisualizationState();
-  /** 深绿工作圈 + 浅绿跟随/识别圈 */
-  void publishRangeCircles(double robot_x, double robot_y);
+  /** 识别圈跟车；input_goals 里有 z=-1 时画工作圈，没有则删掉工作圈 */
+  void visPublishRangeCircles(double robot_x, double robot_y);
+  /** 删除识别圈和工作圈。直接发 DELETE，关可视化时也能清掉 */
+  void visDeleteRangeCircles();
   /** footprint 检查不通过时，把当时检查用的 footprint 框画在检查位置上 */
   void publishFootprintCheckBox(double x, double y, double yaw);
   /** 走廊检查失败：红球 + 当时检查的 footprint 长条 */
   void publishFailedSweepVisualization(double rx, double ry, double gx, double gy);
-  /** 贴边进表：车到垃圾线段碰到障碍时，把这条线段画出来 */
-  void publishBlockedSegmentVisualization(double rx, double ry, double gx, double gy);
-  /** 待插入 garbage_list_ 的红色小球，多了删旧 id */
-  void publishPendingGarbageDots();
-  /** 当前路径首点 H、角点 C：每次按最新判断覆盖，不是角点了就删 */
-  void refreshClipAnchorVisualization(
+  /** 每拍按当前路径覆盖 H、C。没有 H 或 C 时在同一次发布里删掉 */
+  void visPublishClipAnchors(
     const Goals & goals, double robot_x, double robot_y);
+  /** 删除 H、C 的球和文字。直接发 DELETE，关可视化时也能清掉 */
+  void visDeleteClipAnchors();
   /** G/E 都不在 goals 里时，删掉这堆的球、虚线、长条 */
   void pruneFinishedPileVisualization(const Goals & goals);
   void deletePileVisualization(int pile_num);
@@ -877,9 +883,6 @@ public:
     double ey{0.0};
   };
   std::vector<VizPileTrack> viz_tracks_;
-  std::size_t viz_pending_marker_count_{0};
-  bool viz_have_head_{false};
-  bool viz_have_corner_{false};
   bool viz_have_fail_strip_{false};
   /** 工作圈曾经生成过。取消后仍用上次圆心画圈，不随 has_work_circle_ 擦除 */
   bool viz_work_circle_center_set_{false};

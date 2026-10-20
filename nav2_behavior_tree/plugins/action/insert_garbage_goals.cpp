@@ -45,7 +45,7 @@ bool InsertGarbagePose::isUnindexedSentinelPoseZ(
          std::lround(kGarbageSentinelPoseZ);
 }
 
-bool InsertGarbagePose::hasUnindexedSentinel(const Goals & goals)
+bool InsertGarbagePose::hasGoalsZpoints(const Goals & goals)
 {
   for (const auto & goal : goals) {
     if (isUnindexedSentinelPoseZ(goal)) {
@@ -393,8 +393,8 @@ InsertGarbagePose::InsertLoopAction InsertGarbagePose::insertSweepUnit(
     unit.head_label, unit.gxy.size(), unit.has_d ? 1 : 0, unit.has_e ? 1 : 0,
     goals_before, batch->goals.size());
 
+  visPublishGarbageExtend(info);
   publishVisualization(info);
-  publishRangeCircles(rx, ry);
   for (const auto & pile : unit.piles) {
     addProtectedGarbageXy(pile.pose.pose.position.x, pile.pose.pose.position.y);
     batch->inserted_xy << "(" << pile.pose.pose.position.x << ", "

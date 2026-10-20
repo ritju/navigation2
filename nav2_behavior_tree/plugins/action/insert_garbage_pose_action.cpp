@@ -66,7 +66,7 @@ InsertGarbagePose::InsertGarbagePose(
   getInput("global_costmap_topic", global_costmap_topic_);
   getInput("global_frame", global_frame_);
   getInput("robot_base_frame", robot_base_frame_);
-  refreshTunableInputPorts();
+  getBehaviorTreeParameters();
 
   node_ = config().blackboard->get<rclcpp::Node::SharedPtr>("node");
   tf_ = config().blackboard->get<std::shared_ptr<tf2_ros::Buffer>>("tf_buffer");
@@ -129,7 +129,7 @@ InsertGarbagePose::InsertGarbagePose(
     "insert_garbage_pose", 10);
 }
 
-void InsertGarbagePose::refreshTunableInputPorts()
+void InsertGarbagePose::getBehaviorTreeParameters()
 {
   getInput("clip_extend_m", clip_extend_m_);
   getInput("corner_angle_deg", corner_angle_deg_);
@@ -176,136 +176,119 @@ BT::NodeStatus InsertGarbagePose::tick()
 
   // spin_some 对同一个订阅只取一条；这里要把本拍之前积压的垃圾都取完再合堆
   callback_group_executor_.spin_all(std::chrono::nanoseconds(0));
-  refreshTunableInputPorts();
-  checkAndResetOnNewMission();
+  getBehaviorTreeParameters();
+  isNewMission();
 
   postProcessHistory();
   Goals goals_now = receiveGoals();
-
-  if (goals_now.size() < 2) {
-    pruneOpenGarbageRays(goals_now);
-    geometry_msgs::msg::PoseStamped robot_pose_short;
-    if (getRobotPose(robot_pose_short)) {
-      const double robot_x = robot_pose_short.pose.position.x;
-      const double robot_y = robot_pose_short.pose.position.y;
-      publishRangeCircles(robot_x, robot_y);
-      refreshClipAnchorVisualization(goals_now, robot_x, robot_y);
-    }
-    pruneFinishedPileVisualization(goals_now);
-    publishPendingGarbageDots();
-    return BT::NodeStatus::SUCCESS;
-  }
 
   geometry_msgs::msg::PoseStamped robot_pose;
   if (!getRobotPose(robot_pose)) {
     return BT::NodeStatus::SUCCESS;
   }
-
   const double rx = robot_pose.pose.position.x;
   const double ry = robot_pose.pose.position.y;
   const double robot_yaw = tf2::getYaw(robot_pose.pose.orientation);
-  publishRangeCircles(rx, ry);
-  pruneFinishedPileVisualization(goals_now);
-  refreshClipAnchorVisualization(goals_now, rx, ry);
-  publishPendingGarbageDots();
 
-  if (has_work_circle_ && garbage_list_.empty() && !hasUnindexedSentinel(goals_now)) {
-    RCLCPP_INFO(node_->get_logger(), "InsertGarbagePose: 工作圈取消");
-    has_work_circle_ = false;
-  }
+  // 少于 2 个点无法投影删点，只清理开放射线。排序和插入不跑
+  if (goals_now.size() < 2) {
+    pruneOpenGarbageRays(goals_now);
+  } else {
+    if (has_work_circle_ && garbage_list_.empty() && !hasGoalsZpoints(goals_now)) {
+      RCLCPP_INFO(node_->get_logger(), "InsertGarbagePose: 工作圈取消");
+      has_work_circle_ = false;
+    }
 
-  pruneOpenGarbageRays(goals_now);
-  bool open_ray_goals_changed = false;
-  std::vector<std::pair<double, double>> open_ray_clip_refs;
-  if (!garbage_list_.empty()) {
-    open_ray_goals_changed = attachNewGarbageToOpenRays(
-      &goals_now, robot_pose, &open_ray_clip_refs);
-  }
+    pruneOpenGarbageRays(goals_now);
+    bool open_ray_goals_changed = false;
+    std::vector<std::pair<double, double>> open_ray_clip_refs;
+    if (!garbage_list_.empty()) {
+      open_ray_goals_changed = attachNewGarbageToOpenRays(
+        &goals_now, robot_pose, &open_ray_clip_refs);
+    }
 
-  if (!garbage_list_.empty() && planned_units_.empty()) {
-    garbageSortTotal(rx, ry, robot_yaw);
-    logSortedInsertList(rx, ry, robot_yaw);
-  }
+    if (!garbage_list_.empty() && planned_units_.empty()) {
+      garbageSortTotal(rx, ry, robot_yaw);
+      logSortedInsertList(rx, ry, robot_yaw);
+    }
 
-  if (garbage_list_.empty()) {
-    if (open_ray_goals_changed) {
-      Goals clip_prefix;
-      Goals clip_tail;
-      splitAtLastProtected(goals_now, &clip_prefix, &clip_tail);
-      std::set<std::size_t> pending_delete;
-      deferOpenRayClip(clip_tail, open_ray_clip_refs, robot_pose, &pending_delete);
-      applyDeferredTailDelete(&goals_now, clip_tail, pending_delete);
-      const rclcpp::Time now_stamp = node_->now();
-      for (std::size_t i = 0; i < goals_now.size(); ++i) {
-        if (!isUnindexedSentinelPoseZ(goals_now[i])) {
-          goals_now[i].pose.position.z = static_cast<double>(i);
+    const bool wait_single_pile =
+      single_pile_insert_ && hasGoalsZpoints(goals_now);
+    if (garbage_list_.empty()) {
+      if (open_ray_goals_changed) {
+        Goals clip_prefix;
+        Goals clip_tail;
+        splitAtLastProtected(goals_now, &clip_prefix, &clip_tail);
+        std::set<std::size_t> pending_delete;
+        deferOpenRayClip(clip_tail, open_ray_clip_refs, robot_pose, &pending_delete);
+        applyDeferredTailDelete(&goals_now, clip_tail, pending_delete);
+        const rclcpp::Time now_stamp = node_->now();
+        for (std::size_t i = 0; i < goals_now.size(); ++i) {
+          if (!isUnindexedSentinelPoseZ(goals_now[i])) {
+            goals_now[i].pose.position.z = static_cast<double>(i);
+          }
+          goals_now[i].header.stamp = now_stamp;
         }
-        goals_now[i].header.stamp = now_stamp;
+        mission_stamp_record_ = now_stamp;
+        has_mission_stamp_ = true;
+        emitOutputGoals(goals_now, "open_ray_chain");
       }
-      mission_stamp_record_ = now_stamp;
-      has_mission_stamp_ = true;
-      emitOutputGoals(goals_now, "open_ray_chain");
+    } else if (!wait_single_pile) {
+      const std::size_t goals_before_batch = goals_now.size();
+      InsertBatch batch;
+      batch.goals = std::move(goals_now);
+      {
+        Goals clip_prefix;
+        splitAtLastProtected(batch.goals, &clip_prefix, &batch.clip_tail);
+      }
+      deferOpenRayClip(
+        batch.clip_tail, open_ray_clip_refs, robot_pose, &batch.pending_delete);
+      while (!planned_units_.empty()) {
+        const InsertLoopAction action = insertSweepUnit(&batch, robot_pose, rx, ry);
+        if (action == InsertLoopAction::BreakLoop) {
+          break;
+        }
+        if (single_pile_insert_) {
+          break;
+        }
+      }
+      batch.deleted_goals_total = applyDeferredTailDelete(
+        &batch.goals, batch.clip_tail, batch.pending_delete);
+      goals_now = std::move(batch.goals);
+
+      if (batch.inserted_count > 0 || open_ray_goals_changed) {
+        if (batch.inserted_count > 0) {
+          RCLCPP_INFO(
+            node_->get_logger(),
+            "InsertGarbagePose: batch insert done: inserted %zu pile(s), deleted %zu path goals, "
+            "goals %zu -> %zu, xy %s",
+            batch.inserted_count, batch.deleted_goals_total,
+            goals_before_batch, goals_now.size(),
+            batch.inserted_xy.str().c_str());
+        }
+        const rclcpp::Time now_stamp = node_->now();
+        for (std::size_t i = 0; i < goals_now.size(); ++i) {
+          if (!isUnindexedSentinelPoseZ(goals_now[i])) {
+            goals_now[i].pose.position.z = static_cast<double>(i);
+          }
+          goals_now[i].header.stamp = now_stamp;
+        }
+        mission_stamp_record_ = now_stamp;
+        has_mission_stamp_ = true;
+        emitOutputGoals(
+          goals_now, batch.inserted_count > 0 ? "batch_insert" : "open_ray_chain");
+      }
     }
-    return BT::NodeStatus::SUCCESS;
   }
 
-  // 单堆：路径里还有 z=-1 的 G/E，不再插下一堆
-  if (single_pile_insert_ && hasUnindexedSentinel(goals_now)) {
-    return BT::NodeStatus::SUCCESS;
-  }
-  // 按当前顺序一次插入全部待插堆
-  const std::size_t goals_before_batch = goals_now.size();
-  InsertBatch batch;
-  batch.goals = std::move(goals_now);
-  {
-    Goals clip_prefix;
-    splitAtLastProtected(batch.goals, &clip_prefix, &batch.clip_tail);
-  }
-  deferOpenRayClip(
-    batch.clip_tail, open_ray_clip_refs, robot_pose, &batch.pending_delete);
-  while (!planned_units_.empty()) {
-    const InsertLoopAction action = insertSweepUnit(&batch, robot_pose, rx, ry);
-    if (action == InsertLoopAction::BreakLoop) {
-      break;
-    }
-    if (single_pile_insert_) {
-      break;
-    }
-  }
-  batch.deleted_goals_total = applyDeferredTailDelete(
-    &batch.goals, batch.clip_tail, batch.pending_delete);
-  goals_now = std::move(batch.goals);
-
-  if (batch.inserted_count > 0 || open_ray_goals_changed) {
-    if (batch.inserted_count > 0) {
-      RCLCPP_INFO(
-        node_->get_logger(),
-        "InsertGarbagePose: batch insert done: inserted %zu pile(s), deleted %zu path goals, "
-        "goals %zu -> %zu, xy %s",
-        batch.inserted_count, batch.deleted_goals_total,
-        goals_before_batch, goals_now.size(),
-        batch.inserted_xy.str().c_str());
-    }
-    const rclcpp::Time now_stamp = node_->now();
-    for (std::size_t i = 0; i < goals_now.size(); ++i) {
-      if (!isUnindexedSentinelPoseZ(goals_now[i])) {
-        goals_now[i].pose.position.z = static_cast<double>(i);
-      }
-      goals_now[i].header.stamp = now_stamp;
-    }
-    mission_stamp_record_ = now_stamp;
-    has_mission_stamp_ = true;
-    emitOutputGoals(
-      goals_now, batch.inserted_count > 0 ? "batch_insert" : "open_ray_chain");
-  }
+  visPublishRangeCircles(rx, ry);
+  visPublishGarbageExtend();
   pruneFinishedPileVisualization(goals_now);
-  refreshClipAnchorVisualization(goals_now, rx, ry);
-  publishPendingGarbageDots();
+  visPublishClipAnchors(goals_now, rx, ry);
   return BT::NodeStatus::SUCCESS;
 }
-
-// 看当前是不是一次新的导航任务
-void InsertGarbagePose::checkAndResetOnNewMission()
+//看当前是不是一次新的导航任务
+void InsertGarbagePose::isNewMission()
 {
   const Goals goals = receiveGoals();
   if (goals.empty()) {
@@ -328,8 +311,6 @@ void InsertGarbagePose::checkAndResetOnNewMission()
   garbage_list_.clear();
   reached_garbage_xy_.clear();
   open_garbage_rays_.clear();
-  viz_obstacle_pixels_.clear();
-  viz_obstacle_marker_count_ = 0;
   planned_units_.clear();
   has_last_sweep_arrive_ = false;
   last_sweep_arrive_xy_ = {0.0, 0.0};
@@ -342,6 +323,8 @@ void InsertGarbagePose::checkAndResetOnNewMission()
   has_work_circle_ = false;
   mission_stamp_record_ = current_stamp;
   clearMissionVisualization();
+  viz_obstacle_pixels_.clear();
+  viz_obstacle_marker_count_ = 0;
 
   RCLCPP_INFO(
     node_->get_logger(),

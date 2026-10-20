@@ -579,6 +579,7 @@ bool InsertGarbagePose::attachNewGarbageToOpenRays(
       info.extend_inserted = tail;
       info.extend_x = ex;
       info.extend_y = ey;
+      visPublishGarbageExtend(info);
       publishVisualization(info);
       consumed.push_back(pt.list_idx);
       RCLCPP_INFO(

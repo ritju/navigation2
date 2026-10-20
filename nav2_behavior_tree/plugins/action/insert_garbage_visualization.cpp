@@ -93,9 +93,6 @@ std::vector<geometry_msgs::msg::Point> footprintAt(
 void InsertGarbagePose::resetVisualizationState()
 {
   viz_tracks_.clear();
-  viz_pending_marker_count_ = 0;
-  viz_have_head_ = false;
-  viz_have_corner_ = false;
   viz_have_fail_strip_ = false;
   viz_pile_count_ = 0;
   viz_footprint_fail_count_ = 0;
@@ -128,6 +125,9 @@ bool InsertGarbagePose::skipVisualization()
     return false;
   }
   if (!viz_switch_cleared_) {
+    visDeleteRangeCircles();
+    visDeleteGarbageExtend();
+    visDeleteClipAnchors();
     clearVisualizationTopics();
     resetVisualizationState();
     viz_switch_cleared_ = true;
@@ -148,6 +148,9 @@ void InsertGarbagePose::publishMarkers(
 // 新任务 / 工作圈取消：清空四个话题上的全部 Marker
 void InsertGarbagePose::clearMissionVisualization()
 {
+  visDeleteRangeCircles();
+  visDeleteGarbageExtend();
+  visDeleteClipAnchors();
   resetVisualizationState();
   clearVisualizationTopics();
   viz_switch_cleared_ = !enable_visualization_;
@@ -266,24 +269,6 @@ void InsertGarbagePose::publishFailedSweepVisualization(
   publishMarkers(footprint_check_pub_, arr);
 }
 
-void InsertGarbagePose::publishBlockedSegmentVisualization(
-  double rx, double ry, double gx, double gy)
-{
-  if (skipVisualization()) {
-    return;
-  }
-  auto line = makeMarker(
-    global_frame_, node_->now(), "segment_check_fail", 0,
-    visualization_msgs::msg::Marker::LINE_STRIP, 0.95f, 0.15f, 0.10f, 1.0f);
-  line.scale.x = 0.06;
-  line.points.push_back(makePoint(rx, ry, 0.08));
-  line.points.push_back(makePoint(gx, gy, 0.08));
-
-  visualization_msgs::msg::MarkerArray arr;
-  arr.markers.push_back(line);
-  publishMarkers(footprint_check_pub_, arr);
-}
-
 void InsertGarbagePose::deletePileVisualization(int pile_num)
 {
   if (!enable_visualization_ || pile_num <= 0) {
@@ -340,31 +325,7 @@ void InsertGarbagePose::pruneFinishedPileVisualization(const Goals & goals)
   viz_tracks_ = std::move(keep);
 }
 
-void InsertGarbagePose::publishPendingGarbageDots()
-{
-  if (skipVisualization()) {
-    return;
-  }
-  visualization_msgs::msg::MarkerArray arr;
-  const rclcpp::Time stamp = node_->now();
-  for (std::size_t i = 0; i < garbage_list_.size(); ++i) {
-    auto ball = makeMarker(
-      global_frame_, stamp, "garbage_pending", static_cast<int>(i),
-      visualization_msgs::msg::Marker::SPHERE, 0.95f, 0.10f, 0.10f, 1.0f);
-    ball.pose.position.x = garbage_list_[i].pose.pose.position.x;
-    ball.pose.position.y = garbage_list_[i].pose.pose.position.y;
-    ball.pose.position.z = 0.12;
-    ball.scale.x = ball.scale.y = ball.scale.z = 0.20;
-    arr.markers.push_back(ball);
-  }
-  for (std::size_t i = garbage_list_.size(); i < viz_pending_marker_count_; ++i) {
-    appendDeleteMarker(arr, "garbage_pending", static_cast<int>(i));
-  }
-  viz_pending_marker_count_ = garbage_list_.size();
-  publishMarkers(garbage_pose_pub_, arr);
-}
-
-void InsertGarbagePose::refreshClipAnchorVisualization(
+void InsertGarbagePose::visPublishClipAnchors(
   const Goals & goals, double robot_x, double robot_y)
 {
   if (skipVisualization()) {
@@ -449,9 +410,20 @@ void InsertGarbagePose::refreshClipAnchorVisualization(
 
   publishAnchor("clip_head", have_h, hx, hy, "H", 0.55f, 0.95f, 0.50f);
   publishAnchor("clip_corner", have_c, cx, cy, "C", 0.02f, 0.40f, 0.10f);
-  viz_have_head_ = have_h;
-  viz_have_corner_ = have_c;
   publishMarkers(anchor_point_pub_, arr);
+}
+
+void InsertGarbagePose::visDeleteClipAnchors()
+{
+  if (!anchor_point_pub_) {
+    return;
+  }
+  visualization_msgs::msg::MarkerArray arr;
+  appendDeleteMarker(arr, "clip_head", 0);
+  appendDeleteMarker(arr, "clip_head", 1);
+  appendDeleteMarker(arr, "clip_corner", 0);
+  appendDeleteMarker(arr, "clip_corner", 1);
+  anchor_point_pub_->publish(arr);
 }
 // footprint 检查不通过时，把当时检查用的 footprint 框画在检查位姿上（空心红框）
 void InsertGarbagePose::publishFootprintCheckBox(double x, double y, double yaw)
@@ -480,7 +452,7 @@ void InsertGarbagePose::publishFootprintCheckBox(double x, double y, double yaw)
   ++viz_footprint_fail_count_;
 }
 
-void InsertGarbagePose::publishRangeCircles(double robot_x, double robot_y)
+void InsertGarbagePose::visPublishRangeCircles(double robot_x, double robot_y)
 {
   if (skipVisualization()) {
     return;
@@ -505,21 +477,40 @@ void InsertGarbagePose::publishRangeCircles(double robot_x, double robot_y)
   };
 
   visualization_msgs::msg::MarkerArray circles;
-  visualization_msgs::msg::MarkerArray obstacles;
-  // 圈只是显示。过滤仍由 has_work_circle_ 控制，取消后标记留在最后一次圆心上。
   circles.markers.push_back(
     make_circle(
       "detect_range", robot_x, robot_y, max_garbage_robot_dist_m_,
       0.55f, 0.95f, 0.50f, 0.90f, 0.05));
-  if (has_work_circle_) {
-    viz_work_circle_center_set_ = true;
-  }
-  if (viz_work_circle_center_set_) {
+  if (hasGoalsZpoints(receiveGoals())) {
     circles.markers.push_back(
       make_circle(
         "work_circle", work_circle_x_, work_circle_y_, work_circle_radius_m_,
         0.02f, 0.40f, 0.10f, 0.95f, 0.08));
+  } else {
+    appendDeleteMarker(circles, "work_circle", 0);
   }
+  publishMarkers(workspace_circle_pub_, circles);
+}
+
+void InsertGarbagePose::visDeleteRangeCircles()
+{
+  if (!workspace_circle_pub_) {
+    return;
+  }
+  visualization_msgs::msg::MarkerArray circles;
+  appendDeleteMarker(circles, "detect_range", 0);
+  appendDeleteMarker(circles, "work_circle", 0);
+  workspace_circle_pub_->publish(circles);
+}
+
+// 贴墙最近障碍：红块 + P{n}，发到 insert_anchor_point。每拍刷新。
+void InsertGarbagePose::visPublishGarbageExtend()
+{
+  if (skipVisualization()) {
+    return;
+  }
+
+  visualization_msgs::msg::MarkerArray obstacles;
   const double cell = viz_obstacle_cell_m_ * 1.4;
   constexpr int kObstacleTextIdBase = 1000;
   for (std::size_t i = 0; i < viz_obstacle_pixels_.size(); ++i) {
@@ -566,11 +557,10 @@ void InsertGarbagePose::publishRangeCircles(double robot_x, double robot_y)
     obstacles.markers.push_back(del_text);
   }
   viz_obstacle_marker_count_ = viz_obstacle_pixels_.size();
-  publishMarkers(workspace_circle_pub_, circles);
   publishMarkers(anchor_point_pub_, obstacles);
 }
-// 往 RViz 发本次插入：G 在 insert_garbage_pose，锚点/虚线在 insert_anchor_point，长条在 insert_footprint_check
-void InsertGarbagePose::publishVisualization(const InsertInfo & info)
+// 已经进入链式、穷举或删点的结果：G、E、虚线、垃圾之间的红线、障碍 P、贴墙 D。
+void InsertGarbagePose::visPublishGarbageExtend(const InsertInfo & info)
 {
   if (skipVisualization()) {
     return;
@@ -578,7 +568,6 @@ void InsertGarbagePose::publishVisualization(const InsertInfo & info)
 
   visualization_msgs::msg::MarkerArray garbage_arr;
   visualization_msgs::msg::MarkerArray anchor_arr;
-  visualization_msgs::msg::MarkerArray footprint_arr;
   const rclcpp::Time stamp = node_->now();
 
   const int pile_idx = viz_pile_count_;
@@ -586,17 +575,6 @@ void InsertGarbagePose::publishVisualization(const InsertInfo & info)
 
   const double gx = info.garbage.pose.pose.position.x;
   const double gy = info.garbage.pose.pose.position.y;
-  const double rx = info.robot_pose.pose.position.x;
-  const double ry = info.robot_pose.pose.position.y;
-
-  if (viz_have_fail_strip_) {
-    appendDeleteMarker(footprint_arr, "footprint_strip_fail", 0);
-    appendDeleteMarker(footprint_arr, "footprint_strip_fail", 1);
-    appendDeleteMarker(footprint_arr, "footprint_strip_fail", 2);
-    viz_have_fail_strip_ = false;
-  }
-  appendDeleteMarker(footprint_arr, "segment_check_fail", 0);
-
   const int base = pile_num * 10;
     constexpr double kGarbageDotZM = 0.12;
     constexpr double kGarbageDotSizeM = 0.22;
@@ -716,10 +694,6 @@ void InsertGarbagePose::publishVisualization(const InsertInfo & info)
       }
     }
 
-    appendFootprintStripMarkers(
-      footprint_arr, "footprint_strip", base, rx, ry, gx, gy,
-      1.00f, 0.55f, 0.05f, 0.90f, 0.22f);
-
     if (info.extend_inserted) {
       const double ex = info.extend_x;
       const double ey = info.extend_y;
@@ -747,10 +721,6 @@ void InsertGarbagePose::publishVisualization(const InsertInfo & info)
         "E" + std::to_string(
           pile_num + (info.ray_chain_xy.size() >= 2 ?
           static_cast<int>(info.ray_chain_xy.size()) - 1 : 0)));
-
-      appendFootprintStripMarkers(
-        footprint_arr, "footprint_strip", base + 2, line_x, line_y, ex, ey,
-        0.15f, 0.45f, 0.95f, 0.85f, 0.18f);
     }
 
     if (info.wall_edge_inserted) {
@@ -804,8 +774,91 @@ void InsertGarbagePose::publishVisualization(const InsertInfo & info)
 
   publishMarkers(garbage_pose_pub_, garbage_arr);
   publishMarkers(anchor_point_pub_, anchor_arr);
-  publishMarkers(footprint_check_pub_, footprint_arr);
   ++viz_pile_count_;
+}
+
+void InsertGarbagePose::publishVisualization(const InsertInfo & info)
+{
+  if (skipVisualization()) {
+    return;
+  }
+
+  visualization_msgs::msg::MarkerArray footprint_arr;
+  const int pile_num = (info.dist_label > 0) ? info.dist_label : viz_pile_count_;
+  const int base = pile_num * 10;
+  const double gx = info.garbage.pose.pose.position.x;
+  const double gy = info.garbage.pose.pose.position.y;
+  const double rx = info.robot_pose.pose.position.x;
+  const double ry = info.robot_pose.pose.position.y;
+
+  if (viz_have_fail_strip_) {
+    appendDeleteMarker(footprint_arr, "footprint_strip_fail", 0);
+    appendDeleteMarker(footprint_arr, "footprint_strip_fail", 1);
+    appendDeleteMarker(footprint_arr, "footprint_strip_fail", 2);
+    viz_have_fail_strip_ = false;
+  }
+  appendFootprintStripMarkers(
+    footprint_arr, "footprint_strip", base, rx, ry, gx, gy,
+    1.00f, 0.55f, 0.05f, 0.90f, 0.22f);
+
+  if (info.extend_inserted) {
+    double line_x = gx;
+    double line_y = gy;
+    if (info.ray_chain_xy.size() >= 2) {
+      line_x = info.ray_chain_xy.back().first;
+      line_y = info.ray_chain_xy.back().second;
+    }
+    appendFootprintStripMarkers(
+      footprint_arr, "footprint_strip", base + 2, line_x, line_y,
+      info.extend_x, info.extend_y,
+      0.15f, 0.45f, 0.95f, 0.85f, 0.18f);
+  }
+  publishMarkers(footprint_check_pub_, footprint_arr);
+}
+
+void InsertGarbagePose::visDeleteGarbageExtend()
+{
+  visualization_msgs::msg::MarkerArray garbage_arr;
+  visualization_msgs::msg::MarkerArray anchor_arr;
+  auto append_pile = [&](int pile_num) {
+    if (pile_num <= 0) {
+      return;
+    }
+    const int base = pile_num * 10;
+    appendDeleteMarker(garbage_arr, "garbage", base);
+    appendDeleteMarker(garbage_arr, "garbage", base + 1);
+    appendDeleteMarker(garbage_arr, "obstacle_p", base);
+    appendDeleteMarker(garbage_arr, "obstacle_p", base + 1);
+    appendDeleteMarker(anchor_arr, "ray_chain", pile_num);
+    for (int i = 0; i < 8; ++i) {
+      appendDeleteMarker(garbage_arr, "ray_chain_g", pile_num * 10 + i);
+      appendDeleteMarker(garbage_arr, "ray_chain_g", pile_num * 10 + i + 100);
+    }
+    appendDeleteMarker(anchor_arr, "extend", base);
+    appendDeleteMarker(anchor_arr, "extend", base + 1);
+    appendDeleteMarker(anchor_arr, "extend", base + 2);
+    constexpr int kWallEdgeIdBase = 8000;
+    constexpr int kWallEdgeIdSpan = 128;
+    const int wbase = kWallEdgeIdBase + pile_num * kWallEdgeIdSpan;
+    for (int i = 0; i < kWallEdgeIdSpan; ++i) {
+      appendDeleteMarker(anchor_arr, "wall_edge_pts", wbase + i);
+    }
+  };
+  for (const auto & track : viz_tracks_) {
+    append_pile(track.pile_num);
+  }
+  constexpr int kObstacleTextIdBase = 1000;
+  for (std::size_t i = 0; i < viz_obstacle_marker_count_; ++i) {
+    appendDeleteMarker(anchor_arr, "nearest_obstacle", static_cast<int>(i));
+    appendDeleteMarker(
+      anchor_arr, "nearest_obstacle", kObstacleTextIdBase + static_cast<int>(i));
+  }
+  if (garbage_pose_pub_ && !garbage_arr.markers.empty()) {
+    garbage_pose_pub_->publish(garbage_arr);
+  }
+  if (anchor_point_pub_ && !anchor_arr.markers.empty()) {
+    anchor_point_pub_->publish(anchor_arr);
+  }
 }
 
 }  // namespace nav2_behavior_tree

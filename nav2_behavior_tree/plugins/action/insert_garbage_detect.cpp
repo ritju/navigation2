@@ -36,10 +36,10 @@ namespace nav2_behavior_tree
 void InsertGarbagePose::garbageDetectCallback(
   const capella_ros_msg::msg::GarbageDetect::SharedPtr msg)
 {
-  refreshTunableInputPorts();
+  getBehaviorTreeParameters();
   if (single_pile_insert_) {
     Goals goals;
-    if (getInput("input_goals", goals) && hasUnindexedSentinel(goals)) {
+    if (getInput("input_goals", goals) && hasGoalsZpoints(goals)) {
       return;
     }
   }
@@ -142,9 +142,6 @@ void InsertGarbagePose::special_terrain_callback(
     "InsertGarbagePose: received %zu special terrain polygon(s)",
     special_terrain_polygons_.size());
 }
-// ========================================================================
-// B. 垃圾后处理
-// ========================================================================
 
 // 接收到垃圾后的后处理函数，返回处理后的 garbage_list
 InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
@@ -246,7 +243,6 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
             node_->get_logger(), *(node_->get_clock()), 2000,
             "InsertGarbagePose: 垃圾=(%.2f, %.2f), 贴墙进表: 车到垃圾连线有障碍(%s), 丢弃",
             gx, gy, sweep_reason.c_str());
-          publishBlockedSegmentVisualization(robot_x, robot_y, gx, gy);
         } else {
           RCLCPP_INFO_THROTTLE(
             node_->get_logger(), *(node_->get_clock()), 2000,
@@ -260,7 +256,7 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
     }
 
     if (!has_work_circle_ && garbage_list_.empty() &&
-      !hasUnindexedSentinel(receiveGoals())) {
+      !hasGoalsZpoints(receiveGoals())) {
       has_work_circle_ = true;
       work_circle_x_ = robot_x;
       work_circle_y_ = robot_y;
