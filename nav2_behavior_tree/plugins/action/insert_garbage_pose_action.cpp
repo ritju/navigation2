@@ -179,9 +179,7 @@ BT::NodeStatus InsertGarbagePose::tick()
   getBehaviorTreeParameters();
   isNewMission();
 
-  postProcessHistory();
-  Goals goals_now = receiveGoals();
-
+  // 本拍只查一次 TF，后处理和插入共用这份位姿
   geometry_msgs::msg::PoseStamped robot_pose;
   if (!getRobotPose(robot_pose)) {
     return BT::NodeStatus::SUCCESS;
@@ -189,6 +187,9 @@ BT::NodeStatus InsertGarbagePose::tick()
   const double rx = robot_pose.pose.position.x;
   const double ry = robot_pose.pose.position.y;
   const double robot_yaw = tf2::getYaw(robot_pose.pose.orientation);
+
+  postProcessHistory(robot_pose);
+  Goals goals_now = receiveGoals();
 
   // 少于 2 个点无法投影删点，只清理开放射线。排序和插入不跑
   if (goals_now.size() < 2) {
@@ -359,20 +360,6 @@ bool InsertGarbagePose::getRobotPose(geometry_msgs::msg::PoseStamped & pose) con
       "InsertGarbagePose: 获取不到 TF，%s -> %s 变换失败，无法取机器人位姿",
       robot_base_frame_.c_str(), global_frame_.c_str());
     return false;
-  }
-  return true;
-}
-// 取机器人当前 xy 与可选 yaw
-bool InsertGarbagePose::getRobotPoseXY(double & x, double & y, double * yaw) const
-{
-  geometry_msgs::msg::PoseStamped pose;
-  if (!getRobotPose(pose)) {
-    return false;
-  }
-  x = pose.pose.position.x;
-  y = pose.pose.position.y;
-  if (yaw != nullptr) {
-    *yaw = tf2::getYaw(pose.pose.orientation);
   }
   return true;
 }

@@ -362,8 +362,9 @@ private:
     double robot_x, double robot_y, double gx, double gy,
     std::string * reason = nullptr) const;
 
-  /** 接收到垃圾后的后处理函数，返回处理后的 garbage_list */
-  GarbageList postProcessHistory();
+  /** 接收到垃圾后的后处理函数，返回处理后的 garbage_list。位姿由 tick 传入，避免重复查 TF */
+  GarbageList postProcessHistory(
+    const geometry_msgs::msg::PoseStamped & robot_pose);
 
   /** 接收完整的 {goals} 路径点 */
   Goals receiveGoals();
@@ -373,9 +374,6 @@ private:
 
   /** 取机器人当前位姿*/
   bool getRobotPose(geometry_msgs::msg::PoseStamped & pose) const;
-
-  /** 取机器人当前位姿的 xy*/
-  bool getRobotPoseXY(double & x, double & y, double * yaw = nullptr) const;
 
   /** 获取缓存的 footprint 在 base_link 下的顶点 */
   bool getRobotFootprintInBase(

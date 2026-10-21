@@ -33,10 +33,6 @@ namespace nav2_behavior_tree
 
 // 链条、暴力穷举和贴边，产出 planned_units_
 
-// ========================================================================
-// D. 新堆判定 + 排序
-// ========================================================================
-
 namespace
 {
 
@@ -65,7 +61,7 @@ void extendBeyondGarbage(
 }
 
 // 一条中间顺序的得分：假设清扫段终点之间的路程 + 折到 [-pi, pi] 的转角
-double routeExtendScore(
+double forceListScore(
   const InsertGarbagePose::GarbageList & garbage_list,
   const std::vector<std::size_t> & garbage_order,
   double start_x, double start_y, double start_yaw,
@@ -390,7 +386,7 @@ InsertGarbagePose::GarbageList InsertGarbagePose::forcegarbagesort(
         scored_idx.push_back(scored.size());
         scored.push_back(*locked_last);
       }
-      return routeExtendScore(
+      return forceListScore(
         scored, scored_idx, start_x, start_y, start_yaw,
         w_dist, w_turn, leavePoint);
     };
@@ -422,7 +418,7 @@ InsertGarbagePose::GarbageList InsertGarbagePose::forcegarbagesort(
             step_idx.push_back(1);
             step.push_back(*locked_last);
           }
-          const double score = routeExtendScore(
+          const double score = forceListScore(
             step, step_idx, cur_x, cur_y, cur_yaw,
             w_dist, w_turn, leavePoint);
           if (score < best_step - 1e-9) {

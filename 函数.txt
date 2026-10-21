@@ -1,0 +1,216 @@
+InsertGarbagePose 函数清单（按文件分类）
+
+重构后类实现拆成 8 个 .cpp，声明集中在 1 个 .hpp。
+同一文件内的函数按调用先后 / 逻辑顺序排列，带一行说明。
+
+========================================================================
+一、insert_garbage_pose_action.cpp     节点外壳：参数、tick、输出
+========================================================================
+行为树节点的构造、参数读取、每拍调度、任务切换和最终输出。
+不参与排序，也不生成 G/E。
+
+InsertGarbagePose            构造函数。读话题名/坐标系，建回调组、订阅、碰撞检查器和 4 个可视化发布者。
+getBehaviorTreeParameters    每拍重读可调参数（clip_extend_m、garbage_extend_m、ray_offset_deg 等）。
+tick                         主流程：spin_all → 读参数 → 判断新任务 → 后处理垃圾 → 接开放射线 → 排序 → 插入 → 输出。
+isNewMission                 看 input_goals 队首 stamp 是否变化；变了就清空所有状态，视为新任务。
+receiveGoals                 读 input_goals。
+getRobotPose                 通过 TF 取 map 下车体位姿。本拍只调一次，后处理和插入共用。
+getRobotFootprintInBase      取 base_link 下的车体轮廓（给可视化用）。
+emitOutputGoals              打日志并 setOutput("output_goals")。
+
+========================================================================
+二、insert_garbage_detect.cpp          垃圾检测：回调 + 后处理，产出 garbage_list_
+========================================================================
+从话题收原始检测，多帧确认后过滤、合堆，写进待扫列表。
+
+garbageDetectCallback        话题回调。单点模式有哨兵就直接丢；时间窗内累计 confirm_match_num 帧，
+                             取平均坐标，和已有堆去重后放进 history_list_。
+special_terrain_callback     收禁扫区多边形，存 special_terrain_polygons_。
+postProcessHistory           核心后处理（位姿由 tick 传入，不再自己查 TF）。转 map → 丢禁扫区 →
+                             丢过远 → footprint/连线检查 → 生成工作圈 → 丢圈外 →
+                             mergeGarbagePiles 合堆 → 去重 → 进 garbage_list_。
+transformGarbageToMap        单条检测（位姿 + 框角点）转到 map。
+isPointInSpecialTerrain      点是否落在任一禁扫区多边形里。
+isPointInPolygon             射线法判断点在多边形内。
+mergeGarbagePiles            合堆。每次取离车最近的点开新堆，到质心小于合堆半径的并入，代表点取质心。
+tryInsertPreferCloserToRobot 写入 garbage_list_。没满直接加；满了用更近的替换离车最远的。
+isDuplicateGarbage           和给定列表任一堆的距离小于合堆半径即算重复。
+isNearReachedGarbage         和 reached_garbage_xy_ 任一点小于合堆半径即算已处理过。
+
+========================================================================
+三、insert_garbage_collision.cpp       footprint / 代价图碰撞检查
+========================================================================
+所有“能不能开过去”的判断都集中在这里，排序和插入阶段都会调用。
+
+footprintCallback            收车体轮廓，喂给 FeedableFootprintSubscriber，标记缓存失效。
+globalCostmapCallback        收全局代价图，喂给 CostmapSubscriber。
+ensureCachedFootprint        取并缓存 base_link 下的轮廓，算车长；取不到就沿用上一份。
+isCollisionFreeAtPose        车体放在 (x,y,yaw) 查全局代价图是否无碰撞。
+isFootprintClearAtPose       同上，可选返回失败原因。
+isFootprintSweepClear        “车体长条”检查：沿线段每隔一个车长放一次车体，全部通过才算通。
+                             车→G、G→E、链内相邻 G、贴墙 D→E 都用它。
+isRobotGarbageSegmentClearOfLethal  宽松版：只看车到垃圾连线上有没有致命格（垃圾格除外），贴墙模式进表用。
+findNearestObstaclePixel     在垃圾附近找最近致命格，贴墙时用来定墙点 P。
+
+========================================================================
+四、insert_garbage_clip.cpp            插入信息 + 删点 + 路径几何
+========================================================================
+算 E 的方向和删点基准，并真正决定原路径哪些点要删。
+
+squaredDistancePointToSegment  点到线段距离平方（匿名空间自由函数）。
+projectPointToInfiniteLine     点到无限直线垂足。
+lineParameterT                 垂足在 A→B 上的参数 t（A=0，B=1）。
+preferExtendYawAwayFromRobot   E 和来向点在 G 同侧时，方向翻 180°。
+gatherInsertInfo               收集插入信息：来向点、path_yaw、A/C 锚点、垃圾垂足等。
+fillAcWhenOriginalPathGone    原路径删光时兜底补一条 A-C 线（最后两个哨兵 → 车到剩余点 → 车到 G）。
+clipReferencesInOrder          删点核心。每个参考点 H/C 投影，按 t 决定删哪段，累计 clip_extend_m，
+                               哨兵点和保护点永不删，所有参考点取并集一次删。
+isGoalNotCorner                判断普通点是否角点（前后夹角超过 corner_angle_deg）。
+ordinaryQueueHead              路径里第一个普通点的下标（当前边起点 H）。
+isRememberedCorner             查角点记忆（0.08m）。
+rememberCornerXy               记一个角点。
+forgetCornerXy                 忘一个角点。
+robotEnteredNextSide           车是否已开上 H 之后那条边，开上就忘掉角点记忆。
+findFirstCornerFromRobot       从 H 起在 goaltotal_range_m 内找第一个角点。
+findNextCornerAfter            从某下标之后找下一个角点。
+findLastGoalWithinPathRange    沿路径走 goaltotal_range_m，取范围内最后一个点当 C。
+clipWithRefs                   按参考点算删点集合、删掉、返回新路径，被删点记进 info.goaltotal。
+deferOpenRayClip               开放射线这次改动涉及的删点先挂起，等插入完再统一处理。
+
+========================================================================
+五、insert_garbage_goals.cpp           哨兵点管理 + 实际写入 goals
+========================================================================
+识别本节点插入的点，把定稿的 SweepUnit 写成哨兵点并拼进路径。
+
+isUnindexedSentinelPoseZ      该点 z 是否 -1（本节点插入的哨兵）。
+hasGoalsZpoints               路径里还有没有哨兵。单点模式靠它判断上一段走完没。
+findUnindexedSentinelIndex    在路径里按坐标（0.1m）找哨兵，可选返回下标。
+isProtectedGarbageXy          该坐标是否在 reached_garbage_xy_ 里（删点时不删）。
+addProtectedGarbageXy         把一个坐标加进保护点。
+splitAtLastProtected          路径切成“前缀（到最后一个哨兵/保护点）”和“剩余普通路径”。
+splitFrozenTail               再切出冻结尾段（clip_tail）和可动前缀。
+prepareClipBase               为剩余路径准备 A/C 删点基准。
+applyDeferredTailDelete       统一执行挂起的删点，返回删掉的点数。
+assembleAndStamp              前缀 + 新点 + 剩余路径拼起来，统一 stamp，更新任务时间戳。
+recordSweepArrive             记下本段离开点（有 E 用 E，否则最后一个 G）和扫向。
+insertSweepUnit               取 planned_units_ 队首，按 D → G1…Gn → E 写哨兵点，
+                              clipWithRefs 删原路径，拼接输出，登记开放射线，eraseGarbageFront 同步。
+
+========================================================================
+六、insert_garbage_open_ray.cpp        开放射线：新垃圾并入已插入的链
+========================================================================
+把新发现的垃圾接到还开着的射线链上，避免整批重排。
+
+forgetProtectedGarbageXy      撤销一个保护点（E 被替换时用）。
+isOpenRayExtendPoint          该坐标是不是某条射线的 E（且不是别的射线的 G）。
+rememberOpenGarbageRay        登记/更新一条开放射线：G、yaw、E、from。
+updateOpenRayFrom             链头变化后，把链上各 G 的 from 改成新链头前面那个点。
+onReverseApproachSegment      反向只认 from 到链头这一段；车已开上则起点收到车的投影。
+pruneOpenGarbageRays          G 和 E 都不在 goals 里了就关掉这条射线。
+onOpenRayAxis                 点相对射线轴线的夹角是否 ≤ ray_offset_deg_，并给出投影。
+attachNewGarbageToOpenRays    主函数：判定每条新垃圾归属哪条射线，按投影插进链，
+                              逐点 footprint 检查，链尾重算 E，重建 goals 并从 garbage_list_ 吃掉。
+
+========================================================================
+七、insert_garbage_plan.cpp            排序：产出 planned_units_
+========================================================================
+整个文件只做一件事：决定清扫顺序，并把每个单元的 D/G/E 一次算完冻结。
+
+-- 匿名空间里的自由函数 --
+wrapAngleRad                    角度规范到 (-π, π]。
+extendBeyondGarbage             从 from 经过垃圾再伸出 extend_m，得到 E 和方向。
+forceListScore                  一种排列的得分：总路程 × sweep_dist_weight + 总转角 × sweep_turn_weight。
+tryYawFan                       从中心方向按 ±step 扇形试角，返回第一个通过的方向。
+sameGarbageXy                   两个坐标是否同一点（1e-4 级）。
+
+-- 入口 --
+garbageSortTotal                排序入口，直接转发 planSweepUnits。
+planSweepUnits                  总调度：① 反复收射线链 ② 剩下的 forcegarbagesort 后再试收链、
+                                收不出就单堆 ③ 贴边单元合并；最后把 garbage_list_ 按单元顺序摊平。
+logSortedInsertList             把 planned_units_ 一行一个打印出来（D/G/E、from）。
+
+-- 组链 --
+pickSeedIndex                   选链头：车头正前方最近的一堆；前方没有则最近的一堆。
+buildChainFromSeed              以 seed 为链头组链：扇形收点 → 相邻 footprint 截断 →
+                                链尾 E 生成 → 成功则从 remaining 删除链上各堆。
+collectSectorChain              收扇形内的堆（正方向 + 夹角 ≤ ray_offset_deg_），按离起点远近排序。
+inForwardRaySector              单点是否落在正方向扇形内。
+makeChainTailExtend             生成链尾 E：直伸 → 偏头扇形 → 附近有垃圾就偏开并加长；都失败返回 false。
+rayFromAssumed                  定射线：有 E 用 G→E，只有 D 用 D→G，都没有用“上一点→G”。
+advancePoseFromUnit             把假设车位挪到单元 E（无 E 用最后一个 G），朝向继承。
+assumeSweepSegment              假设清扫段：直伸 E → 偏头 → 贴墙 D/G/E，每步都做 footprint 检查。
+
+-- 单堆与暴力排序 --
+planSingleUnit                  单堆单元：assumeSweepSegment 后，E 附近有别的堆就偏开 E。
+forcegarbagesort                暴力排序。>6 堆先只留最近 6 堆；队首=正前方最近；
+                                队尾=模拟删点删得最远；中间 ≤6 堆全排列按 forceListScore 取最小，超过用贪心。
+eraseGarbageFront               从 garbage_list_ 队首删掉 count 堆（与插入阶段同步）。
+nudgeExtendAwayFromGarbage      朝远离附近垃圾的一侧转 ray_offset_deg_，长度加 extend_extra_m_。
+squaredDistanceXY               平面距离平方。
+
+-- 贴边 --
+buildWallEdgeExtendChain        生成贴墙链。找最近墙格 P → 法向/切向 → 定 E（扫角）→ 定 D（扫角 + 外推）→
+                                沿 D-E 采样插入 G → 整链法向偏移 → 线段无致命格检查。
+
+========================================================================
+八、insert_garbage_visualization.cpp   RViz 可视化
+========================================================================
+向 4 个 MarkerArray 话题发布调试信息，enable_visualization=false 时全部清空并跳过。
+
+-- 匿名空间里的自由函数 --
+makeMarker                      构造 Marker（设置 frame、类型、颜色、尺寸、生命周期）。
+makePoint                       构造 Point。
+footprintAt                     按中心位姿和局部轮廓算世界坐标下的车体多边形点。
+
+-- 生命周期 --
+resetVisualizationState         重置所有可视化计数。
+clearVisualizationTopics        清空 4 个话题。
+skipVisualization               总开关判断。
+publishMarkers                  发布一个 MarkerArray。
+
+-- 插入前 / 失败标记 --
+clearMissionVisualization       清空整个任务的标记。
+appendDeleteMarker              追加一个 DELETEALL / DELETE 标记。
+appendFootprintStripMarkers     追加车体长条标记。
+publishFailedSweepVisualization  后处理中 footprint 长条不通过的红色长条。
+deletePileVisualization         删除某一堆 G/E 的标记。
+pruneFinishedPileVisualization  G 和 E 都不在路径里了就删掉这段标记。
+publishFootprintCheckBox        车体检查失败时的蓝色空心车体框。
+
+-- H/C 锚点 --
+visPublishClipAnchors           画当前 H（浅绿）和 C（深绿）。
+visDeleteClipAnchors            删掉 H/C 标记。
+
+-- 工作圈 --
+visPublishRangeCircles          工作圈 + 跟随识别圈。
+visDeleteRangeCircles           删掉圈。
+
+-- 延长点 --
+visPublishGarbageExtend()       画待插垃圾的小红球（无参数版本）。
+visPublishGarbageExtend(info)   画一堆的 G、E、G-E 虚线、射线链连线、贴墙 D 和采样点。
+publishVisualization            插入一段后统一画这段的标记，并记进 viz_tracks_。
+visDeleteGarbageExtend          删掉延长点相关的标记。
+
+========================================================================
+九、insert_garbage_pose_action.hpp     声明与内联实现
+========================================================================
+InsertGarbagePose                构造函数声明。
+providedPorts                    声明所有行为树输入/输出端口及默认值、说明。
+halt                             空实现（本节点 tick 永远 SUCCESS，不需要停止处理）。
+FeedableFootprintSubscriber      继承 nav2 的 FootprintSubscriber，只多一个 feed()，
+                                 让本节点能直接把收到的轮廓塞进去。
+feed                             把 PolygonStamped 转成 nav2 轮廓并更新内部缓存。
+
+========================================================================
+十、与旧版函数名的对照（读老代码时容易混）
+========================================================================
+refreshTunableInputPorts   →  getBehaviorTreeParameters
+checkAndResetOnNewMission  →  isNewMission
+refreshClipAnchorVisualization  →  visPublishClipAnchors
+publishRangeCircles        →  visPublishRangeCircles
+publishPendingGarbageDots  →  visPublishGarbageExtend()
+hasGoalsZPose              →  hasGoalsZpoints
+clipWithRefs 的签名改为（被删点集合 + pending_delete 输出）
+syncLastSweepXyFromList    已删除（不再有 last_sweep_xy_，改为 planned_units_ 控制排序时机）
+insertLockedChainAtFront / insertFrontPile / considerExtendNear / planRayChainsBeforeSweep
+                           已删除，由 buildChainFromSeed / planSingleUnit / planSweepUnits 取代

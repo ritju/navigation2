@@ -1,0 +1,414 @@
+====================================================================
+InsertGarbagePose 执行顺序（按当前 insert_garbage_pose_action.cpp）
+箭头 = 调用/执行先后；缩进 = 被上一层调用
+====================================================================
+
+【一、启动阶段（整个进程只跑一次）】
+
+providedPorts                      // BT 工厂注册节点时问端口
+  ↓
+InsertGarbagePose（构造函数）
+  ↓
+refreshTunableInputPorts
+  ↓
+创建订阅：garbage / special_terrain / footprint / global_costmap
+  ↓
+创建发布：workspace_circle / anchor_point / footprint_check / garbage_pose
+
+
+【二、回调阶段（异步，随时可能执行，和 tick 不分先后）】
+
+garbageDetectCallback
+  ↓
+refreshTunableInputPorts
+  ↓
+hasGoalsZPose                    // single_pile_insert 打开时，队里已有 G/E 就直接返回
+  ↓
+transformGarbageToMap
+  ↓
+getRobotPose
+  ↓
+squaredDistanceXY                 // 时间窗内多帧确认，凑够帧数取平均
+  ↓
+isDuplicateGarbage
+  ↓
+history_list_.push_back           // 放到历史缓存，等 tick 再处理
+
+special_terrain_callback          // 只更新禁扫区多边形
+
+footprintCallback
+  ↓
+FeedableFootprintSubscriber::feed
+  ↓
+footprint_dirty_ = true
+
+globalCostmapCallback
+  ↓
+costmap_sub_->costmapCallback     // 给 Nav2 代价图订阅器
+
+
+【三、tick 主流程（行为树每拍一次，从这往下才是真正的执行顺序）】
+
+tick
+  ↓
+callback_group_executor_.spin_all(0)     // 先把本拍之前积压的回调全部消化
+  ↓
+refreshTunableInputPorts
+  ↓
+checkAndResetOnNewMission
+      ↓
+    receiveGoals
+      ↓
+    goals 时间戳变了？ ——是——> 清空 history / tmp / garbage / planned_units
+                                / open_rays / reached / 角点 / 可视化
+  ↓
+postProcessHistory                       // 见【四】
+  ↓
+receiveGoals
+  ↓
+goals.size() < 2 ？ ——是——> pruneOpenGarbageRays
+                              ↓
+                            getRobotPose
+                              ↓
+                            publishRangeCircles
+                              ↓
+                            refreshClipAnchorVisualization
+                              ↓
+                            pruneFinishedPileVisualization
+                              ↓
+                            publishPendingGarbageDots
+                              ↓
+                            return SUCCESS
+  ↓
+getRobotPose
+  ↓
+publishRangeCircles
+  ↓
+pruneFinishedPileVisualization
+  ↓
+refreshClipAnchorVisualization
+  ↓
+publishPendingGarbageDots
+  ↓
+工作圈取消判断（没有待插垃圾且 goals 里没有哨兵点）
+  ↓
+pruneOpenGarbageRays
+  ↓
+attachNewGarbageToOpenRays               // 新垃圾能不能接到已有射线上，见【五】
+  ↓
+garbage_list_ 非空 且 planned_units_ 为空 ？ ——是——> garbageSortTotal
+                                                        ↓
+                                                      syncLastSweepXyFromList
+                                                        ↓
+                                                      logSortedInsertList
+  ↓
+garbage_list_ 为空 ？ ——是——> splitAtLastProtected
+                              ↓
+                            deferOpenRayClip
+                              ↓
+                            applyDeferredTailDelete
+                              ↓
+                            统一 z 序号 + 刷新 stamp
+                              ↓
+                            emitOutputGoals
+                              ↓
+                            return SUCCESS
+  ↓
+single_pile_insert_ 打开 且 goals 里还有 z=-1 哨兵 ？ ——是——> return SUCCESS
+  ↓
+splitAtLastProtected（切出 batch.clip_tail）
+  ↓
+deferOpenRayClip
+  ↓
+while (planned_units_ 非空)
+      ↓
+    insertSweepUnit                      // 见【七】
+      ↓
+    single_pile_insert_ 打开就只插这一堆，跳出
+  ↓
+applyDeferredTailDelete                  // 统一删一次冗余路径点
+  ↓
+统一 z 序号 + 刷新 stamp
+  ↓
+emitOutputGoals
+  ↓
+pruneFinishedPileVisualization
+  ↓
+refreshClipAnchorVisualization
+  ↓
+publishPendingGarbageDots
+  ↓
+return SUCCESS
+
+
+【四、postProcessHistory 内部顺序】
+
+postProcessHistory
+  ↓
+getRobotPose
+  ↓
+for (history_list_ 里每一条)
+      ↓
+    transformGarbageToMap                         // 转 map，失败留下次
+      ↓
+    isPointInSpecialTerrain                       // 在禁扫区 → 丢
+          ↓
+        isPointInPolygon
+      ↓
+    squaredDistanceXY                             // 离车太远 → 丢
+      ↓
+    isRobotGarbageSegmentClearOfLethal            // enable_wall_edge_insert 时走这条
+      或 isFootprintSweepClear                    // 否则走 footprint 长条
+          ↓
+        ensureCachedFootprint
+          ↓
+        isCollisionFreeAtPose
+      ↓
+    工作圈判断（第一次生成圆心，圈外的丢）
+      ↓
+    candidates.push_back
+  ↓
+mergeGarbagePiles                                 // 合堆，代表点取质心
+  ↓
+for (每个合完的堆)
+      ↓
+    isNearReachedGarbage                          // 已插入/已到达 → 丢
+      ↓
+    isDuplicateGarbage                            // 和已规划堆重复 → 丢
+      ↓
+    tryInsertPreferCloserToRobot                  // 进 garbage_list_，满了留近的
+  ↓
+return garbage_list_
+
+
+【五、attachNewGarbageToOpenRays 内部顺序】
+
+attachNewGarbageToOpenRays
+  ↓
+for (garbage_list_ 每一堆)
+      ↓
+    对每条 open ray：onOpenRayAxis           // 在 30° 轴线上吗
+      ↓
+    proj <= 0 时：onReverseApproachSegment   // 反向只认 from 到链头这一段
+      ↓
+    选出投影最近的一条射线
+  ↓
+已过车的点：addProtectedGarbageXy，从 garbage_list_ 删掉（不折返）
+  ↓
+按 goals 里的先后给射线排序
+  ↓
+for (每条命中的射线)
+      ↓
+    findUnindexedSentinelIndex                // 找 G、E 的下标
+      ↓
+    isUnindexedSentinelPoseZ                  // 只收本节点插的哨兵
+      ↓
+    onOpenRayAxis                             // 重新算链上各点投影
+      ↓
+    把新 G 按投影插进链，链尾重算一个 E
+      ↓
+    收集 clip_refs
+  ↓
+return changed（有没有改 goals）
+
+
+【六、garbageSortTotal → planSweepUnits 内部顺序】
+
+garbageSortTotal
+  ↓
+planSweepUnits
+  ↓
+第一阶段：反复收射线链
+  while (剩余 >= 2)
+      ↓
+    pickSeedIndex                             // 正前方最近；没有就最近
+      ↓
+    buildChainFromSeed
+          ↓
+        assumeSweepSegment                    // 先假设这一堆的 D/E
+              ↓
+            extendBeyondGarbage               // 沿来向伸 garbage_extend_m
+              ↓
+            tryYawFan                         // 直伸不过就左右偏头
+              ↓
+            isFootprintSweepClear
+          ↓
+        rayFromAssumed                        // 有 E 用 G→E，否则 D→G，否则上点→G
+          ↓
+        collectSectorChain                    // 扇形内、由近到远
+          ↓
+        sameGarbageXy
+          ↓
+        相邻 G 的 isFootprintSweepClear       // 车体不过就截断链
+          ↓
+        makeChainTailExtend                   // 只给链尾生成一个 E
+              ↓
+            extendBeyondGarbage
+              ↓
+            tryYawFan
+              ↓
+            nudgeExtendAwayFromGarbage
+              ↓
+            isFootprintSweepClear
+          ↓
+        （链尾 E 还不过就拆掉最后一个 G，再试）
+      ↓
+    advancePoseFromUnit                       // 假设车挪到 E，没 E 就到最后一个 G
+      ↓
+    planned_units_.push_back
+  ↓
+第二阶段：剩下的堆暴力排序
+  forcegarbagesort
+      ↓
+    assumeSweepSegment / leavePoint            // 估每堆离开点
+      ↓
+    forceListScore                             // 路程 + 转角打分
+      ↓
+    clipReach
+          ↓
+        clipReferencesInOrder                  // 估这一堆能删到路径哪个下标
+          ↓
+        squaredDistancePointToSegment
+      ↓
+    中间堆全排列（> kSweepBruteMaxN 改贪心）
+  ↓
+第三阶段：排序后继续收链 / 单堆
+  while (剩余非空)
+      ↓
+    还能收链 → buildChainFromSeed → advancePoseFromUnit
+      ↓
+    否则 planSingleUnit
+          ↓
+        assumeSweepSegment
+          ↓
+        squaredDistanceXY                  // E 附近是否还有别的堆
+          ↓
+        nudgeExtendAwayFromGarbage         // 太近就偏开、加长
+          ↓
+        isFootprintSweepClear
+      ↓
+    advancePoseFromUnit
+      ↓
+    planned_units_.push_back
+  ↓
+贴边 G 与上一个单独 G 重合 → 并进贴边单元（从 D 开始）
+  ↓
+用 planned_units_ 重建 garbage_list_ 和 pile_skip_extend_
+
+
+【七、insertSweepUnit 内部顺序】
+
+insertSweepUnit
+  ↓
+planned_units_.pop_front
+  ↓
+gatherInsertInfo(batch->goals, G)
+      ↓
+    squaredDistanceXY                          // 半径约为 0 直接失败
+      ↓
+    ordinaryQueueHead                          // A = 当前长边队首
+      ↓
+    findFirstCornerFromRobot                   // C = 第一个角点
+      ↓
+    findLastGoalWithinPathRange                // 没角点就用 range 内末点
+      ↓
+    isRememberedCorner                         // 刚删出来的角点仍当 C
+      ↓
+    findNextCornerAfter                        // A、C 重合时往后找一个
+      ↓
+    projectPointToInfiniteLine                 // D = 垃圾在 A-C 上的垂足
+      ↓
+    preferExtendYawAwayFromRobot               // E 不能落在车同侧
+      ↓
+    （A/C 失效时）fillAcWhenOriginalPathGone   // 用已插 G-E 或车→剩余路径补线
+  ↓
+splitFrozenTail
+      ↓
+    splitAtLastProtected                       // 按最后一个已保护点切前缀/剩余
+  ↓
+prepareClipBase
+      ↓
+    gatherInsertInfo(剩余路径)                 // 有前缀时重算删点基准
+  ↓
+clipWithRefs
+      ↓
+    clipReferencesInOrder
+          ↓
+        for (每个参考点 D/G/E)
+              ↓
+            isUnindexedSentinelPoseZ           // 哨兵不删
+              ↓
+            isProtectedGarbageXy               // 已保护点不删
+              ↓
+            isGoalNotCorner                    // 找当前边终点 C
+              ↓
+            projectPointToInfiniteLine
+              ↓
+            lineParameterT
+              ↓
+            squaredDistancePointToSegment
+              ↓
+            rememberCornerXy / forgetCornerXy
+      ↓
+    删点下标并进 batch->pending_delete
+  ↓
+assembleAndStamp                               // 前缀 + D/G/E + 剩余路径
+  ↓
+recordSweepArrive                              // 记下离开点和朝向，给下一堆算来向
+  ↓
+publishVisualization
+      ↓
+    skipVisualization
+      ↓
+    makeMarker / makePoint / footprintAt
+      ↓
+    appendDeleteMarker / appendFootprintStripMarkers
+      ↓
+    publishMarkers
+  ↓
+publishRangeCircles
+  ↓
+addProtectedGarbageXy                          // 标记所有 D/G/E 已保护
+  ↓
+rememberOpenGarbageRay                         // 这条射线以后还能接新垃圾
+  ↓
+eraseGarbageFront                              // 从待插队列删掉这一单元
+
+
+【八、收尾】
+
+applyDeferredTailDelete        // 末尾还是这份尾巴才按并集删，对不上就不删
+  ↓
+emitOutputGoals                // setOutput("output_goals")
+  ↓
+pruneFinishedPileVisualization
+  ↓
+refreshClipAnchorVisualization
+  ↓
+publishPendingGarbageDots
+  ↓
+return SUCCESS
+
+halt                            // 空实现，停止时不额外做事
+
+
+====================================================================
+【九、已删除的旧流程】
+
+以下函数在拆分前已确认没有调用者，已整体删除：
+insertLockedChainAtFront
+insertFrontPile
+insertGarbageIntoGoals
+insertRayChainIntoGoals
+insertWallEdgeGarbageIntoGoals
+considerExtendNear
+nearestExtendGarbage
+takeOneRayChain
+appendChainWithSkip
+lockedChainLengthAtFront
+garbageSortSingle
+InsertRollback::snapshot / restore
+
+注意：buildWallEdgeExtendChain 仍然保留，它被 assumeSweepSegment 调用，
+是当前贴边 D 点的计算入口。
+====================================================================

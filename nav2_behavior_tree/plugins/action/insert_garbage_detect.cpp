@@ -45,9 +45,8 @@ void InsertGarbagePose::garbageDetectCallback(
   }
 
   capella_ros_msg::msg::GarbageDetect item;
-  double robot_x = 0.0;
-  double robot_y = 0.0;
-  if (!msg || !transformGarbageToMap(item = *msg) || !getRobotPoseXY(robot_x, robot_y)) {
+  geometry_msgs::msg::PoseStamped robot_pose;
+  if (!msg || !transformGarbageToMap(item = *msg) || !getRobotPose(robot_pose)) {
     if (msg) {
       RCLCPP_WARN(
         node_->get_logger(),
@@ -55,6 +54,8 @@ void InsertGarbagePose::garbageDetectCallback(
     }
     return;
   }
+  const double robot_x = robot_pose.pose.position.x;
+  const double robot_y = robot_pose.pose.position.y;
 
   const double gx = item.pose.pose.position.x;
   const double gy = item.pose.pose.position.y;
@@ -144,7 +145,8 @@ void InsertGarbagePose::special_terrain_callback(
 }
 
 // 接收到垃圾后的后处理函数，返回处理后的 garbage_list
-InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
+InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory(
+  const geometry_msgs::msg::PoseStamped & robot_pose)
 {
   std::deque<capella_ros_msg::msg::GarbageDetect> history_list_copy = history_list_;
 
@@ -152,12 +154,8 @@ InsertGarbagePose::GarbageList InsertGarbagePose::postProcessHistory()
     return garbage_list_;
   }
 
-  // base_link到map
-  double robot_x = 0.0;
-  double robot_y = 0.0;
-  if (!getRobotPoseXY(robot_x, robot_y)) {
-    return garbage_list_;
-  }
+  const double robot_x = robot_pose.pose.position.x;
+  const double robot_y = robot_pose.pose.position.y;
 
   auto sameDetect =     // id，stamp，xy 都相同则认为是同一条垃圾
     [](const capella_ros_msg::msg::GarbageDetect & a,
