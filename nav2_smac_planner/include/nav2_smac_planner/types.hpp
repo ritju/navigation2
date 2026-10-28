@@ -15,6 +15,7 @@
 #ifndef NAV2_SMAC_PLANNER__TYPES_HPP_
 #define NAV2_SMAC_PLANNER__TYPES_HPP_
 
+#include <cstdint>
 #include <vector>
 #include <utility>
 #include <string>
@@ -26,7 +27,7 @@
 namespace nav2_smac_planner
 {
 
-typedef std::pair<float, unsigned int> NodeHeuristicPair;
+typedef std::pair<float, uint64_t> NodeHeuristicPair;
 
 /**
  * @struct nav2_smac_planner::SearchInfo
@@ -46,6 +47,17 @@ struct SearchInfo
   std::string lattice_filepath;
   bool cache_obstacle_heuristic;
   bool allow_reverse_expansion;
+  bool use_curvature_state{false};
+  unsigned int heading_quantization{72};
+  float wheelbase{0.85f};
+  float max_steering_angle{0.78539816339f};
+  float max_steering_rate{0.5f};
+  float max_steering_accel{1.0f};
+  float reference_speed{0.5f};
+  float primitive_length{0.65f};
+  float costmap_resolution{0.05f};
+  float footprint_origin_x{0.f};
+  float footprint_origin_y{0.f};
 };
 
 /**

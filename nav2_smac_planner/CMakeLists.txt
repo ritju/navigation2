@@ -87,6 +87,7 @@ target_include_directories(${hints_library_name} PUBLIC
 # Hybrid plugin
 add_library(${library_name} SHARED
   src/smac_planner_hybrid.cpp
+  src/curvature_model.cpp
   src/a_star.cpp
   src/collision_checker.cpp
   src/smoother.cpp
@@ -113,6 +114,7 @@ ament_target_dependencies(${library_name}
 # 2D plugin
 add_library(${library_name}_2d SHARED
   src/smac_planner_2d.cpp
+  src/curvature_model.cpp
   src/a_star.cpp
   src/smoother.cpp
   src/collision_checker.cpp
@@ -134,6 +136,7 @@ ament_target_dependencies(${library_name}_2d
 # Lattice plugin
 add_library(${library_name}_lattice SHARED
   src/smac_planner_lattice.cpp
+  src/curvature_model.cpp
   src/a_star.cpp
   src/smoother.cpp
   src/collision_checker.cpp
@@ -152,11 +155,20 @@ ament_target_dependencies(${library_name}_lattice
   ${dependencies}
 )
 
+add_executable(curvature_debug_viz src/curvature_debug_viz.cpp)
+target_link_libraries(curvature_debug_viz ${library_name})
+ament_target_dependencies(curvature_debug_viz ${dependencies})
+
+add_executable(curvature_random_viz src/curvature_random_viz.cpp)
+target_include_directories(curvature_random_viz PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/test)
+target_link_libraries(curvature_random_viz ${library_name})
+ament_target_dependencies(curvature_random_viz ${dependencies})
+
 pluginlib_export_plugin_description_file(nav2_core smac_plugin_hybrid.xml)
 pluginlib_export_plugin_description_file(nav2_core smac_plugin_2d.xml)
 pluginlib_export_plugin_description_file(nav2_core smac_plugin_lattice.xml)
 
-install(TARGETS ${hints_library_name} ${library_name} ${library_name}_2d ${library_name}_lattice
+install(TARGETS ${hints_library_name} ${library_name} ${library_name}_2d ${library_name}_lattice curvature_debug_viz curvature_random_viz
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
@@ -167,6 +179,7 @@ install(DIRECTORY include/
 )
 
 install(DIRECTORY lattice_primitives/sample_primitives DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY rviz DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

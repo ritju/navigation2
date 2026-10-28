@@ -18,9 +18,11 @@
 #include <stdexcept>
 #include <memory>
 #include <algorithm>
+#include <type_traits>
 #include <limits>
 #include <type_traits>
 #include <chrono>
+#include <type_traits>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -172,7 +174,7 @@ void AStarAlgorithm<NodeT>::setMotionModel(const MotionModel & motion_model)
 
 template<typename NodeT>
 typename AStarAlgorithm<NodeT>::NodePtr AStarAlgorithm<NodeT>::addToGraph(
-  const unsigned int & index)
+  const uint64_t & index)
 {
   auto iter = _graph.find(index);
   if (iter != _graph.end()) {
@@ -306,9 +308,10 @@ bool AStarAlgorithm<NodeT>::createPath(
   int closest_distance = std::numeric_limits<int>::max();
 
   // Given an index, return a node ptr reference if its collision-free and valid
-  const unsigned int max_index = getSizeX() * getSizeY() * getSizeDim3();
+  const uint64_t max_index = static_cast<uint64_t>(getSizeX()) *
+    static_cast<uint64_t>(getSizeY()) * static_cast<uint64_t>(getSizeDim3());
   NodeGetter neighborGetter =
-    [&, this](const unsigned int & index, NodePtr & neighbor_rtn) -> bool
+    [&, this](const uint64_t & index, NodePtr & neighbor_rtn) -> bool
     {
       if (index >= max_index) {
         return false;
@@ -342,25 +345,43 @@ bool AStarAlgorithm<NodeT>::createPath(
     // 2) Mark Nbest as visited
     current_node->visited();
 
-    // 2.1) Use an analytic expansion (if available) to generate a path
+    constexpr bool hybrid_node = std::is_same<NodeT, NodeHybrid>::value;
+    const bool curvature_search = hybrid_node && NodeHybrid::motion_table.curvature_enabled;
+
+    // 2.1) Dubins / Reeds-Shepp shots jump curvature, so the curvature model never calls them.
     expansion_result = nullptr;
-    expansion_result = _expander->tryAnalyticExpansion(
-      current_node, getGoal(), neighborGetter, analytic_iterations, closest_distance);
-    if (expansion_result != nullptr) {
-      current_node = expansion_result;
+    if (!curvature_search) {
+      expansion_result = _expander->tryAnalyticExpansion(
+        current_node, getGoal(), neighborGetter, analytic_iterations, closest_distance);
+      if (expansion_result != nullptr) {
+        current_node = expansion_result;
+      }
     }
 
     // 3) Check if we're at the goal, backtrace if required
-    if (isGoal(current_node)) {
+    if constexpr (hybrid_node) {
+      if (curvature_search) {
+        auto * hybrid = static_cast<NodeHybrid *>(current_node);
+        if (hybrid->reachedCurvatureGoal(
+            static_cast<NodeHybrid *>(getGoal()), _tolerance, _goal_heading_tolerance) ||
+          hybrid->tryCurvatureConnector(
+            static_cast<NodeHybrid *>(getGoal()), _collision_checker, _traverse_unknown,
+            _tolerance, _goal_heading_tolerance))
+        {
+          return current_node->backtracePath(path);
+        }
+      }
+    }
+    if (!curvature_search && isGoal(current_node)) {
       return current_node->backtracePath(path);
-    } else if (_goal_heading_tolerance >= 0.0) {
+    } else if (!curvature_search && _goal_heading_tolerance >= 0.0) {
       if (_best_heading_ok_node.first < getToleranceHeuristic()) {
         approach_iterations++;
         if (approach_iterations >= getOnApproachMaxIterations()) {
           return _graph.at(_best_heading_ok_node.second).backtracePath(path);
         }
       }
-    } else if (_best_heuristic_node.first < getToleranceHeuristic()) {
+    } else if (!curvature_search && _best_heuristic_node.first < getToleranceHeuristic()) {
       // Optimization: Let us find when in tolerance and refine within reason
       approach_iterations++;
       if (approach_iterations >= getOnApproachMaxIterations()) {
@@ -384,10 +405,21 @@ bool AStarAlgorithm<NodeT>::createPath(
       if (g_cost < neighbor->getAccumulatedCost()) {
         neighbor->setAccumulatedCost(g_cost);
         neighbor->parent = current_node;
+        if constexpr (std::is_same<NodeT, NodeHybrid>::value) {
+          if (NodeHybrid::motion_table.curvature_enabled) {
+            static_cast<NodeHybrid *>(neighbor)->commitStaged();
+          }
+        }
 
         // 4.3) Add to queue with heuristic cost
         addNode(g_cost + getHeuristicCost(neighbor), neighbor);
       }
+    }
+  }
+
+  if constexpr (std::is_same<NodeT, NodeHybrid>::value) {
+    if (NodeHybrid::motion_table.curvature_enabled) {
+      return false;
     }
   }
 

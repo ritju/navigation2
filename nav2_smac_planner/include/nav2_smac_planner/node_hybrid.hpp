@@ -23,12 +23,14 @@
 #include <queue>
 #include <memory>
 #include <utility>
+#include <cstdint>
 #include <limits>
 
 #include "ompl/base/StateSpace.h"
 
 #include "nav2_smac_planner/constants.hpp"
 #include "nav2_smac_planner/types.hpp"
+#include "nav2_smac_planner/curvature_model.hpp"
 #include "nav2_smac_planner/collision_checker.hpp"
 #include "nav2_smac_planner/costmap_downsampler.hpp"
 
@@ -113,7 +115,7 @@ struct HybridMotionTable
   MotionModel motion_model = MotionModel::UNKNOWN;
   MotionPoses projections;
   unsigned int size_x;
-  unsigned int num_angle_quantization;
+  unsigned int num_angle_quantization{0};
   float num_angle_quantization_float;
   float min_turning_radius;
   float bin_size;
@@ -126,6 +128,18 @@ struct HybridMotionTable
   std::vector<std::vector<double>> delta_xs;
   std::vector<std::vector<double>> delta_ys;
   std::vector<TrigValues> trig_values;
+  bool curvature_enabled{false};
+  unsigned int index_dim3{1};
+  CurvatureModel curvature{};
+  float goal_cont_x{0.f};
+  float goal_cont_y{0.f};
+  float goal_cont_yaw{0.f};
+  float xy_tolerance_cells{1.f};
+  float heading_tolerance{-1.f};
+  float footprint_origin_x{0.f};
+  float footprint_origin_y{0.f};
+  CurvatureDebugCallback debug_callback{};
+  void syncCurvature(const SearchInfo & search_info, bool allow_reverse);
 };
 
 /**
@@ -179,7 +193,7 @@ public:
    * @brief A constructor for nav2_smac_planner::NodeHybrid
    * @param index The index of this node for self-reference
    */
-  explicit NodeHybrid(const unsigned int index);
+  explicit NodeHybrid(const uint64_t index);
 
   /**
    * @brief A destructor for nav2_smac_planner::NodeHybrid
@@ -276,7 +290,7 @@ public:
    * @brief Gets cell index
    * @return Reference to cell index
    */
-  inline unsigned int & getIndex()
+  inline uint64_t & getIndex()
   {
     return _index;
   }
@@ -304,11 +318,15 @@ public:
    * @param angle_quantization Number of theta bins
    * @return Index
    */
-  static inline unsigned int getIndex(
+  static inline uint64_t getIndex(
     const unsigned int & x, const unsigned int & y, const unsigned int & angle,
     const unsigned int & width, const unsigned int & angle_quantization)
   {
-    return angle + x * angle_quantization + y * width * angle_quantization;
+    const uint64_t dim3 = angle_quantization;
+    const uint64_t xx = x;
+    const uint64_t yy = y;
+    const uint64_t ww = width;
+    return static_cast<uint64_t>(angle) + xx * dim3 + yy * ww * dim3;
   }
 
   /**
@@ -318,12 +336,12 @@ public:
    * @param angle Theta coordinate of point
    * @return Index
    */
-  static inline unsigned int getIndex(
+  static inline uint64_t getIndex(
     const unsigned int & x, const unsigned int & y, const unsigned int & angle)
   {
     return getIndex(
       x, y, angle, motion_table.size_x,
-      motion_table.num_angle_quantization);
+      motion_table.index_dim3);
   }
 
   /**
@@ -334,13 +352,15 @@ public:
    * @return Coordinates
    */
   static inline Coordinates getCoords(
-    const unsigned int & index,
+    const uint64_t & index,
     const unsigned int & width, const unsigned int & angle_quantization)
   {
+    const uint64_t dim3 = angle_quantization;
+    const uint64_t ww = width;
     return Coordinates(
-      (index / angle_quantization) % width,    // x
-      index / (angle_quantization * width),    // y
-      index % angle_quantization);    // theta
+      static_cast<float>((index / dim3) % ww),
+      static_cast<float>(index / (dim3 * ww)),
+      static_cast<float>(index % dim3));
   }
 
   /**
@@ -426,10 +446,44 @@ public:
    * @param neighbors Vector of neighbors to be filled
    */
   void getNeighbors(
-    std::function<bool(const unsigned int &, nav2_smac_planner::NodeHybrid * &)> & validity_checker,
+    std::function<bool(const uint64_t &, nav2_smac_planner::NodeHybrid * &)> & validity_checker,
     GridCollisionChecker * collision_checker,
     const bool & traverse_unknown,
     NodeVector & neighbors);
+
+  bool reachedCurvatureGoal(
+    const NodePtr & goal, float tolerance_cells, double heading_tolerance) const;
+
+  bool tryCurvatureConnector(
+    const NodePtr & goal,
+    GridCollisionChecker * collision_checker,
+    bool traverse_unknown,
+    float tolerance_cells,
+    double heading_tolerance);
+
+  void commitStaged();
+
+  float cont_x{0.f};
+  float cont_y{0.f};
+  float cont_yaw{0.f};
+  float cont_delta{0.f};
+  int kappa_bin{0};
+  int steer_trend{0};
+  bool steer_settled{true};
+  bool has_staged{false};
+  float staged_x{0.f};
+  float staged_y{0.f};
+  float staged_yaw{0.f};
+  float staged_delta{0.f};
+  int staged_kappa{0};
+  int staged_trend{0};
+  int staged_step_sign{0};
+  float staged_length_cells{0.f};
+  float staged_mean_cost{0.f};
+  bool staged_reverse{false};
+  CoordinateVector staged_samples;
+  CoordinateVector edge_samples;
+  CoordinateVector connector_samples;
 
   /**
    * @brief Set the starting pose for planning, as a node index
@@ -457,9 +511,26 @@ public:
 private:
   float _cell_cost;
   float _accumulated_cost;
-  unsigned int _index;
+  uint64_t _index;
   bool _was_visited;
   unsigned int _motion_primitive_index;
+
+  float curvatureTraversalCost(const NodePtr & child) const;
+  void getCurvatureNeighbors(
+    std::function<bool(const uint64_t &, NodeHybrid * &)> & validity_checker,
+    GridCollisionChecker * collision_checker,
+    const bool & traverse_unknown,
+    NodeVector & neighbors);
+  bool backtraceCurvature(CoordinateVector & path);
+  bool primitiveFree(
+    const BodyPrimitive & primitive,
+    GridCollisionChecker * collision_checker,
+    bool traverse_unknown,
+    CoordinateVector & world_samples,
+    float & mean_cost) const;
+  void stagePrimitive(const BodyPrimitive & primitive, const CoordinateVector & world_samples,
+    float mean_cost, NodePtr neighbor) const;
+  unsigned int nearestHeadingBin(float yaw) const;
 };
 
 }  // namespace nav2_smac_planner

@@ -67,6 +67,7 @@ ament_target_dependencies(${library_name}
 # are not registered in component_container_isolated.
 target_include_directories(${library_name} PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/../nav2_smac_planner/include")
+
 target_link_libraries(${library_name}
   "${CMAKE_INSTALL_PREFIX}/lib/libnav2_smac_planner_hints.so")
 

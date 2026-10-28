@@ -20,6 +20,9 @@
 #include <algorithm>
 #include <queue>
 #include <limits>
+#include <cmath>
+#include <cstdint>
+#include <unordered_set>
 #include <utility>
 
 #include "ompl/base/ScopedState.h"
@@ -64,16 +67,21 @@ void HybridMotionTable::initDubin(
   cost_penalty = search_info.cost_penalty;
   reverse_penalty = search_info.reverse_penalty;
   travel_distance_reward = 1.0f - search_info.retrospective_penalty;
+  unsigned int heading_bins = num_angle_quantization_in;
+  if (search_info.use_curvature_state && search_info.heading_quantization > 0) {
+    heading_bins = search_info.heading_quantization;
+  }
 
   // if nothing changed, no need to re-compute primitives
-  if (num_angle_quantization_in == num_angle_quantization &&
+  if (heading_bins == num_angle_quantization &&
     min_turning_radius == search_info.minimum_turning_radius &&
     motion_model == MotionModel::DUBIN)
   {
+    syncCurvature(search_info, false);
     return;
   }
 
-  num_angle_quantization = num_angle_quantization_in;
+  num_angle_quantization = heading_bins;
   num_angle_quantization_float = static_cast<float>(num_angle_quantization);
   min_turning_radius = search_info.minimum_turning_radius;
   motion_model = MotionModel::DUBIN;
@@ -140,6 +148,30 @@ void HybridMotionTable::initDubin(
       delta_ys[i][j] = projections[i]._x * sin_theta + projections[i]._y * cos_theta;
     }
   }
+  syncCurvature(search_info, false);
+}
+
+void HybridMotionTable::syncCurvature(const SearchInfo & search_info, bool allow_reverse)
+{
+  footprint_origin_x = search_info.footprint_origin_x;
+  footprint_origin_y = search_info.footprint_origin_y;
+  if (!search_info.use_curvature_state) {
+    curvature_enabled = false;
+    index_dim3 = num_angle_quantization == 0 ? 1 : num_angle_quantization;
+    curvature.enabled = false;
+    return;
+  }
+  CurvatureLimits limits;
+  limits.wheelbase = search_info.wheelbase;
+  limits.max_angle = search_info.max_steering_angle;
+  limits.max_rate = search_info.max_steering_rate;
+  limits.max_accel = search_info.max_steering_accel;
+  limits.reference_speed = search_info.reference_speed;
+  limits.primitive_length = search_info.primitive_length;
+  limits.resolution = search_info.costmap_resolution;
+  buildCurvatureModel(limits, allow_reverse, curvature);
+  curvature_enabled = true;
+  index_dim3 = num_angle_quantization * static_cast<unsigned int>(curvature.bins.angles.size());
 }
 
 // http://planning.cs.uiuc.edu/node822.html
@@ -157,16 +189,21 @@ void HybridMotionTable::initReedsShepp(
   cost_penalty = search_info.cost_penalty;
   reverse_penalty = search_info.reverse_penalty;
   travel_distance_reward = 1.0f - search_info.retrospective_penalty;
+  unsigned int heading_bins = num_angle_quantization_in;
+  if (search_info.use_curvature_state && search_info.heading_quantization > 0) {
+    heading_bins = search_info.heading_quantization;
+  }
 
   // if nothing changed, no need to re-compute primitives
-  if (num_angle_quantization_in == num_angle_quantization &&
+  if (heading_bins == num_angle_quantization &&
     min_turning_radius == search_info.minimum_turning_radius &&
     motion_model == MotionModel::REEDS_SHEPP)
   {
+    syncCurvature(search_info, true);
     return;
   }
 
-  num_angle_quantization = num_angle_quantization_in;
+  num_angle_quantization = heading_bins;
   num_angle_quantization_float = static_cast<float>(num_angle_quantization);
   min_turning_radius = search_info.minimum_turning_radius;
   motion_model = MotionModel::REEDS_SHEPP;
@@ -217,6 +254,7 @@ void HybridMotionTable::initReedsShepp(
       delta_ys[i][j] = projections[i]._x * sin_theta + projections[i]._y * cos_theta;
     }
   }
+  syncCurvature(search_info, true);
 }
 
 MotionPoses HybridMotionTable::getProjections(const NodeHybrid * node)
@@ -259,7 +297,7 @@ float HybridMotionTable::getAngleFromBin(const unsigned int & bin_idx)
   return bin_idx * bin_size;
 }
 
-NodeHybrid::NodeHybrid(const unsigned int index)
+NodeHybrid::NodeHybrid(const uint64_t index)
 : parent(nullptr),
   pose(0.0f, 0.0f, 0.0f),
   _cell_cost(std::numeric_limits<float>::quiet_NaN()),
@@ -285,14 +323,34 @@ void NodeHybrid::reset()
   pose.x = 0.0f;
   pose.y = 0.0f;
   pose.theta = 0.0f;
+  cont_x = 0.f;
+  cont_y = 0.f;
+  cont_yaw = 0.f;
+  cont_delta = 0.f;
+  kappa_bin = 0;
+  steer_trend = 0;
+  steer_settled = true;
+  has_staged = false;
+  edge_samples.clear();
+  connector_samples.clear();
+  staged_samples.clear();
 }
 
 bool NodeHybrid::isNodeValid(
   const bool & traverse_unknown,
   GridCollisionChecker * collision_checker)
 {
+  float theta_bin = this->pose.theta;
+  if (motion_table.curvature_enabled && motion_table.num_angle_quantization > 0) {
+    int heading = static_cast<int>(std::lround(theta_bin));
+    if (heading < 0) {
+      heading = 0;
+    }
+    theta_bin = static_cast<float>(
+      static_cast<unsigned int>(heading) % motion_table.num_angle_quantization);
+  }
   if (collision_checker->inCollision(
-      this->pose.x, this->pose.y, this->pose.theta /*bin number*/, traverse_unknown))
+      this->pose.x, this->pose.y, theta_bin, traverse_unknown))
   {
     return false;
   }
@@ -303,6 +361,9 @@ bool NodeHybrid::isNodeValid(
 
 float NodeHybrid::getTraversalCost(const NodePtr & child)
 {
+  if (motion_table.curvature_enabled) {
+    return curvatureTraversalCost(child);
+  }
   const float normalized_cost = child->getCost() / 252.0;
   if (std::isnan(normalized_cost)) {
     throw std::runtime_error(
@@ -347,10 +408,28 @@ float NodeHybrid::getHeuristicCost(
   const Coordinates & goal_coords,
   const nav2_costmap_2d::Costmap2D * /*costmap*/)
 {
+  Coordinates node = node_coords;
+  Coordinates goal = goal_coords;
+  if (motion_table.curvature_enabled && motion_table.num_angle_quantization > 0) {
+    const auto unpack = [](float theta) {
+        int heading = static_cast<int>(std::lround(theta));
+        if (heading < 0) {
+          heading = 0;
+        }
+        return static_cast<float>(
+          static_cast<unsigned int>(heading) % motion_table.num_angle_quantization);
+      };
+    node.theta = unpack(node.theta);
+    goal.theta = unpack(goal.theta);
+  }
   const float obstacle_heuristic =
-    getObstacleHeuristic(node_coords, goal_coords, motion_table.cost_penalty);
-  const float dist_heuristic = getDistanceHeuristic(node_coords, goal_coords, obstacle_heuristic);
-  return std::max(obstacle_heuristic, dist_heuristic);
+    getObstacleHeuristic(node, goal, motion_table.cost_penalty);
+  float dist_heuristic = getDistanceHeuristic(node, goal, obstacle_heuristic);
+  float heuristic = std::max(obstacle_heuristic, dist_heuristic);
+  if (motion_table.curvature_enabled && motion_table.travel_distance_reward < 1.f) {
+    heuristic *= motion_table.travel_distance_reward;
+  }
+  return heuristic;
 }
 
 void NodeHybrid::initMotionModel(
@@ -638,8 +717,12 @@ void NodeHybrid::precomputeDistanceHeuristic(
   size_lookup = lookup_table_dim;
   float motion_heuristic = 0.0;
   unsigned int index = 0;
-  int dim_3_size_int = static_cast<int>(dim_3_size);
-  float angular_bin_size = 2 * M_PI / static_cast<float>(dim_3_size);
+  unsigned int heading_bins = dim_3_size;
+  if (search_info.use_curvature_state && motion_table.num_angle_quantization > 0) {
+    heading_bins = motion_table.num_angle_quantization;
+  }
+  int dim_3_size_int = static_cast<int>(heading_bins);
+  float angular_bin_size = 2 * M_PI / static_cast<float>(heading_bins);
 
   // Create a lookup table of Dubin/Reeds-Shepp distances in a window around the goal
   // to help drive the search towards admissible approaches. Deu to symmetries in the
@@ -662,12 +745,16 @@ void NodeHybrid::precomputeDistanceHeuristic(
 }
 
 void NodeHybrid::getNeighbors(
-  std::function<bool(const unsigned int &, nav2_smac_planner::NodeHybrid * &)> & NeighborGetter,
+  std::function<bool(const uint64_t &, nav2_smac_planner::NodeHybrid * &)> & NeighborGetter,
   GridCollisionChecker * collision_checker,
   const bool & traverse_unknown,
   NodeVector & neighbors)
 {
-  unsigned int index = 0;
+  if (motion_table.curvature_enabled) {
+    getCurvatureNeighbors(NeighborGetter, collision_checker, traverse_unknown, neighbors);
+    return;
+  }
+  uint64_t index = 0;
   NodePtr neighbor = nullptr;
   Coordinates initial_node_coords;
   const MotionPoses motion_projections = motion_table.getProjections(this);
@@ -700,6 +787,9 @@ void NodeHybrid::getNeighbors(
 
 bool NodeHybrid::backtracePath(CoordinateVector & path)
 {
+  if (motion_table.curvature_enabled) {
+    return backtraceCurvature(path);
+  }
   if (!this->parent) {
     return false;
   }
@@ -719,6 +809,429 @@ bool NodeHybrid::backtracePath(CoordinateVector & path)
   path.back().theta = NodeHybrid::motion_table.getAngleFromBin(path.back().theta);
 
   return true;
+}
+
+namespace
+{
+
+bool transformPrimitive(
+  float origin_x, float origin_y, float origin_yaw,
+  const BodyPrimitive & primitive,
+  const HybridMotionTable & table,
+  GridCollisionChecker * collision_checker,
+  bool traverse_unknown,
+  NodeHybrid::CoordinateVector & world_samples,
+  float & mean_cost)
+{
+  world_samples.clear();
+  mean_cost = 0.f;
+  if (primitive.samples.empty() || collision_checker == nullptr) {
+    return false;
+  }
+  auto * costmap = collision_checker->getCostmap();
+  const float res = static_cast<float>(table.curvature.limits.resolution);
+  const float c0 = std::cos(origin_yaw);
+  const float s0 = std::sin(origin_yaw);
+  const int size_x = static_cast<int>(costmap->getSizeInCellsX());
+  const int size_y = static_cast<int>(costmap->getSizeInCellsY());
+  float cost_sum = 0.f;
+  world_samples.reserve(primitive.samples.size());
+  for (const auto & sample : primitive.samples) {
+    const float cell_x = origin_x + (sample.x * c0 - sample.y * s0) / res;
+    const float cell_y = origin_y + (sample.x * s0 + sample.y * c0) / res;
+    const float yaw = origin_yaw + sample.yaw;
+    const float cy = std::cos(yaw);
+    const float sy = std::sin(yaw);
+    const float qx = cell_x + (table.footprint_origin_x * cy - table.footprint_origin_y * sy) / res;
+    const float qy = cell_y + (table.footprint_origin_x * sy + table.footprint_origin_y * cy) / res;
+    const double wrapped = std::fmod(static_cast<double>(yaw), 2.0 * M_PI);
+    double positive = wrapped < 0.0 ? wrapped + 2.0 * M_PI : wrapped;
+    int heading = static_cast<int>(std::llround(positive / table.bin_size));
+    const int n_heading = static_cast<int>(table.num_angle_quantization);
+    heading %= n_heading;
+    if (heading < 0) {
+      heading += n_heading;
+    }
+    if (collision_checker->inCollision(qx, qy, static_cast<float>(heading), traverse_unknown)) {
+      return false;
+    }
+    const int mx = static_cast<int>(std::llround(cell_x));
+    const int my = static_cast<int>(std::llround(cell_y));
+    if (mx < 0 || my < 0 || mx >= size_x || my >= size_y) {
+      return false;
+    }
+    cost_sum += static_cast<float>(costmap->getCost(
+      static_cast<unsigned int>(mx), static_cast<unsigned int>(my)));
+    NodeHybrid::Coordinates pose;
+    pose.x = cell_x;
+    pose.y = cell_y;
+    pose.theta = yaw;
+    world_samples.push_back(pose);
+  }
+  mean_cost = cost_sum / static_cast<float>(world_samples.size());
+  return true;
+}
+
+const BodyPrimitive * findFullPrimitive(const std::vector<BodyPrimitive> & prims, int to_bin, float length_m)
+{
+  for (const auto & prim : prims) {
+    if (prim.to_bin == to_bin && std::abs(prim.length_m - length_m) < 1e-3f) {
+      return &prim;
+    }
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+unsigned int NodeHybrid::nearestHeadingBin(float yaw) const
+{
+  double wrapped = std::fmod(static_cast<double>(yaw), 2.0 * M_PI);
+  if (wrapped < 0.0) {
+    wrapped += 2.0 * M_PI;
+  }
+  const int n = static_cast<int>(motion_table.num_angle_quantization);
+  if (n <= 0) {
+    return 0;
+  }
+  int heading = static_cast<int>(std::llround(wrapped / motion_table.bin_size));
+  heading %= n;
+  if (heading < 0) {
+    heading += n;
+  }
+  return static_cast<unsigned int>(heading);
+}
+
+float NodeHybrid::curvatureTraversalCost(const NodePtr & child) const
+{
+  if (!child || !child->has_staged) {
+    return std::numeric_limits<float>::max() / 4.f;
+  }
+  const float normalized = child->staged_mean_cost / 252.f;
+  const float base = child->staged_length_cells * (
+    motion_table.travel_distance_reward + motion_table.cost_penalty * normalized);
+  const int straight = static_cast<int>(motion_table.curvature.bins.straight_index);
+  const bool opposite = steer_trend != 0 && child->staged_step_sign != 0 &&
+    child->staged_step_sign != steer_trend;
+  float coef = 1.f;
+  if (opposite) {
+    coef = motion_table.non_straight_penalty + motion_table.change_penalty;
+  } else if (child->staged_kappa != straight) {
+    coef = motion_table.non_straight_penalty;
+  }
+  if (child->staged_reverse) {
+    coef *= motion_table.reverse_penalty;
+  }
+  return base * coef;
+}
+
+bool NodeHybrid::primitiveFree(
+  const BodyPrimitive & primitive,
+  GridCollisionChecker * collision_checker,
+  bool traverse_unknown,
+  CoordinateVector & world_samples,
+  float & mean_cost) const
+{
+  return transformPrimitive(
+    cont_x, cont_y, cont_yaw, primitive, motion_table, collision_checker,
+    traverse_unknown, world_samples, mean_cost);
+}
+
+void NodeHybrid::stagePrimitive(
+  const BodyPrimitive & primitive, const CoordinateVector & world_samples,
+  float mean_cost, NodePtr neighbor) const
+{
+  neighbor->has_staged = true;
+  neighbor->staged_samples = world_samples;
+  neighbor->staged_x = world_samples.back().x;
+  neighbor->staged_y = world_samples.back().y;
+  neighbor->staged_yaw = world_samples.back().theta;
+  neighbor->staged_delta = primitive.samples.back().delta;
+  neighbor->staged_kappa = primitive.to_bin;
+  neighbor->staged_step_sign = primitive.step_sign;
+  neighbor->staged_trend = primitive.step_sign == 0 ? steer_trend : primitive.step_sign;
+  neighbor->staged_length_cells =
+    primitive.length_m / static_cast<float>(motion_table.curvature.limits.resolution);
+  neighbor->staged_mean_cost = mean_cost;
+  neighbor->staged_reverse = primitive.reverse;
+  neighbor->_cell_cost = mean_cost;
+}
+
+void NodeHybrid::getCurvatureNeighbors(
+  std::function<bool(const uint64_t &, NodeHybrid * &)> & validity_checker,
+  GridCollisionChecker * collision_checker,
+  const bool & traverse_unknown,
+  NodeVector & neighbors)
+{
+  const auto & model = motion_table.curvature;
+  if (model.bins.angles.empty()) {
+    return;
+  }
+  std::vector<BodyPrimitive> local;
+  std::vector<const BodyPrimitive *> prims;
+  if (!steer_settled) {
+    const int bin = nearestCurvatureBin(cont_delta, model.bins);
+    BodyPrimitive align;
+    align.from_bin = bin;
+    align.to_bin = bin;
+    align.step_sign = 0;
+    align.reverse = false;
+    align.padded = false;
+    integrateSteeringPrimitive(
+      cont_delta, model.bins.angles[bin], 0.0, false, false, model.limits, align.samples);
+    align.length_m = static_cast<float>(
+      model.limits.reference_speed *
+      minSteerTime(std::abs(model.bins.angles[bin] - cont_delta), model.limits));
+    if (align.samples.empty()) {
+      steer_settled = true;
+      cont_delta = static_cast<float>(model.bins.angles[bin]);
+      kappa_bin = bin;
+    } else {
+      local.push_back(std::move(align));
+      prims.push_back(&local.back());
+    }
+  }
+  if (steer_settled) {
+    const int bin = std::clamp(
+      kappa_bin, 0, static_cast<int>(model.bins.angles.size()) - 1);
+    for (const auto & prim : model.forward[bin]) {
+      prims.push_back(&prim);
+    }
+    if (motion_table.motion_model == MotionModel::REEDS_SHEPP) {
+      for (const auto & prim : model.reverse_prims[bin]) {
+        prims.push_back(&prim);
+      }
+    }
+    const float dist_m = std::hypot(
+      cont_x - motion_table.goal_cont_x, cont_y - motion_table.goal_cont_y) *
+      static_cast<float>(model.limits.resolution);
+    if (dist_m <= 2.f * static_cast<float>(model.limits.primitive_length)) {
+      for (const auto & prim : model.short_forward[bin]) {
+        prims.push_back(&prim);
+      }
+      if (motion_table.motion_model == MotionModel::REEDS_SHEPP) {
+        for (const auto & prim : model.short_reverse[bin]) {
+          prims.push_back(&prim);
+        }
+      }
+    }
+  }
+
+  std::unordered_set<uint64_t> seen;
+  for (const BodyPrimitive * prim : prims) {
+    CoordinateVector world;
+    float mean_cost = 0.f;
+    if (!primitiveFree(*prim, collision_checker, traverse_unknown, world, mean_cost)) {
+      continue;
+    }
+    const unsigned int heading = nearestHeadingBin(world.back().theta);
+    const unsigned int packed = heading +
+      motion_table.num_angle_quantization * static_cast<unsigned int>(prim->to_bin);
+    const int ix = static_cast<int>(std::llround(world.back().x));
+    const int iy = static_cast<int>(std::llround(world.back().y));
+    if (ix < 0 || iy < 0) {
+      continue;
+    }
+    const uint64_t index = getIndex(
+      static_cast<unsigned int>(ix), static_cast<unsigned int>(iy), packed);
+    if (!seen.insert(index).second) {
+      continue;
+    }
+    NodePtr neighbor = nullptr;
+    if (!validity_checker(index, neighbor) || neighbor->wasVisited()) {
+      continue;
+    }
+    stagePrimitive(*prim, world, mean_cost, neighbor);
+    neighbors.push_back(neighbor);
+  }
+}
+
+bool NodeHybrid::reachedCurvatureGoal(
+  const NodePtr & goal, float tolerance_cells, double heading_tolerance) const
+{
+  if (!goal || motion_table.curvature.bins.angles.empty()) {
+    return false;
+  }
+  if (std::abs(cont_delta) > 1e-3f) {
+    return false;
+  }
+  if (kappa_bin != static_cast<int>(motion_table.curvature.bins.straight_index)) {
+    return false;
+  }
+  if (std::hypot(cont_x - goal->cont_x, cont_y - goal->cont_y) > tolerance_cells) {
+    return false;
+  }
+  if (heading_tolerance >= 0.0) {
+    const double err = std::abs(std::remainder(
+      static_cast<double>(cont_yaw - goal->cont_yaw), 2.0 * M_PI));
+    if (err > heading_tolerance) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool NodeHybrid::tryCurvatureConnector(
+  const NodePtr & goal,
+  GridCollisionChecker * collision_checker,
+  bool traverse_unknown,
+  float tolerance_cells,
+  double heading_tolerance)
+{
+  connector_samples.clear();
+  if (!steer_settled || !goal || motion_table.curvature.bins.angles.empty()) {
+    return false;
+  }
+  const auto & model = motion_table.curvature;
+  const float dist_m = std::hypot(cont_x - goal->cont_x, cont_y - goal->cont_y) *
+    static_cast<float>(model.limits.resolution);
+  if (dist_m > 2.f * static_cast<float>(model.limits.primitive_length)) {
+    return false;
+  }
+  float x = cont_x;
+  float y = cont_y;
+  float yaw = cont_yaw;
+  int bin = kappa_bin;
+  const int straight = static_cast<int>(model.bins.straight_index);
+  CoordinateVector chain;
+  while (bin != straight) {
+    const int next = bin < straight ? bin + 1 : bin - 1;
+    const BodyPrimitive * prim = findFullPrimitive(
+      model.forward[bin], next, static_cast<float>(model.limits.primitive_length));
+    if (prim == nullptr) {
+      return false;
+    }
+    CoordinateVector world;
+    float mean_cost = 0.f;
+    if (!transformPrimitive(
+        x, y, yaw, *prim, motion_table, collision_checker, traverse_unknown, world, mean_cost))
+    {
+      return false;
+    }
+    chain.insert(chain.end(), world.begin(), world.end());
+    x = world.back().x;
+    y = world.back().y;
+    yaw = world.back().theta;
+    bin = next;
+  }
+  const float dx = goal->cont_x - x;
+  const float dy = goal->cont_y - y;
+  const float along = dx * std::cos(yaw) + dy * std::sin(yaw);
+  const float lateral = -dx * std::sin(yaw) + dy * std::cos(yaw);
+  if (std::abs(lateral) > tolerance_cells || along < -1e-3f) {
+    return false;
+  }
+  if (heading_tolerance >= 0.0) {
+    const double err = std::abs(std::remainder(
+      static_cast<double>(yaw - goal->cont_yaw), 2.0 * M_PI));
+    if (err > heading_tolerance) {
+      return false;
+    }
+  }
+  const float along_m = along * static_cast<float>(model.limits.resolution);
+  if (along_m > 1e-3f) {
+    BodyPrimitive straight_prim;
+    straight_prim.to_bin = straight;
+    straight_prim.step_sign = 0;
+    integrateSteeringPrimitive(0.0, 0.0, along_m, true, false, model.limits, straight_prim.samples);
+    straight_prim.length_m = along_m;
+    CoordinateVector world;
+    float mean_cost = 0.f;
+    if (!transformPrimitive(
+        x, y, yaw, straight_prim, motion_table, collision_checker, traverse_unknown, world,
+        mean_cost))
+    {
+      return false;
+    }
+    chain.insert(chain.end(), world.begin(), world.end());
+    x = world.back().x;
+    y = world.back().y;
+  }
+  if (std::hypot(x - goal->cont_x, y - goal->cont_y) > tolerance_cells) {
+    return false;
+  }
+  connector_samples = chain;
+  if (motion_table.debug_callback) {
+    std::vector<CurvatureDebugPoint> points;
+    points.reserve(chain.size());
+    for (const auto & sample : chain) {
+      points.push_back(CurvatureDebugPoint{sample.x, sample.y, sample.theta});
+    }
+    motion_table.debug_callback("connector", points);
+  }
+  return true;
+}
+
+void NodeHybrid::commitStaged()
+{
+  if (!has_staged) {
+    return;
+  }
+  cont_x = staged_x;
+  cont_y = staged_y;
+  cont_yaw = staged_yaw;
+  cont_delta = staged_delta;
+  kappa_bin = staged_kappa;
+  steer_trend = staged_trend;
+  steer_settled = true;
+  edge_samples = staged_samples;
+  pose.x = cont_x;
+  pose.y = cont_y;
+  pose.theta = static_cast<float>(nearestHeadingBin(cont_yaw));
+  if (!motion_table.debug_callback) {
+    return;
+  }
+  std::vector<CurvatureDebugPoint> edge;
+  edge.reserve(edge_samples.size());
+  for (const auto & sample : edge_samples) {
+    edge.push_back(CurvatureDebugPoint{sample.x, sample.y, sample.theta});
+  }
+  motion_table.debug_callback("expansion", edge);
+
+  static int publish_count = 0;
+  if (++publish_count % 25 != 0 || parent == nullptr) {
+    return;
+  }
+  std::vector<NodeHybrid *> stack;
+  for (NodeHybrid * node = this; node != nullptr; node = node->parent) {
+    stack.push_back(node);
+  }
+  std::vector<CurvatureDebugPoint> chain;
+  chain.push_back(CurvatureDebugPoint{stack.back()->cont_x, stack.back()->cont_y, stack.back()->cont_yaw});
+  for (int i = static_cast<int>(stack.size()) - 2; i >= 0; --i) {
+    for (const auto & sample : stack[i]->edge_samples) {
+      chain.push_back(CurvatureDebugPoint{sample.x, sample.y, sample.theta});
+    }
+  }
+  motion_table.debug_callback("search_chain", chain);
+}
+
+bool NodeHybrid::backtraceCurvature(CoordinateVector & path)
+{
+  if (connector_samples.empty() && edge_samples.empty() && parent == nullptr) {
+    Coordinates pose_out;
+    pose_out.x = cont_x;
+    pose_out.y = cont_y;
+    pose_out.theta = cont_yaw;
+    path.push_back(pose_out);
+    return true;
+  }
+  for (int i = static_cast<int>(connector_samples.size()) - 1; i >= 0; --i) {
+    path.push_back(connector_samples[i]);
+  }
+  NodePtr node = this;
+  while (node->parent) {
+    for (int i = static_cast<int>(node->edge_samples.size()) - 1; i >= 0; --i) {
+      path.push_back(node->edge_samples[i]);
+    }
+    node = node->parent;
+  }
+  Coordinates start_pose;
+  start_pose.x = node->cont_x;
+  start_pose.y = node->cont_y;
+  start_pose.theta = node->cont_yaw;
+  path.push_back(start_pose);
+  return !path.empty();
 }
 
 }  // namespace nav2_smac_planner

@@ -439,6 +439,40 @@ void SmacPlannerHybrid::configure(
   node->get_parameter(name + ".smooth_path", smooth_path);
 
   nav2_util::declare_parameter_if_not_declared(
+    node, name + ".use_curvature_state", rclcpp::ParameterValue(true));
+  node->get_parameter(name + ".use_curvature_state", _search_info.use_curvature_state);
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".wheelbase", rclcpp::ParameterValue(0.85));
+  node->get_parameter(name + ".wheelbase", _search_info.wheelbase);
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".max_steering_angle", rclcpp::ParameterValue(0.78539816339));
+  node->get_parameter(name + ".max_steering_angle", _search_info.max_steering_angle);
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".max_steering_rate", rclcpp::ParameterValue(0.5));
+  node->get_parameter(name + ".max_steering_rate", _search_info.max_steering_rate);
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".max_steering_accel", rclcpp::ParameterValue(1.0));
+  node->get_parameter(name + ".max_steering_accel", _search_info.max_steering_accel);
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".reference_speed", rclcpp::ParameterValue(0.5));
+  node->get_parameter(name + ".reference_speed", _search_info.reference_speed);
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".primitive_length", rclcpp::ParameterValue(0.65));
+  node->get_parameter(name + ".primitive_length", _search_info.primitive_length);
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".start_steering_angle", rclcpp::ParameterValue(0.0));
+  node->get_parameter(name + ".start_steering_angle", _start_steering_angle);
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".footprint_origin_x", rclcpp::ParameterValue(0.0));
+  node->get_parameter(name + ".footprint_origin_x", _search_info.footprint_origin_x);
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".footprint_origin_y", rclcpp::ParameterValue(0.0));
+  node->get_parameter(name + ".footprint_origin_y", _search_info.footprint_origin_y);
+  if (_search_info.use_curvature_state) {
+    smooth_path = false;
+  }
+
+  nav2_util::declare_parameter_if_not_declared(
     node, name + ".minimum_turning_radius", rclcpp::ParameterValue(0.4));
   node->get_parameter(name + ".minimum_turning_radius", _minimum_turning_radius_global_coords);
   nav2_util::declare_parameter_if_not_declared(
@@ -501,13 +535,29 @@ void SmacPlannerHybrid::configure(
   nav2_util::declare_parameter_if_not_declared(
     node, name + ".motion_model_for_search", rclcpp::ParameterValue(std::string("DUBIN")));
   node->get_parameter(name + ".motion_model_for_search", _motion_model_for_search);
-  _motion_model = fromString(_motion_model_for_search);
-  if (_motion_model == MotionModel::UNKNOWN) {
+  _configured_motion_model = fromString(_motion_model_for_search);
+  if (_configured_motion_model != MotionModel::DUBIN &&
+    _configured_motion_model != MotionModel::REEDS_SHEPP)
+  {
     RCLCPP_WARN(
       _logger,
       "Unable to get MotionModel search type. Given '%s', "
-      "valid options are MOORE, VON_NEUMANN, DUBIN, REEDS_SHEPP, STATE_LATTICE.",
+      "valid options are DUBIN, REEDS_SHEPP.",
       _motion_model_for_search.c_str());
+    _configured_motion_model = MotionModel::DUBIN;
+  }
+
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".motion_model_mode", rclcpp::ParameterValue(std::string("AUTO")));
+  node->get_parameter(name + ".motion_model_mode", _motion_model_mode);
+  if (_motion_model_mode != "AUTO" && _motion_model_mode != "DUBIN" &&
+    _motion_model_mode != "REEDS_SHEPP")
+  {
+    RCLCPP_WARN(
+      _logger,
+      "Invalid motion_model_mode '%s'; valid options are AUTO, DUBIN, REEDS_SHEPP. "
+      "Falling back to AUTO.", _motion_model_mode.c_str());
+    _motion_model_mode = "AUTO";
   }
 
   if (_max_on_approach_iterations <= 0) {
@@ -530,6 +580,7 @@ void SmacPlannerHybrid::configure(
   }
   _search_info.minimum_turning_radius =
     _minimum_turning_radius_global_coords / (_costmap->getResolution() * _downsampling_factor);
+  fillCurvatureSearchInfo();
   _lookup_table_dim =
     static_cast<float>(_lookup_table_size) /
     static_cast<float>(_costmap->getResolution() * _downsampling_factor);
@@ -553,9 +604,15 @@ void SmacPlannerHybrid::configure(
     _costmap_ros->getUseRadius(),
     findCircumscribedCost(_costmap_ros));
 
-  // 默认非窄通道：DUBIN（禁止倒车），并预计算两套启发式缓存供运行时切换
-  _motion_model = MotionModel::DUBIN;
-  _use_reeds_for_planning = false;
+  // AUTO 保持原有行为（普通区域 DUBIN，窄通道/倒车指令 REEDS_SHEPP）。
+  // 固定模式由 motion_model_mode 决定；motion_model_for_search 作为兼容来源。
+  _motion_model = (_motion_model_mode == "REEDS_SHEPP") ?
+    MotionModel::REEDS_SHEPP :
+    ((_motion_model_mode == "DUBIN") ? MotionModel::DUBIN : _configured_motion_model);
+  if (_motion_model_mode == "AUTO") {
+    _motion_model = MotionModel::DUBIN;
+  }
+  _use_reeds_for_planning = (_motion_model == MotionModel::REEDS_SHEPP);
   _a_star = std::make_unique<AStarAlgorithm<NodeHybrid>>(_motion_model, _search_info);
   _a_star->initialize(
     _allow_unknown,
@@ -563,9 +620,9 @@ void SmacPlannerHybrid::configure(
     _max_on_approach_iterations,
     _max_planning_time,
     _lookup_table_dim,
-    _angle_quantizations);
+    hybridDim3());
   buildMotionModelCaches();
-  applyMotionModel(MotionModel::DUBIN);
+  applyMotionModel(_motion_model);
 
   // Initialize path smoother
   if (smooth_path) {
@@ -586,6 +643,13 @@ void SmacPlannerHybrid::configure(
   _raw_plan_publisher = node->create_publisher<nav_msgs::msg::Path>("unsmoothed_plan", 1);
   _roi_connectivity_path_publisher =
     node->create_publisher<nav_msgs::msg::Path>("roi_connectivity_path", 1);
+  const auto debug_qos = rclcpp::QoS(rclcpp::KeepLast(10));
+  _curvature_expansion_pub = node->create_publisher<nav_msgs::msg::Path>(
+    "curvature_debug/expansion", debug_qos);
+  _curvature_chain_pub = node->create_publisher<nav_msgs::msg::Path>(
+    "curvature_debug/search_chain", debug_qos);
+  _curvature_connector_pub = node->create_publisher<nav_msgs::msg::Path>(
+    "curvature_debug/connector", debug_qos);
 
   // 订阅狭窄通道区域（TransientLocal：晚启动的节点也能收到最近一次发布）
   _narrow_passages_sub = node->create_subscription<garage_utils_msgs::msg::Polygons>(
@@ -617,6 +681,9 @@ void SmacPlannerHybrid::activate()
     _name.c_str());
   _raw_plan_publisher->on_activate();
   _roi_connectivity_path_publisher->on_activate();
+  _curvature_expansion_pub->on_activate();
+  _curvature_chain_pub->on_activate();
+  _curvature_connector_pub->on_activate();
   if (_costmap_downsampler) {
     _costmap_downsampler->on_activate();
   }
@@ -633,6 +700,9 @@ void SmacPlannerHybrid::deactivate()
     _name.c_str());
   _raw_plan_publisher->on_deactivate();
   _roi_connectivity_path_publisher->on_deactivate();
+  _curvature_expansion_pub->on_deactivate();
+  _curvature_chain_pub->on_deactivate();
+  _curvature_connector_pub->on_deactivate();
   if (_costmap_downsampler) {
     _costmap_downsampler->on_deactivate();
   }
@@ -652,6 +722,10 @@ void SmacPlannerHybrid::cleanup()
   }
   _raw_plan_publisher.reset();
   _roi_connectivity_path_publisher.reset();
+  _curvature_expansion_pub.reset();
+  _curvature_chain_pub.reset();
+  _curvature_connector_pub.reset();
+  NodeHybrid::motion_table.debug_callback = nullptr;
   _narrow_passages_sub.reset();
   _enable_backward_sub.reset();
   _narrow_polygons.clear();
@@ -887,6 +961,9 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
     start.pose.position.x, start.pose.position.y,
     goal.pose.position.x, goal.pose.position.y,
     pending_heading_tol);
+  if (auto node = _node.lock()) {
+    node->get_parameter(_name + ".start_steering_angle", _start_steering_angle);
+  }
   std::lock_guard<std::mutex> lock_reinit(_mutex);
   steady_clock::time_point a = steady_clock::now();
 
@@ -904,18 +981,23 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
     enable_backward_cmd = _enable_backward_cmd_;
     enable_backward_cmd_received = _enable_backward_cmd_received_;
   }
-  const bool use_reeds = (enable_backward_cmd_received && enable_backward_cmd) ?
+  const bool auto_use_reeds = (enable_backward_cmd_received && enable_backward_cmd) ?
     true : narrow_active;
-  if (use_reeds != _use_reeds_for_planning) {
-    applyMotionModel(use_reeds ? MotionModel::REEDS_SHEPP : MotionModel::DUBIN);
+  const MotionModel requested_model = _motion_model_mode == "AUTO" ?
+    (auto_use_reeds ? MotionModel::REEDS_SHEPP : MotionModel::DUBIN) :
+    ((_motion_model_mode == "REEDS_SHEPP") ? MotionModel::REEDS_SHEPP : MotionModel::DUBIN);
+  const bool use_reeds = requested_model == MotionModel::REEDS_SHEPP;
+  if (requested_model != _motion_model) {
+    applyMotionModel(requested_model);
     _use_reeds_for_planning = use_reeds;
     RCLCPP_INFO(
       _logger,
       "运动模型切换为 %s（倒车=%s，来源=%s）",
       use_reeds ? "REEDS_SHEPP" : "DUBIN",
       use_reeds ? "是" : "否",
-      (enable_backward_cmd_received && enable_backward_cmd) ? "/enable_backward" :
-      (narrow_active ? "narrow_passage" : "default"));
+      _motion_model_mode != "AUTO" ? "motion_model_mode" :
+      ((enable_backward_cmd_received && enable_backward_cmd) ? "/enable_backward" :
+      (narrow_active ? "narrow_passage" : "default")));
   }
   const bool backward_planning_active = enable_backward_cmd_received && enable_backward_cmd;
   RCLCPP_INFO_THROTTLE(
@@ -1008,6 +1090,56 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   }
   unsigned int goal_orientation_bin_id = static_cast<unsigned int>(floor(goal_orientation_bin));
 
+  const auto to_cell = [costmap](double world, bool axis_x) {
+      const double origin = axis_x ? costmap->getOriginX() : costmap->getOriginY();
+      return static_cast<float>((world - origin) / costmap->getResolution() - 0.5);
+    };
+  const float start_cell_x = to_cell(start.pose.position.x, true);
+  const float start_cell_y = to_cell(start.pose.position.y, false);
+  const float goal_cell_x = to_cell(goal.pose.position.x, true);
+  const float goal_cell_y = to_cell(goal.pose.position.y, false);
+  const double start_yaw = tf2::getYaw(start.pose.orientation);
+  const double goal_yaw = tf2::getYaw(goal.pose.orientation);
+  if (_search_info.use_curvature_state) {
+    _search_info.costmap_resolution = static_cast<float>(costmap->getResolution());
+    unsigned int size_x = costmap->getSizeInCellsX();
+    unsigned int size_y = costmap->getSizeInCellsY();
+    unsigned int heading_bins = _angle_quantizations;
+    NodeHybrid::initMotionModel(_motion_model, size_x, size_y, heading_bins, _search_info);
+  }
+  if (_search_info.use_curvature_state && !NodeHybrid::motion_table.curvature.bins.angles.empty()) {
+    const auto nearest_heading = [this](double yaw) {
+        double wrapped = std::fmod(yaw, 2.0 * M_PI);
+        if (wrapped < 0.0) {
+          wrapped += 2.0 * M_PI;
+        }
+        int heading = static_cast<int>(std::llround(wrapped / _angle_bin_size));
+        const int n = static_cast<int>(_angle_quantizations);
+        heading %= n;
+        if (heading < 0) {
+          heading += n;
+        }
+        return static_cast<unsigned int>(heading);
+      };
+    const int start_kappa = nearestCurvatureBin(
+      _start_steering_angle, NodeHybrid::motion_table.curvature.bins);
+    const unsigned int straight = NodeHybrid::motion_table.curvature.bins.straight_index;
+    orientation_bin_id = nearest_heading(start_yaw) + _angle_quantizations * start_kappa;
+    goal_orientation_bin_id = nearest_heading(goal_yaw) + _angle_quantizations * straight;
+    const int rounded_sx = static_cast<int>(std::llround(start_cell_x));
+    const int rounded_sy = static_cast<int>(std::llround(start_cell_y));
+    const int rounded_gx = static_cast<int>(std::llround(goal_cell_x));
+    const int rounded_gy = static_cast<int>(std::llround(goal_cell_y));
+    if (rounded_sx >= 0 && rounded_sy >= 0) {
+      mx_s = static_cast<unsigned int>(rounded_sx);
+      my_s = static_cast<unsigned int>(rounded_sy);
+    }
+    if (rounded_gx >= 0 && rounded_gy >= 0) {
+      mx_g = static_cast<unsigned int>(rounded_gx);
+      my_g = static_cast<unsigned int>(rounded_gy);
+    }
+  }
+
   const bool viz_subs = static_cast<bool>(
     _roi_connectivity_path_publisher &&
     _roi_connectivity_path_publisher->get_subscription_count() > 0);
@@ -1051,6 +1183,43 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   _a_star->setStart(mx_s, my_s, orientation_bin_id);
   _a_star->setGoal(mx_g, my_g, goal_orientation_bin_id);
   _a_star->setGoalHeadingTolerance(pending_heading_tol);
+  if (_search_info.use_curvature_state && !NodeHybrid::motion_table.curvature.bins.angles.empty()) {
+    const int start_kappa = nearestCurvatureBin(
+      _start_steering_angle, NodeHybrid::motion_table.curvature.bins);
+    auto * start_node = _a_star->getStart();
+    start_node->cont_x = start_cell_x;
+    start_node->cont_y = start_cell_y;
+    start_node->cont_yaw = static_cast<float>(start_yaw);
+    start_node->cont_delta = static_cast<float>(_start_steering_angle);
+    start_node->kappa_bin = start_kappa;
+    start_node->steer_trend = 0;
+    start_node->steer_settled = steeringOnBin(
+      _start_steering_angle, start_kappa, NodeHybrid::motion_table.curvature.bins);
+    start_node->pose.x = start_cell_x;
+    start_node->pose.y = start_cell_y;
+    start_node->pose.theta = static_cast<float>(orientation_bin_id % _angle_quantizations);
+    auto * goal_node = _a_star->getGoal();
+    goal_node->cont_x = goal_cell_x;
+    goal_node->cont_y = goal_cell_y;
+    goal_node->cont_yaw = static_cast<float>(goal_yaw);
+    goal_node->cont_delta = 0.f;
+    goal_node->kappa_bin = static_cast<int>(NodeHybrid::motion_table.curvature.bins.straight_index);
+    goal_node->steer_settled = true;
+    goal_node->pose.x = goal_cell_x;
+    goal_node->pose.y = goal_cell_y;
+    goal_node->pose.theta = static_cast<float>(goal_orientation_bin_id % _angle_quantizations);
+    NodeHybrid::motion_table.goal_cont_x = goal_cell_x;
+    NodeHybrid::motion_table.goal_cont_y = goal_cell_y;
+    NodeHybrid::motion_table.goal_cont_yaw = static_cast<float>(goal_yaw);
+    NodeHybrid::motion_table.xy_tolerance_cells =
+      _tolerance / static_cast<float>(costmap->getResolution());
+    NodeHybrid::motion_table.heading_tolerance = static_cast<float>(pending_heading_tol);
+    _debug_costmap = costmap;
+    NodeHybrid::motion_table.debug_callback =
+      [this](const std::string & kind, const std::vector<CurvatureDebugPoint> & points) {
+        publishCurvatureDebug(kind, points);
+      };
+  }
   if (pending_heading_tol >= 0.0) {
     RCLCPP_INFO(
       _logger,
@@ -1083,6 +1252,7 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   }
 
   if (!error.empty()) {
+    NodeHybrid::motion_table.debug_callback = nullptr;
     static const std::string kStartLethalMsg =
       "Starting point in lethal space! Cannot create feasible plan.";
     if (error == ("invalid use: " + kStartLethalMsg)) {
@@ -1143,11 +1313,79 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
     " milliseconds to smooth path." << std::endl;
 #endif
 
-  trimPathTail(plan, costmap);
-  logHybridPathYaw(
-    _logger, "trim", start, goal, plan, toString(_motion_model).c_str(),
-    static_cast<bool>(_smoother), _tolerance, goal_orientation_bin_id, goal_bin_yaw);
+  if (_search_info.use_curvature_state) {
+    NodeHybrid::motion_table.debug_callback = nullptr;
+    RCLCPP_INFO(
+      _logger,
+      "%s: curvature path has %zu poses; analytic expansion, smoothing and tail trim are skipped.",
+      _name.c_str(), plan.poses.size());
+  } else {
+    trimPathTail(plan, costmap);
+    logHybridPathYaw(
+      _logger, "trim", start, goal, plan, toString(_motion_model).c_str(),
+      static_cast<bool>(_smoother), _tolerance, goal_orientation_bin_id, goal_bin_yaw);
+  }
   return plan;
+}
+
+unsigned int SmacPlannerHybrid::hybridDim3() const
+{
+  if (!_search_info.use_curvature_state) {
+    return _angle_quantizations;
+  }
+  CurvatureLimits limits;
+  limits.wheelbase = _search_info.wheelbase;
+  limits.max_angle = _search_info.max_steering_angle;
+  limits.max_rate = _search_info.max_steering_rate;
+  limits.max_accel = _search_info.max_steering_accel;
+  limits.reference_speed = _search_info.reference_speed;
+  limits.primitive_length = _search_info.primitive_length;
+  limits.resolution = std::max(1e-3f, _search_info.costmap_resolution);
+  return _angle_quantizations * curvatureBinCount(limits);
+}
+
+void SmacPlannerHybrid::fillCurvatureSearchInfo()
+{
+  _search_info.heading_quantization = _angle_quantizations;
+  double resolution = _costmap->getResolution() * std::max(1, _downsampling_factor);
+  if (resolution <= 1e-6) {
+    resolution = 0.05;
+  }
+  _search_info.costmap_resolution = static_cast<float>(resolution);
+  if (!_search_info.use_curvature_state) {
+    return;
+  }
+  const double angle = std::max(1e-3, static_cast<double>(_search_info.max_steering_angle));
+  const double radius = static_cast<double>(_search_info.wheelbase) / std::tan(angle);
+  _search_info.minimum_turning_radius = static_cast<float>(radius / resolution);
+}
+
+void SmacPlannerHybrid::publishCurvatureDebug(
+  const std::string & kind, const std::vector<CurvatureDebugPoint> & points)
+{
+  rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr publisher;
+  if (kind == "expansion") {
+    publisher = _curvature_expansion_pub;
+  } else if (kind == "search_chain") {
+    publisher = _curvature_chain_pub;
+  } else if (kind == "connector") {
+    publisher = _curvature_connector_pub;
+  }
+  if (!publisher || !publisher->is_activated() || publisher->get_subscription_count() == 0) {
+    return;
+  }
+  nav_msgs::msg::Path path;
+  path.header.frame_id = _global_frame;
+  path.header.stamp = _clock->now();
+  path.poses.reserve(points.size());
+  for (const auto & point : points) {
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header = path.header;
+    pose.pose = getWorldCoords(point.x, point.y, _debug_costmap ? _debug_costmap : _costmap);
+    pose.pose.orientation = getWorldOrientation(point.yaw);
+    path.poses.push_back(pose);
+  }
+  publisher->publish(path);
 }
 
 bool SmacPlannerHybrid::is_free(
@@ -1378,14 +1616,41 @@ SmacPlannerHybrid::dynamicParametersCallback(std::vector<rclcpp::Parameter> para
     } else if (type == ParameterType::PARAMETER_STRING) {
       if (name == _name + ".motion_model_for_search") {
         reinit_a_star = true;
-        _motion_model = fromString(parameter.as_string());
-        if (_motion_model == MotionModel::UNKNOWN) {
-          RCLCPP_WARN(
-            _logger,
-            "Unable to get MotionModel search type. Given '%s', "
-            "valid options are MOORE, VON_NEUMANN, DUBIN, REEDS_SHEPP.",
-            _motion_model_for_search.c_str());
+        const std::string requested_model = parameter.as_string();
+        const MotionModel parsed_model = fromString(requested_model);
+        if (parsed_model != MotionModel::DUBIN &&
+          parsed_model != MotionModel::REEDS_SHEPP)
+        {
+          result.successful = false;
+          result.reason = "motion_model_for_search must be DUBIN or REEDS_SHEPP";
+          return result;
         }
+        _motion_model_for_search = requested_model;
+        _configured_motion_model = parsed_model;
+        if (_motion_model_mode != "AUTO") {
+          _motion_model = _motion_model_mode == "REEDS_SHEPP" ?
+            MotionModel::REEDS_SHEPP : MotionModel::DUBIN;
+          _use_reeds_for_planning = _motion_model == MotionModel::REEDS_SHEPP;
+        }
+      } else if (name == _name + ".motion_model_mode") {
+        const std::string requested_mode = parameter.as_string();
+        if (requested_mode != "AUTO" && requested_mode != "DUBIN" &&
+          requested_mode != "REEDS_SHEPP")
+        {
+          result.successful = false;
+          result.reason = "motion_model_mode must be AUTO, DUBIN or REEDS_SHEPP";
+          return result;
+        }
+        _motion_model_mode = requested_mode;
+        if (_motion_model_mode == "AUTO") {
+          _motion_model = _use_reeds_for_planning ?
+            MotionModel::REEDS_SHEPP : MotionModel::DUBIN;
+        } else {
+          _motion_model = _motion_model_mode == "REEDS_SHEPP" ?
+            MotionModel::REEDS_SHEPP : MotionModel::DUBIN;
+          _use_reeds_for_planning = _motion_model == MotionModel::REEDS_SHEPP;
+        }
+        reinit_a_star = true;
       }
     }
   }
@@ -1398,6 +1663,7 @@ SmacPlannerHybrid::dynamicParametersCallback(std::vector<rclcpp::Parameter> para
     }
     _search_info.minimum_turning_radius =
       _minimum_turning_radius_global_coords / (_costmap->getResolution() * _downsampling_factor);
+    fillCurvatureSearchInfo();
     _lookup_table_dim =
       static_cast<float>(_lookup_table_size) /
       static_cast<float>(_costmap->getResolution() * _downsampling_factor);
@@ -1425,10 +1691,13 @@ SmacPlannerHybrid::dynamicParametersCallback(std::vector<rclcpp::Parameter> para
         _max_on_approach_iterations,
         _max_planning_time,
         _lookup_table_dim,
-        _angle_quantizations);
+        hybridDim3());
       buildMotionModelCaches();
-      applyMotionModel(
-        _use_reeds_for_planning ? MotionModel::REEDS_SHEPP : MotionModel::DUBIN);
+      const MotionModel active_model = _motion_model_mode == "AUTO" ?
+        (_use_reeds_for_planning ? MotionModel::REEDS_SHEPP : MotionModel::DUBIN) :
+        ((_motion_model_mode == "REEDS_SHEPP") ? MotionModel::REEDS_SHEPP : MotionModel::DUBIN);
+      applyMotionModel(active_model);
+      _use_reeds_for_planning = active_model == MotionModel::REEDS_SHEPP;
     }
 
     // Re-Initialize costmap downsampler
@@ -1451,7 +1720,7 @@ SmacPlannerHybrid::dynamicParametersCallback(std::vector<rclcpp::Parameter> para
     }
 
     // Re-Initialize smoother
-    if (reinit_smoother) {
+    if (reinit_smoother && !_search_info.use_curvature_state) {
       SmootherParams params;
       params.get(node, _name);
       _smoother = std::make_unique<Smoother>(params);

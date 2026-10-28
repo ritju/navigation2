@@ -280,9 +280,9 @@ public:
     const unsigned int & x, const unsigned int & y, const unsigned int & angle)
   {
     // Hybrid-A* and State Lattice share a coordinate system
-    return NodeHybrid::getIndex(
+    return static_cast<unsigned int>(NodeHybrid::getIndex(
       x, y, angle, motion_table.size_x,
-      motion_table.num_angle_quantization);
+      motion_table.num_angle_quantization));
   }
 
   /**
@@ -393,7 +393,7 @@ public:
    * @param neighbors Vector of neighbors to be filled
    */
   void getNeighbors(
-    std::function<bool(const unsigned int &,
+    std::function<bool(const uint64_t &,
     nav2_smac_planner::NodeLattice * &)> & validity_checker,
     GridCollisionChecker * collision_checker,
     const bool & traverse_unknown,

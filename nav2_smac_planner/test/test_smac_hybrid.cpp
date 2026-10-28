@@ -118,7 +118,8 @@ TEST(SmacTest, test_smac_se2_reconfigure)
       rclcpp::Parameter("test.smooth_path", false),
       rclcpp::Parameter("test.analytic_expansion_max_length", 42.0),
       rclcpp::Parameter("test.max_on_approach_iterations", 42),
-      rclcpp::Parameter("test.motion_model_for_search", std::string("REEDS_SHEPP"))});
+      rclcpp::Parameter("test.motion_model_for_search", std::string("REEDS_SHEPP")),
+      rclcpp::Parameter("test.motion_model_mode", std::string("REEDS_SHEPP"))});
 
   rclcpp::spin_until_future_complete(
     nodeSE2->get_node_base_interface(),
@@ -145,5 +146,8 @@ TEST(SmacTest, test_smac_se2_reconfigure)
   EXPECT_EQ(nodeSE2->get_parameter("test.max_on_approach_iterations").as_int(), 42);
   EXPECT_EQ(
     nodeSE2->get_parameter("test.motion_model_for_search").as_string(),
+    std::string("REEDS_SHEPP"));
+  EXPECT_EQ(
+    nodeSE2->get_parameter("test.motion_model_mode").as_string(),
     std::string("REEDS_SHEPP"));
 }

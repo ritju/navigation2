@@ -53,6 +53,7 @@ planner_server:
       close_range_max_planning_time: 0.5  # 近距规划时限 (s)
       close_range_max_iterations: 1000000 # 近距最大迭代；<=0 表示与 max_iterations 相同
       motion_model_for_search: "DUBIN"    # DUBIN 不能倒车；倒车用 REEDS_SHEPP
+      motion_model_mode: "AUTO"           # AUTO=按窄通道/倒车指令切换；也可固定 DUBIN 或 REEDS_SHEPP
       angle_quantization_bins: 72         # 航向离散份数
       analytic_expansion_ratio: 3.5       # 解析展开尝试频率
       analytic_expansion_max_length: 5.0  # 解析展开最大长度 (m)，过短易绕圈捷径

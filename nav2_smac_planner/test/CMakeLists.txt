@@ -64,6 +64,37 @@ target_link_libraries(test_a_star
   ${library_name}
 )
 
+ament_add_gtest(test_curvature_model
+  test_curvature_model.cpp
+)
+ament_target_dependencies(test_curvature_model
+  ${dependencies}
+)
+target_link_libraries(test_curvature_model
+  ${library_name}
+)
+
+ament_add_gtest(test_curvature_random_paths
+  test_curvature_random_paths.cpp
+)
+ament_target_dependencies(test_curvature_random_paths
+  ${dependencies}
+)
+target_link_libraries(test_curvature_random_paths
+  ${library_name}
+)
+
+ament_add_gtest(test_curvature_search_random
+  test_curvature_search_random.cpp
+  TIMEOUT 180
+)
+ament_target_dependencies(test_curvature_search_random
+  ${dependencies}
+)
+target_link_libraries(test_curvature_search_random
+  ${library_name}
+)
+
 # Test SMAC Hybrid
 ament_add_gtest(test_smac_hybrid
   test_smac_hybrid.cpp

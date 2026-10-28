@@ -21,6 +21,7 @@
 #include <mutex>
 
 #include "nav2_smac_planner/a_star.hpp"
+#include "nav2_smac_planner/curvature_model.hpp"
 #include "nav2_smac_planner/smoother.hpp"
 #include "nav2_smac_planner/utils.hpp"
 #include "nav2_smac_planner/costmap_downsampler.hpp"
@@ -195,10 +196,24 @@ protected:
   double _close_range_max_planning_time{5.0};
   int _close_range_max_iterations{250000};
   double _minimum_turning_radius_global_coords;
+  /** 运动模型策略：AUTO、DUBIN 或 REEDS_SHEPP。 */
+  std::string _motion_model_mode{"AUTO"};
   std::string _motion_model_for_search;
+  /** motion_model_for_search 解析后的固定模型（兼容旧参数）。 */
+  MotionModel _configured_motion_model{MotionModel::DUBIN};
   MotionModel _motion_model;
   rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr _raw_plan_publisher;
   rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr _roi_connectivity_path_publisher;
+  rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr _curvature_expansion_pub;
+  rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr _curvature_chain_pub;
+  rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr _curvature_connector_pub;
+  double _start_steering_angle{0.0};
+  nav2_costmap_2d::Costmap2D * _debug_costmap{nullptr};
+  unsigned int hybridDim3() const;
+  void fillCurvatureSearchInfo();
+  void publishCurvatureDebug(
+    const std::string & kind,
+    const std::vector<nav2_smac_planner::CurvatureDebugPoint> & points);
   std::mutex _mutex;
   rclcpp_lifecycle::LifecycleNode::WeakPtr _node;
 
