@@ -209,8 +209,26 @@ BT::NodeStatus InsertGarbagePose::tick()
     }
 
     if (!garbage_list_.empty() && planned_units_.empty()) {
-      garbageSortTotal(rx, ry, robot_yaw);
-      logSortedInsertList(rx, ry, robot_yaw);
+      // 有上一离开点（上一堆的 E，没有 E 则是 G）就从那个点指向本堆再伸 E。
+      // 没有上一离开点（新任务）才用当前车位。
+      double plan_x = rx;
+      double plan_y = ry;
+      double plan_yaw = robot_yaw;
+      const char * plan_src = "robot";
+      if (has_last_sweep_arrive_) {
+        plan_x = last_sweep_arrive_xy_.first;
+        plan_y = last_sweep_arrive_xy_.second;
+        if (has_last_sweep_path_yaw_) {
+          plan_yaw = last_sweep_path_yaw_;
+        }
+        plan_src = "arrive";
+      }
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "InsertGarbagePose: 规划来向 %s (%.2f, %.2f)",
+        plan_src, plan_x, plan_y);
+      garbageSortTotal(plan_x, plan_y, plan_yaw);
+      logSortedInsertList(plan_x, plan_y, plan_yaw);
     }
 
     const bool wait_single_pile =

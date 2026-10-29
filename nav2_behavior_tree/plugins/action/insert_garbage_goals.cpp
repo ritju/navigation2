@@ -258,6 +258,8 @@ InsertGarbagePose::InsertLoopAction InsertGarbagePose::insertSweepUnit(
   const geometry_msgs::msg::PoseStamped & robot_pose,
   double rx, double ry)
 {
+  (void)rx;
+  (void)ry;
   if (batch == nullptr || planned_units_.empty()) {
     return InsertLoopAction::BreakLoop;
   }

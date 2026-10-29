@@ -235,21 +235,15 @@ InsertGarbagePose::InsertInfo InsertGarbagePose::gatherInsertInfo(
     info.goalc.pose.position.x, info.goalc.pose.position.y,
     info.goald_x, info.goald_y);
 
-  // 插入朝向 / 默认伸 E：后一堆按规划来向，用上一离开点（仍在 goals 里的 G/E），
-  // 不用发现时的车位，避免侧向堆的 E 和车头同向。
+  // 插入朝向：有上一离开点就用它指向垃圾，不管这个点还在不在当前这段 goals 里。
+  // 没有上一离开点才用车位。实际 E 坐标由规划来向决定，这里与规划保持同一来向。
   double from_x = rx;
   double from_y = ry;
   const char * yaw_src = "robot->G";
-  if (has_last_sweep_arrive_ &&
-    findUnindexedSentinelIndex(
-      info.goals,
-      last_sweep_arrive_xy_.first, last_sweep_arrive_xy_.second, nullptr))
-  {
+  if (has_last_sweep_arrive_) {
     from_x = last_sweep_arrive_xy_.first;
     from_y = last_sweep_arrive_xy_.second;
     yaw_src = "arrive->G";
-  } else if (has_last_sweep_arrive_) {
-    yaw_src = "robot->G, prev arrive not in goals";
   }
   const double min_from_m = kMinExtendFromDistM;
   const double dx_from = gx - from_x;
