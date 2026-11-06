@@ -111,9 +111,9 @@ bool GridCollisionChecker::inCollision(
     if (possible_inscribed_cost_ <= 0) {
       RCLCPP_ERROR_THROTTLE(
         logger_, *clock_, 1000,
-        "Inflation layer either not found or inflation is not set sufficiently for "
-        "non-circular collision checking. It is HIGHLY recommended to set the inflation "
-        "radius to be at MINIMUM half of the robot's largest cross-section. See "
+        "未找到膨胀层，或膨胀参数不足以支持 "
+        "非圆形碰撞检查。强烈建议将膨胀"
+        "半径至少设置为机器人最大横截面的一半。请参阅"
         "github.com/ros-planning/navigation2/tree/main/nav2_smac_planner#potential-fields "
         "for full instructions.");
     }

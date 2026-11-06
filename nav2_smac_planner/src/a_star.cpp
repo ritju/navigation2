@@ -237,7 +237,7 @@ void AStarAlgorithm<NodeT>::setGoal(
 
   if (!_search_info.cache_obstacle_heuristic || goal_coords != _goal_coordinates) {
     if (!_start) {
-      throw std::runtime_error("Start must be set before goal.");
+      throw std::runtime_error("必须先设置起点，再设置目标。");
     }
 
     NodeT::resetObstacleHeuristic(_costmap, _start->pose.x, _start->pose.y, mx, my);
@@ -252,24 +252,24 @@ bool AStarAlgorithm<NodeT>::areInputsValid()
 {
   // Check if graph was filled in
   if (_graph.empty()) {
-    throw std::runtime_error("Failed to compute path, no costmap given.");
+    throw std::runtime_error("计算路径失败：未提供代价地图。");
   }
 
   // Check if points were filled in
   if (!_start || !_goal) {
-    throw std::runtime_error("Failed to compute path, no valid start or goal given.");
+    throw std::runtime_error("计算路径失败：起点或目标无效。");
   }
 
   // Check if ending point is valid
   if (getToleranceHeuristic() < 0.001 &&
     !_goal->isNodeValid(_traverse_unknown, _collision_checker))
   {
-    throw std::runtime_error("Failed to compute path, goal is occupied with no tolerance.");
+    throw std::runtime_error("计算路径失败：目标被占用且未设置容差。");
   }
 
   // Check if starting point is valid
   if (!_start->isNodeValid(_traverse_unknown, _collision_checker)) {
-    throw std::runtime_error("Starting point in lethal space! Cannot create feasible plan.");
+    throw std::runtime_error("起点位于致命障碍物区域，无法生成可行规划。");
   }
 
   return true;

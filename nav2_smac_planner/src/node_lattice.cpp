@@ -234,7 +234,7 @@ bool NodeLattice::isNodeValid(
     initial_pose._theta = motion_table.getAngleFromBin(motion_primitive->start_angle);
 
     for (auto it = motion_primitive->poses.begin(); it != motion_primitive->poses.end(); ++it) {
-      // poses are in metric coordinates from (0, 0), not grid space yet
+      // poses are in metric coordinates ，起点 (0, 0), not grid space yet
       pose_dist = *it - last_pose;
       // Avoid square roots by (hypot(x, y) > res) == (x*x+y*y > diag*diag)
       if (pose_dist._x * pose_dist._x + pose_dist._y * pose_dist._y > resolution_diag_sq) {
@@ -271,8 +271,8 @@ float NodeLattice::getTraversalCost(const NodePtr & child)
   const float normalized_cost = child->getCost() / 252.0;
   if (std::isnan(normalized_cost)) {
     throw std::runtime_error(
-            "Node attempted to get traversal "
-            "cost without a known collision cost!");
+            "节点尝试获取通行 "
+            "代价未知，无法计算通行代价！");
   }
 
   // this is the first node
@@ -338,7 +338,7 @@ void NodeLattice::initMotionModel(
 {
   if (motion_model != MotionModel::STATE_LATTICE) {
     throw std::runtime_error(
-            "Invalid motion model for Lattice node. Please select"
+            "格点节点的运动模型无效，请选择"
             " STATE_LATTICE and provide a valid lattice file.");
   }
 

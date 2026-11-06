@@ -306,8 +306,8 @@ float NodeHybrid::getTraversalCost(const NodePtr & child)
   const float normalized_cost = child->getCost() / 252.0;
   if (std::isnan(normalized_cost)) {
     throw std::runtime_error(
-            "Node attempted to get traversal "
-            "cost without a known SE2 collision cost!");
+            "节点尝试获取通行 "
+            "代价，但 SE2 碰撞代价未知！");
   }
 
   // this is the first node
@@ -370,7 +370,7 @@ void NodeHybrid::initMotionModel(
       break;
     default:
       throw std::runtime_error(
-              "Invalid motion model for Hybrid A*. Please select between"
+              "Hybrid A* 的运动模型无效，请选择"
               " Dubin (Ackermann forward only),"
               " Reeds-Shepp (Ackermann forward and back).");
   }
@@ -627,8 +627,8 @@ void NodeHybrid::precomputeDistanceHeuristic(
       search_info.minimum_turning_radius);
   } else {
     throw std::runtime_error(
-            "Node attempted to precompute distance heuristics "
-            "with invalid motion model!");
+            "节点尝试预计算距离启发式时 "
+            "运动模型无效！");
   }
 
   ompl::base::ScopedState<> from(motion_table.state_space), to(motion_table.state_space);

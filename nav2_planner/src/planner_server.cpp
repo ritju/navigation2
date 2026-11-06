@@ -350,8 +350,8 @@ void logPlanSessionStats(
 
   RCLCPP_INFO(
     logger,
-    "[%s] summary: goals=%zu concat_poses=%zu total=%.3fs "
-    "success=%zu failed=%zu straight=%zu avg=%s hybrid=%zu avg=%s",
+    "[%s] 摘要： 目标数=%zu concat_路径点数=%zu 总耗时=%.3fs "
+    "成功数=%zu 失败数=%zu 直线数=%zu 平均耗时=%s 混合规划数=%zu 平均耗时=%s",
     tag,
     stats.n_goals,
     concat_poses,
@@ -364,7 +364,7 @@ void logPlanSessionStats(
     avg_h.c_str());
 
   if (stats.failed.empty()) {
-    RCLCPP_INFO(logger, "[%s] failed goals: none", tag);
+    RCLCPP_INFO(logger, "[%s] 失败目标： none", tag);
     return;
   }
 
@@ -375,9 +375,9 @@ void logPlanSessionStats(
     if (k > 0) {
       oss << "; ";
     }
-    oss << "via=" << f.index << " (" << f.x << ", " << f.y << ") reason=" << f.reason;
+    oss << "途经点=" << f.index << " (" << f.x << ", " << f.y << ") reason=" << f.reason;
   }
-  RCLCPP_WARN(logger, "[%s] failed goals: %s", tag, oss.str().c_str());
+  RCLCPP_WARN(logger, "[%s] 失败目标： %s", tag, oss.str().c_str());
 }
 
 }  // namespace
@@ -396,7 +396,7 @@ PlannerServer::PlannerServer(const rclcpp::NodeOptions & options)
   _goal_search_resolution(0.1)
 
 {
-  RCLCPP_INFO(get_logger(), "Creating");
+  RCLCPP_INFO(get_logger(), "创建中");
 
   // Declare this node's parameters
   declare_parameter("planner_plugins", default_ids_);
@@ -481,7 +481,7 @@ PlannerServer::~PlannerServer()
 nav2_util::CallbackReturn
 PlannerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
 {
-  RCLCPP_INFO(get_logger(), "Configuring");
+  RCLCPP_INFO(get_logger(), "配置中");
 
   costmap_ros_->configure();
   costmap_ = costmap_ros_->getCostmap();
@@ -491,7 +491,7 @@ PlannerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   costmap_thread_ = std::make_unique<nav2_util::NodeThread>(costmap_ros_);
 
   RCLCPP_DEBUG(
-    get_logger(), "Costmap size: %d,%d",
+    get_logger(), "代价地图尺寸： %d,%d",
     costmap_->getSizeInCellsX(), costmap_->getSizeInCellsY());
 
   tf_ = costmap_ros_->getTfBuffer();
@@ -507,13 +507,13 @@ PlannerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
       nav2_core::GlobalPlanner::Ptr planner =
         gp_loader_.createUniqueInstance(planner_types_[i]);
       RCLCPP_INFO(
-        get_logger(), "Created global planner plugin %s of type %s",
+        get_logger(), "已创建全局规划器插件 %s of type %s",
         planner_ids_[i].c_str(), planner_types_[i].c_str());
       planner->configure(node, planner_ids_[i], tf_, costmap_ros_);
       planners_.insert({planner_ids_[i], planner});
     } catch (const pluginlib::PluginlibException & ex) {
       RCLCPP_FATAL(
-        get_logger(), "Failed to create global planner. Exception: %s",
+        get_logger(), "创建全局规划器失败，异常： %s",
         ex.what());
       return nav2_util::CallbackReturn::FAILURE;
     }
@@ -536,11 +536,11 @@ PlannerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
 
   RCLCPP_INFO(
     get_logger(),
-    "Planner Server has %s planners available. enable_straight_expand=%s "
+    "规划器服务端可用规划器数量= %s 个规划器可用。 启用直线扩展=%s "
     "near_dist=%.2f near_yaw=%.2f via_heading_tol=%.2f via_trim_len=%.2f "
     "via_span=%d colinear_deg=%.1f corner_deg=%.1f short_edge=%.2f "
-    "sweep_k=%.2f corner_snap_tol=%.2f corner_snap=%s "
-    "stretch=%s rotate=%s debug=%s",
+    "sweep_k=%.2f 角点吸附容差=%.2f 角点吸附=%s "
+    "拉伸=%s 旋转=%s 调试=%s",
     planner_ids_concat_.c_str(),
     enable_straight_expand_ ? "true" : "false",
     near_distance_threshold_, near_yaw_threshold_,
@@ -559,8 +559,8 @@ PlannerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   } else {
     RCLCPP_WARN(
       get_logger(),
-      "The expected planner frequency parameter is %.4f Hz. The value should to be greater"
-      " than 0.0 to turn on duration overrrun warning messages", expected_planner_frequency);
+      "规划器期望频率参数为 %.4f Hz. 该值应大于"
+      " 大于 0 才启用耗时超限告警", expected_planner_frequency);
     max_planner_duration_ = 0.0;
   }
 
@@ -590,7 +590,7 @@ PlannerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
 nav2_util::CallbackReturn
 PlannerServer::on_activate(const rclcpp_lifecycle::State & /*state*/)
 {
-  RCLCPP_INFO(get_logger(), "Activating");
+  RCLCPP_INFO(get_logger(), "激活中");
 
   plan_publisher_->on_activate();
   if (debug_viz_) {
@@ -626,7 +626,7 @@ PlannerServer::on_activate(const rclcpp_lifecycle::State & /*state*/)
 nav2_util::CallbackReturn
 PlannerServer::on_deactivate(const rclcpp_lifecycle::State & /*state*/)
 {
-  RCLCPP_INFO(get_logger(), "Deactivating");
+  RCLCPP_INFO(get_logger(), "停用中");
 
   action_server_pose_->deactivate();
   action_server_poses_->deactivate();
@@ -660,7 +660,7 @@ PlannerServer::on_deactivate(const rclcpp_lifecycle::State & /*state*/)
 nav2_util::CallbackReturn
 PlannerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
 {
-  RCLCPP_INFO(get_logger(), "Cleaning up");
+  RCLCPP_INFO(get_logger(), "清理中");
 
   action_server_pose_.reset();
   action_server_poses_.reset();
@@ -692,7 +692,7 @@ PlannerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
 nav2_util::CallbackReturn
 PlannerServer::on_shutdown(const rclcpp_lifecycle::State &)
 {
-  RCLCPP_INFO(get_logger(), "Shutting down");
+  RCLCPP_INFO(get_logger(), "关闭中");
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
@@ -701,7 +701,7 @@ bool PlannerServer::isServerInactive(
   std::unique_ptr<nav2_util::SimpleActionServer<T>> & action_server)
 {
   if (action_server == nullptr || !action_server->is_server_active()) {
-    RCLCPP_DEBUG(get_logger(), "Action server unavailable or inactive. Stopping.");
+    RCLCPP_DEBUG(get_logger(), "动作服务不可用或未激活，停止处理。");
     return true;
   }
 
@@ -722,7 +722,7 @@ bool PlannerServer::isCancelRequested(
   std::unique_ptr<nav2_util::SimpleActionServer<T>> & action_server)
 {
   if (action_server->is_cancel_requested()) {
-    RCLCPP_INFO(get_logger(), "Goal was canceled. Canceling planning action.");
+    RCLCPP_INFO(get_logger(), "目标已取消，取消规划动作。");
     action_server->terminate_all();
     return true;
   }
@@ -766,7 +766,7 @@ bool PlannerServer::transformPosesToGlobalFrame(
     !costmap_ros_->transformPoseToGlobalFrame(curr_goal, curr_goal))
   {
     RCLCPP_WARN(
-      get_logger(), "Could not transform the start or goal pose in the costmap frame");
+      get_logger(), "无法将起点或目标位姿转换到代价地图坐标系");
     action_server->terminate_current();
     return false;
   }
@@ -781,8 +781,8 @@ bool PlannerServer::validatePath(
 {
   if (path.poses.size() == 0) {
     RCLCPP_WARN(
-      get_logger(), "Planning algorithm %s failed to generate a valid"
-      " path to (%.2f, %.2f)", planner_id.c_str(),
+      get_logger(), "规划算法 %s 未生成有效"
+      " 到目标 (%.2f, %.2f) 的路径", planner_id.c_str(),
       goal.pose.position.x, goal.pose.position.y);
      // 若全局路径划失败跳过此点继续，不终止action
     // action_server->terminate_current();
@@ -791,7 +791,7 @@ bool PlannerServer::validatePath(
 
   RCLCPP_DEBUG(
     get_logger(),
-    "Found valid path of size %zu to (%.2f, %.2f)",
+    "找到有效路径，路径点数= %zu 到 (%.2f, %.2f)",
     path.poses.size(), goal.pose.position.x,
     goal.pose.position.y);
 
@@ -811,15 +811,15 @@ PlannerServer::computePlanThroughPoses()
   geometry_msgs::msg::PoseStamped robot_pose;
   if (costmap_ros_->getRobotPose(robot_pose))
   {
-    double footprint_cost = footprint_collision_checker_->footprintCostAtPose(robot_pose.pose.position.x, robot_pose.pose.position.y, 
+    double footprint_cost = footprint_collision_checker_->footprintCostAtPose(robot_pose.pose.position.x, robot_pose.pose.position.y,
                                                           tf2::getYaw(robot_pose.pose.orientation), costmap_ros_->getRobotFootprint());
-    RCLCPP_INFO(get_logger(), "Robot footprint cost at current pose (%.2f, %.2f) is %f", 
+    RCLCPP_INFO(get_logger(), "机器人当前位姿足迹代价 (%.2f, %.2f) 为 %f",
                 robot_pose.pose.position.x, robot_pose.pose.position.y, footprint_cost);
     if (footprint_cost == nav2_costmap_2d::LETHAL_OBSTACLE)
     {
       RCLCPP_WARN(
         get_logger(),
-        "Robot is currently in collision at (%.2f, %.2f). Cannot compute path through poses.",
+        "机器人当前发生碰撞，位置= (%.2f, %.2f). 无法计算途经点路径。",
         robot_pose.pose.position.x, robot_pose.pose.position.y);
       action_server_poses_->terminate_current();
       return;
@@ -829,7 +829,7 @@ PlannerServer::computePlanThroughPoses()
   {
     RCLCPP_WARN(
       get_logger(),
-      "Unable to get robot pose to check for collision.");
+      "无法获取机器人位姿进行碰撞检查。");
   }
 
   if (goal->goals.empty())
@@ -844,10 +844,10 @@ PlannerServer::computePlanThroughPoses()
     action_server_poses_->succeeded_current(result);
     RCLCPP_WARN(
       get_logger(),
-      "Compute path through poses requested a plan with no viapoint poses, returning.");
+      "途经点规划请求不包含途经点，直接返回。");
     return;
   }
-  
+
   // 将 pose.z 置为0
   auto goal_poses = goal->goals;
   for (auto &pose : goal_poses) {
@@ -881,7 +881,7 @@ PlannerServer::computePlanThroughPoses()
     if (goal->goals.size() == 0) {
       RCLCPP_WARN(
         get_logger(),
-        "Compute path through poses requested a plan with no viapoint poses, returning.");
+        "途经点规划请求不包含途经点，直接返回。");
       action_server_poses_->terminate_current();
     }
 
@@ -903,7 +903,7 @@ PlannerServer::computePlanThroughPoses()
 
     RCLCPP_INFO(
       get_logger(),
-      "[ThroughPoses] start=(%.3f, %.3f, yaw=%.3f) goals=%zu enable_straight=%s",
+      "[ThroughPoses] 起点=(%.3f, %.3f, 航向=%.3f) 目标数=%zu enable_直线数=%s",
       start.pose.position.x, start.pose.position.y,
       tf2::getYaw(start.pose.orientation), goal_poses.size(),
       enable_straight_expand_ ? "true" : "false");
@@ -935,7 +935,7 @@ PlannerServer::computePlanThroughPoses()
         curr_start = start;
       } else {
         // pick the end of the last planning task as the start for the next one
-        // to allow for path tolerance deviations
+        // to allow for tolerance deviations
         // curr_start = concat_path.poses.back();
         // curr_start.header = concat_path.header;
         if (concat_path.poses.size() > 0) {
@@ -984,9 +984,9 @@ PlannerServer::computePlanThroughPoses()
 
       RCLCPP_INFO(
         get_logger(),
-        "[ThroughPoses] via=%u/%zu start=(%.3f, %.3f, yaw=%.3f) goal=(%.3f, %.3f, yaw=%.3f) "
-        "dist=%.3f near=%s last=%s rewrite_yaw=%s stretch=%s rotate=%s "
-        "footprint_corridor=%s role=%s ang=%.1f edge_len=%.2f sweep=%s concat_poses=%zu",
+        "[ThroughPoses] 途经点=%u/%zu 起点=(%.3f, %.3f, 航向=%.3f) 目标=(%.3f, %.3f, 航向=%.3f) "
+        "距离=%.3f 近距离=%s 最后一个=%s 重写航向=%s stretch=%s rotate=%s "
+        "足迹走廊=%s role=%s ang=%.1f edge_len=%.2f sweep=%s concat_路径点数=%zu",
         i, goal_poses.size(),
         curr_start.pose.position.x, curr_start.pose.position.y,
         tf2::getYaw(curr_start.pose.orientation),
@@ -1013,9 +1013,9 @@ PlannerServer::computePlanThroughPoses()
       nav_msgs::msg::Path curr_path;
       static constexpr int kMaxStartOccupiedRetries = 50;
       int start_occupied_retries = 0;
-      const std::string start_occupied_msg = "Cannot generate a plan, start is occupied!";
+      const std::string start_occupied_msg = "无法生成规划，起点被占用！";
       const std::string start_lethal_msg =
-        "Starting point in lethal space! Cannot create feasible plan.";
+        "起点位于致命障碍物区域，无法生成可行规划。";
       GetPlanMeta last_meta;
       bool plugin_threw = false;
       const auto t_via = this->now();
@@ -1033,7 +1033,7 @@ PlannerServer::computePlanThroughPoses()
         } catch (const std::runtime_error & ex) {
           RCLCPP_WARN(
             get_logger(),
-            "%s plugin failed to plan path to goal (%.2f, %.2f): \"%s\"",
+            "%s 插件规划失败 到 goal (%.2f, %.2f): \"%s\"",
             goal->planner_id.c_str(), curr_goal.pose.position.x,
             curr_goal.pose.position.y, ex.what());
 
@@ -1054,7 +1054,7 @@ PlannerServer::computePlanThroughPoses()
             start_occupied_retries++;
             RCLCPP_WARN(
               get_logger(),
-              "[computePlanThroughPoses] Recovery: smac throws start-occupied or lethal-start, drop the last point from concat_path, start_occupied_retries: %d", start_occupied_retries);
+              "[computePlanThroughPoses] 恢复处理：SMAC 报告起点占用或致命起点，删除拼接路径最后一点，起点占用重试次数=%d", start_occupied_retries);
             continue;
           }
 
@@ -1074,7 +1074,7 @@ PlannerServer::computePlanThroughPoses()
         stats.addFailed(i, curr_goal, reason);
         RCLCPP_INFO(
           get_logger(),
-          "[ThroughPoses] via=%u FAILED concat_unchanged poses=%zu goal=(%.2f, %.2f) last=%s",
+          "[ThroughPoses] 途经点=%u 失败 拼接路径未变化 路径点数=%zu goal=(%.2f, %.2f) last=%s",
           i, concat_path.poses.size(),
           curr_goal.pose.position.x,
           curr_goal.pose.position.y,
@@ -1082,7 +1082,7 @@ PlannerServer::computePlanThroughPoses()
         if (is_last) {
           RCLCPP_WARN(
             get_logger(),
-            "[ThroughPoses] last goal failed, dropping it and keeping concat poses=%zu",
+            "[ThroughPoses] 最后一个目标失败，丢弃该目标 并保留拼接路径 路径点数=%zu",
             concat_path.poses.size());
         }
         continue;
@@ -1099,10 +1099,10 @@ PlannerServer::computePlanThroughPoses()
           end_p.y - curr_goal.pose.position.y);
         RCLCPP_INFO(
           get_logger(),
-          "[ThroughPoses] via=%u Hybrid yaw orig=%.3f request=%.3f snapped=%.3f "
-          "path_end=%.3f chord=%.3f d_end_orig=%.3f d_end_req=%.3f d_end_snap=%.3f "
+          "[ThroughPoses] 途经点=%u Hybrid 航向：原始=%.3f 请求=%.3f 调整后=%.3f "
+          "路径末端=%.3f chord=%.3f d_end_orig=%.3f d_end_req=%.3f d_end_snap=%.3f "
           "d_chord_orig=%.3f d_chord_req=%.3f xy_err=%.3f end_xy=(%.3f, %.3f) "
-          "rewrite=%s",
+          "重写航向=%s",
           i, orig_goal_yaw, request_yaw, last_meta.snapped_yaw,
           path_end, chord,
           wrapPi(path_end - orig_goal_yaw),
@@ -1116,7 +1116,7 @@ PlannerServer::computePlanThroughPoses()
 
       RCLCPP_INFO(
           get_logger(),
-          "[ThroughPoses] via=%u OK poses=%zu goal=(%.2f, %.2f) concat=%zu",
+          "[ThroughPoses] 途经点=%u 成功 路径点数=%zu goal=(%.2f, %.2f) concat=%zu",
           i, curr_path.poses.size(),
           curr_goal.pose.position.x,
           curr_goal.pose.position.y,
@@ -1148,7 +1148,7 @@ PlannerServer::computePlanThroughPoses()
     if (max_planner_duration_ && cycle_duration.seconds() > max_planner_duration_) {
       RCLCPP_WARN(
         get_logger(),
-        "Planner loop missed its desired rate of %.4f Hz. Current loop rate is %.4f Hz",
+        "规划循环未达到期望频率 %.4f Hz. 当前循环频率为 %.4f Hz",
         1 / max_planner_duration_, 1 / cycle_duration.seconds());
     }
     action_server_poses_->succeeded_current(result);
@@ -1156,7 +1156,7 @@ PlannerServer::computePlanThroughPoses()
   } catch (std::runtime_error & ex) {
     RCLCPP_WARN(
       get_logger(),
-      "%s plugin failed to plan through %zu points with final goal (%.2f, %.2f): \"%s\"",
+      "%s 插件规划失败 经过 %zu 个点到最终目标 (%.2f, %.2f): \"%s\"",
       goal->planner_id.c_str(), goal->goals.size(), goal->goals.back().pose.position.x,
       goal->goals.back().pose.position.y, ex.what());
     log_summary();
@@ -1167,7 +1167,7 @@ PlannerServer::computePlanThroughPoses()
   } catch (std::exception & ex) {
     RCLCPP_WARN(
       get_logger(),
-      "%s plugin failed to plan through %zu points with final goal (%.2f, %.2f): \"%s\"",
+      "%s 插件规划失败 经过 %zu 个点到最终目标 (%.2f, %.2f): \"%s\"",
       goal->planner_id.c_str(), goal->goals.size(), goal->goals.back().pose.position.x,
       goal->goals.back().pose.position.y, ex.what());
     log_summary();
@@ -1236,9 +1236,9 @@ PlannerServer::computePlan()
       const double chord = pathChordYaw(result->path);
       RCLCPP_INFO(
         get_logger(),
-        "[getPlan] Hybrid yaw orig=%.3f request=%.3f snapped=%.3f "
-        "path_end=%.3f chord=%.3f d_end_orig=%.3f d_end_req=%.3f d_end_snap=%.3f "
-        "d_chord_orig=%.3f rewrite=%s",
+        "[getPlan] Hybrid 航向：原始=%.3f 请求=%.3f 调整后=%.3f "
+        "路径末端=%.3f chord=%.3f d_end_orig=%.3f d_end_req=%.3f d_end_snap=%.3f "
+        "d_chord_orig=%.3f 重写航向=%s",
         orig_goal_yaw, request_yaw, meta.snapped_yaw,
         path_end, chord,
         wrapPi(path_end - orig_goal_yaw),
@@ -1274,7 +1274,7 @@ PlannerServer::computePlan()
     if (max_planner_duration_ && cycle_duration.seconds() > max_planner_duration_) {
       RCLCPP_WARN(
         get_logger(),
-        "Planner loop missed its desired rate of %.4f Hz. Current loop rate is %.4f Hz",
+        "规划循环未达到期望频率 %.4f Hz. 当前循环频率为 %.4f Hz",
         1 / max_planner_duration_, 1 / cycle_duration.seconds());
     }
 
@@ -1282,22 +1282,22 @@ PlannerServer::computePlan()
     log_pose_summary();
   } catch (std::runtime_error & ex) {
     RCLCPP_WARN(
-      get_logger(), "%s plugin failed to plan calculation to (%.2f, %.2f): \"%s\"",
+      get_logger(), "%s 插件规划失败 calculation 到 (%.2f, %.2f): \"%s\"",
       goal->planner_id.c_str(), goal->goal.pose.position.x,
       goal->goal.pose.position.y, ex.what());
     RCLCPP_WARN(
       get_logger(),
-      "[getPlan] failed goals: via=0 (%.3f, %.3f) reason=plugin_exception",
+      "[getPlan] 失败目标： 途经点=0 (%.3f, %.3f) reason=plugin_exception",
       goal->goal.pose.position.x, goal->goal.pose.position.y);
     action_server_pose_->terminate_current();
   } catch (std::exception & ex) {
     RCLCPP_WARN(
-      get_logger(), "%s plugin failed to plan calculation to (%.2f, %.2f): \"%s\"",
+      get_logger(), "%s 插件规划失败 calculation 到 (%.2f, %.2f): \"%s\"",
       goal->planner_id.c_str(), goal->goal.pose.position.x,
       goal->goal.pose.position.y, ex.what());
     RCLCPP_WARN(
       get_logger(),
-      "[getPlan] failed goals: via=0 (%.3f, %.3f) reason=plugin_exception",
+      "[getPlan] 失败目标： 途经点=0 (%.3f, %.3f) reason=plugin_exception",
       goal->goal.pose.position.x, goal->goal.pose.position.y);
     action_server_pose_->terminate_current();
   }
@@ -1403,7 +1403,7 @@ PlannerServer::getPlan(
     meta->heading_rejected = false;
   }
   RCLCPP_DEBUG(
-    get_logger(), "Attempting to a find path from (%.2f, %.2f) to "
+    get_logger(), "尝试规划路径：从 (%.2f, %.2f) to "
     "(%.2f, %.2f).", start.pose.position.x, start.pose.position.y,
     goal.pose.position.x, goal.pose.position.y);
 
@@ -1413,10 +1413,10 @@ PlannerServer::getPlan(
       fast_path_planner_->compute(start, goal, options);
     snapped_goal = fast_result.snapped_goal;
     if (fast_result.reason == FastPlanReason::StraightOk) {
-      RCLCPP_INFO(
+      RCLCPP_DEBUG(
         get_logger(),
-        "[getPlan] StraightOk poses=%zu start=(%.2f, %.2f, yaw=%.3f) "
-        "goal=(%.2f, %.2f) snapped=(%.2f, %.2f) stretch=%s rotate=%s footprint_corridor=%s",
+        "[getPlan] 直线路径成功：路径点=%zu 起点=(%.2f, %.2f, 航向=%.3f) "
+        "目标=(%.2f, %.2f) 调整后=(%.2f, %.2f) 允许拉伸=%s 允许旋转=%s 严格足迹=%s",
         fast_result.path.poses.size(),
         start.pose.position.x, start.pose.position.y, tf2::getYaw(start.pose.orientation),
         goal.pose.position.x, goal.pose.position.y,
@@ -1433,14 +1433,14 @@ PlannerServer::getPlan(
     if (fast_result.reason == FastPlanReason::GoalUnreachable) {
       RCLCPP_WARN(
         get_logger(),
-        "[getPlan] GoalUnreachable original=(%.2f, %.2f) snapped search failed",
+        "[getPlan] 目标不可达，原目标=(%.2f, %.2f) 目标吸附搜索失败",
         goal.pose.position.x, goal.pose.position.y);
       return nav_msgs::msg::Path();
     }
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       get_logger(),
-      "[getPlan] FastPath NeedAstar, plugin=%s start_yaw=%.3f (kept) "
-      "goal_yaw=%.3f snapped_goal=(%.3f, %.3f) snapped_yaw=%.3f rewrite=%s",
+      "[getPlan] FastPath 未满足直线路径，转 A*：插件=%s 起点航向=%.3f "
+      "目标航向=%.3f 调整目标=(%.3f, %.3f) 调整后航向=%.3f 重写航向=%s",
       planner_id.c_str(),
       tf2::getYaw(start.pose.orientation),
       tf2::getYaw(goal.pose.orientation),
@@ -1463,14 +1463,14 @@ PlannerServer::getPlan(
     planner = planners_[planner_id];
   } else if (planners_.size() == 1 && planner_id.empty()) {
     RCLCPP_WARN_ONCE(
-      get_logger(), "No planners specified in action call. "
-      "Server will use only plugin %s in server."
+      get_logger(), "动作请求未指定规划器。 "
+      "服务端将使用唯一插件 %s。"
       " This warning will appear once.", planner_ids_concat_.c_str());
     planner = planners_.begin()->second;
   } else {
     RCLCPP_ERROR(
-      get_logger(), "planner %s is not a valid planner. "
-      "Planner names are: %s", planner_id.c_str(),
+      get_logger(), "规划器 %s 无效。 "
+      "可用规划器名称： %s", planner_id.c_str(),
       planner_ids_concat_.c_str());
   }
 
@@ -1478,9 +1478,9 @@ PlannerServer::getPlan(
   if (planner) {
     HybridHeadingHintGuard heading_guard;
     nav2_smac_planner::setHybridPendingGoalHeadingTolerance(search_heading_tol);
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       get_logger(),
-      "[getPlan] createPlan heading_search=%s last=%s near_dist=%s tol=%.3f",
+      "[getPlan] 调用插件：航向搜索=%s 严格足迹=%s 近距离=%s 容差=%.3f",
       search_heading_tol >= 0.0 ? "on" : "off",
       options.strict_goal_footprint ? "true" : "false",
       near_by_dist ? "true" : "false",
@@ -1493,11 +1493,11 @@ PlannerServer::getPlan(
     const double snap_yaw = tf2::getYaw(snapped_goal.pose.orientation);
     const double path_end = pathEndYaw(plugin_path);
     const double chord = pathChordYaw(plugin_path);
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       get_logger(),
-      "[getPlan] Hybrid yaw request=%.3f snapped=%.3f path_end=%.3f chord=%.3f "
-      "d_end_req=%.3f d_end_snap=%.3f d_chord_req=%.3f d_chord_snap=%.3f "
-      "d_end_chord=%.3f poses=%zu near_dist=%s heading_search=%s",
+      "[getPlan] Hybrid 航向诊断：请求=%.3f 调整目标=%.3f 路径末端=%.3f 弦方向=%.3f "
+      "末端请求误差=%.3f 末端目标误差=%.3f 弦请求误差=%.3f 弦目标误差=%.3f "
+      "末端弦方向差=%.3f 路径点=%zu 近距离=%s 航向搜索=%s",
       request_yaw, snap_yaw, path_end, chord,
       wrapPi(path_end - request_yaw),
       wrapPi(path_end - snap_yaw),
@@ -1511,9 +1511,9 @@ PlannerServer::getPlan(
 
   if (debug_viz_ && !plugin_path.poses.empty()) {
     debug_viz_->publishHybridRaw(plugin_path);
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       get_logger(),
-      "[getPlan] plugin path poses=%zu (raw Hybrid/GridBased, heading trim not applied yet)",
+      "[getPlan] 插件原始路径：路径点=%zu（尚未执行航向裁剪）",
       plugin_path.poses.size());
   }
 
@@ -1525,7 +1525,7 @@ PlannerServer::getPlan(
     if (trim_kind == HeadingTrimKind::Trimmed) {
       RCLCPP_INFO(
         get_logger(),
-        "[getPlan] heading trim poses %zu -> %zu path_end_yaw=%.3f d_end_goal=%.3f "
+        "[getPlan] 航向裁剪：路径点 %zu -> %zu 路径末端航向=%.3f 末端目标航向差=%.3f "
         "max_len=%.2f near_dist=%s last=%s",
         n_before, plugin_path.poses.size(),
         pathEndYaw(plugin_path),
@@ -1537,8 +1537,8 @@ PlannerServer::getPlan(
       if (near_by_dist && !options.strict_goal_footprint) {
         RCLCPP_INFO(
           get_logger(),
-          "[getPlan] heading trim failed, drop intermediate via goal=(%.3f, %.3f) "
-          "goal_yaw=%.3f path_end=%.3f d_end=%.3f window=%.2f",
+          "[getPlan] 航向裁剪失败，丢弃中间途经点，目标=(%.3f, %.3f) "
+          "目标航向=%.3f 路径末端=%.3f 末端航向差=%.3f 窗口=%.2f",
           goal.pose.position.x, goal.pose.position.y, goal_yaw,
           pathEndYaw(plugin_path),
           wrapPi(pathEndYaw(plugin_path) - goal_yaw),
@@ -1550,8 +1550,8 @@ PlannerServer::getPlan(
       }
       RCLCPP_INFO(
         get_logger(),
-        "[getPlan] heading trim failed, keep path (far or last) poses=%zu "
-        "path_end=%.3f d_end=%.3f",
+        "[getPlan] 航向裁剪失败，保留路径 (far or last) 路径点数=%zu "
+        "路径末端=%.3f 末端航向差=%.3f",
         plugin_path.poses.size(),
         pathEndYaw(plugin_path),
         wrapPi(pathEndYaw(plugin_path) - goal_yaw));
@@ -1617,7 +1617,7 @@ void PlannerServer::isPathValid(
         cost == nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
       {
         response->is_valid = false;
-        RCLCPP_INFO(get_logger(), "Pose is occuppied pose.x: %f, pose.y: %f, cost: %d !", request->path.poses[i].pose.position.x, request->path.poses[i].pose.position.y, cost);
+        RCLCPP_INFO(get_logger(), "位姿被占用 pose.x: %f, pose.y: %f, cost: %d !", request->path.poses[i].pose.position.x, request->path.poses[i].pose.position.y, cost);
         return;
       }
 
@@ -1632,7 +1632,7 @@ void PlannerServer::isPathValid(
       if (footprint_cost == nav2_costmap_2d::LETHAL_OBSTACLE)
       {
         response->is_valid = false;
-        RCLCPP_INFO(get_logger(), "Pose footprint is occuppied pose.x: %f, pose.y: %f, cost: %d !", request->path.poses[i].pose.position.x, request->path.poses[i].pose.position.y, cost);
+        RCLCPP_INFO(get_logger(), "位姿足迹被占用 pose.x: %f, pose.y: %f, cost: %d !", request->path.poses[i].pose.position.x, request->path.poses[i].pose.position.y, cost);
         return;
       }
     }
@@ -1656,8 +1656,8 @@ PlannerServer::dynamicParametersCallback(std::vector<rclcpp::Parameter> paramete
         } else {
           RCLCPP_WARN(
             get_logger(),
-            "The expected planner frequency parameter is %.4f Hz. The value should to be greater"
-            " than 0.0 to turn on duration overrrun warning messages", parameter.as_double());
+            "规划器期望频率参数为 %.4f Hz. 该值应大于"
+            " 大于 0 才启用耗时超限告警", parameter.as_double());
           max_planner_duration_ = 0.0;
         }
       } else if (name == "goal_occupied_tolerance") {

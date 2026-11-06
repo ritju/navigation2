@@ -120,7 +120,7 @@ bool Smoother::smoothImpl(
     if (its >= max_its_) {
       RCLCPP_DEBUG(
         rclcpp::get_logger("SmacPlannerSmoother"),
-        "Number of iterations has exceeded limit of %i.", max_its_);
+        "迭代次数超过上限 %i。", max_its_);
       path = last_path;
       updateApproximatePathOrientations(path, reversing_segment);
       return false;
@@ -132,7 +132,7 @@ bool Smoother::smoothImpl(
     if (timespan > max_dur) {
       RCLCPP_DEBUG(
         rclcpp::get_logger("SmacPlannerSmoother"),
-        "Smoothing time exceeded allowed duration of %0.2f.", max_time);
+        "路径平滑耗时超过允许时长 %0.2f。", max_time);
       path = last_path;
       updateApproximatePathOrientations(path, reversing_segment);
       return false;
@@ -166,7 +166,7 @@ bool Smoother::smoothImpl(
         RCLCPP_DEBUG(
           rclcpp::get_logger("SmacPlannerSmoother"),
           "Smoothing process resulted in an infeasible collision. "
-          "Returning the last path before the infeasibility was introduced.");
+          "返回产生不可行状态前的最后一条路径。");
         path = last_path;
         updateApproximatePathOrientations(path, reversing_segment);
         return false;

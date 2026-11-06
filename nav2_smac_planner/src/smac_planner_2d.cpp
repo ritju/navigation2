@@ -41,7 +41,7 @@ SmacPlanner2D::SmacPlanner2D()
 SmacPlanner2D::~SmacPlanner2D()
 {
   RCLCPP_INFO(
-    _logger, "Destroying plugin %s of type SmacPlanner2D",
+    _logger, "销毁插件 %s ，类型为 SmacPlanner2D",
     _name.c_str());
 }
 
@@ -58,7 +58,7 @@ void SmacPlanner2D::configure(
   _name = name;
   _global_frame = costmap_ros->getGlobalFrameID();
 
-  RCLCPP_INFO(_logger, "Configuring %s of type SmacPlanner2D", name.c_str());
+  RCLCPP_INFO(_logger, "配置中 %s ，类型为 SmacPlanner2D", name.c_str());
 
   // General planner params
   nav2_util::declare_parameter_if_not_declared(
@@ -95,15 +95,15 @@ void SmacPlanner2D::configure(
 
   if (_max_on_approach_iterations <= 0) {
     RCLCPP_INFO(
-      _logger, "On approach iteration selected as <= 0, "
-      "disabling tolerance and on approach iterations.");
+      _logger, "接近阶段迭代次数 <= 0，"
+      "禁用容差和接近阶段迭代。");
     _max_on_approach_iterations = std::numeric_limits<int>::max();
   }
 
   if (_max_iterations <= 0) {
     RCLCPP_INFO(
-      _logger, "maximum iteration selected as <= 0, "
-      "disabling maximum iterations.");
+      _logger, "最大迭代次数 <= 0，"
+      "禁用最大迭代次数。");
     _max_iterations = std::numeric_limits<int>::max();
   }
 
@@ -142,17 +142,17 @@ void SmacPlanner2D::configure(
   _raw_plan_publisher = node->create_publisher<nav_msgs::msg::Path>("unsmoothed_plan", 1);
 
   RCLCPP_INFO(
-    _logger, "Configured plugin %s of type SmacPlanner2D with "
-    "tolerance %.2f, maximum iterations %i, "
-    "max on approach iterations %i, and %s.",
+    _logger, "插件配置完成：%s，类型为 SmacPlanner2D；"
+    "容差 %.2f，最大迭代次数 %i，"
+    "接近阶段最大迭代次数 %i，%s。",
     _name.c_str(), _tolerance, _max_iterations, _max_on_approach_iterations,
-    _allow_unknown ? "allowing unknown traversal" : "not allowing unknown traversal");
+    _allow_unknown ? "允许穿越未知区域" : "不允许穿越未知区域");
 }
 
 void SmacPlanner2D::activate()
 {
   RCLCPP_INFO(
-    _logger, "Activating plugin %s of type SmacPlanner2D",
+    _logger, "激活插件 %s ，类型为 SmacPlanner2D",
     _name.c_str());
   _raw_plan_publisher->on_activate();
   if (_costmap_downsampler) {
@@ -167,7 +167,7 @@ void SmacPlanner2D::activate()
 void SmacPlanner2D::deactivate()
 {
   RCLCPP_INFO(
-    _logger, "Deactivating plugin %s of type SmacPlanner2D",
+    _logger, "停用插件 %s ，类型为 SmacPlanner2D",
     _name.c_str());
   _raw_plan_publisher->on_deactivate();
   if (_costmap_downsampler) {
@@ -179,7 +179,7 @@ void SmacPlanner2D::deactivate()
 void SmacPlanner2D::cleanup()
 {
   RCLCPP_INFO(
-    _logger, "Cleaning up plugin %s of type SmacPlanner2D",
+    _logger, "清理插件 %s ，类型为 SmacPlanner2D",
     _name.c_str());
   _a_star.reset();
   _smoother.reset();
@@ -233,7 +233,7 @@ nav_msgs::msg::Path SmacPlanner2D::createPlan(
   // Corner case of start and goal beeing on the same cell
   if (mx_start == mx_goal && my_start == my_goal) {
     if (costmap->getCost(mx_start, my_start) == nav2_costmap_2d::LETHAL_OBSTACLE) {
-      RCLCPP_WARN(_logger, "Failed to create a unique pose path because of obstacles");
+      RCLCPP_WARN(_logger, "由于存在障碍物，无法创建唯一位姿路径");
       return plan;
     }
     pose.pose = start.pose;
@@ -256,20 +256,20 @@ nav_msgs::msg::Path SmacPlanner2D::createPlan(
         path, num_iterations, _tolerance / static_cast<float>(costmap->getResolution())))
     {
       if (num_iterations < _a_star->getMaxIterations()) {
-        error = std::string("no valid path found");
+        error = std::string("未找到有效路径");
       } else {
-        error = std::string("exceeded maximum iterations");
+        error = std::string("超过最大迭代次数");
       }
     }
   } catch (const std::runtime_error & e) {
-    error = "invalid use: ";
+    error = "使用无效： ";
     error += e.what();
   }
 
   if (!error.empty()) {
     RCLCPP_WARN(
       _logger,
-      "%s: failed to create plan, %s.",
+      "%s: 规划失败， %s.",
       _name.c_str(), error.c_str());
     return plan;
   }
@@ -293,7 +293,7 @@ nav_msgs::msg::Path SmacPlanner2D::createPlan(
 
 #ifdef BENCHMARK_TESTING
   std::cout << "It took " << time_span.count() * 1000 <<
-    " milliseconds with " << num_iterations << " iterations." << std::endl;
+    " 毫秒，迭代次数为 " << num_iterations << " 次。" << std::endl;
 #endif
 
   // Smooth plan
@@ -367,8 +367,8 @@ SmacPlanner2D::dynamicParametersCallback(std::vector<rclcpp::Parameter> paramete
         _max_iterations = parameter.as_int();
         if (_max_iterations <= 0) {
           RCLCPP_INFO(
-            _logger, "maximum iteration selected as <= 0, "
-            "disabling maximum iterations.");
+            _logger, "最大迭代次数 <= 0，"
+            "禁用最大迭代次数。");
           _max_iterations = std::numeric_limits<int>::max();
         }
       } else if (name == _name + ".max_on_approach_iterations") {
@@ -376,8 +376,8 @@ SmacPlanner2D::dynamicParametersCallback(std::vector<rclcpp::Parameter> paramete
         _max_on_approach_iterations = parameter.as_int();
         if (_max_on_approach_iterations <= 0) {
           RCLCPP_INFO(
-            _logger, "On approach iteration selected as <= 0, "
-            "disabling tolerance and on approach iterations.");
+            _logger, "接近阶段迭代次数 <= 0，"
+            "禁用容差和接近阶段迭代。");
           _max_on_approach_iterations = std::numeric_limits<int>::max();
         }
       }

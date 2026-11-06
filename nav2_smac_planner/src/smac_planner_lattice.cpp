@@ -40,7 +40,7 @@ SmacPlannerLattice::SmacPlannerLattice()
 SmacPlannerLattice::~SmacPlannerLattice()
 {
   RCLCPP_INFO(
-    _logger, "Destroying plugin %s of type SmacPlannerLattice",
+    _logger, "销毁插件 %s ，类型为 SmacPlannerLattice",
     _name.c_str());
 }
 
@@ -59,7 +59,7 @@ void SmacPlannerLattice::configure(
   _global_frame = costmap_ros->getGlobalFrameID();
   _raw_plan_publisher = node->create_publisher<nav_msgs::msg::Path>("unsmoothed_plan", 1);
 
-  RCLCPP_INFO(_logger, "Configuring %s of type SmacPlannerLattice", name.c_str());
+  RCLCPP_INFO(_logger, "配置中 %s ，类型为 SmacPlannerLattice", name.c_str());
 
   // General planner params
   double analytic_expansion_max_length_m;
@@ -137,15 +137,15 @@ void SmacPlannerLattice::configure(
 
   if (_max_on_approach_iterations <= 0) {
     RCLCPP_INFO(
-      _logger, "On approach iteration selected as <= 0, "
-      "disabling tolerance and on approach iterations.");
+      _logger, "接近阶段迭代次数 <= 0，"
+      "禁用容差和接近阶段迭代。");
     _max_on_approach_iterations = std::numeric_limits<int>::max();
   }
 
   if (_max_iterations <= 0) {
     RCLCPP_INFO(
-      _logger, "maximum iteration selected as <= 0, "
-      "disabling maximum iterations.");
+      _logger, "最大迭代次数 <= 0，"
+      "禁用最大迭代次数。");
     _max_iterations = std::numeric_limits<int>::max();
   }
 
@@ -160,7 +160,7 @@ void SmacPlannerLattice::configure(
   if (static_cast<int>(lookup_table_dim) % 2 == 0) {
     RCLCPP_INFO(
       _logger,
-      "Even sized heuristic lookup table size set %f, increasing size by 1 to make odd",
+      "启发式查找表尺寸为偶数（当前=%f），将增加 1 调整为奇数 %f, 增加 1 调整为奇数",
       lookup_table_dim);
     lookup_table_dim += 1.0;
   }
@@ -197,18 +197,17 @@ void SmacPlannerLattice::configure(
   }
 
   RCLCPP_INFO(
-    _logger, "Configured plugin %s of type SmacPlannerLattice with "
-    "maximum iterations %i, max on approach iterations %i, "
-    "and %s. Tolerance %.2f. Using motion model: %s. State lattice file: %s.",
+    _logger, "插件配置完成：%s，类型为 SmacPlannerLattice；"
+    "最大迭代=%i，接近阶段最大迭代=%i，%s；容差=%.2f；运动模型=%s；状态格文件=%s。",
     _name.c_str(), _max_iterations, _max_on_approach_iterations,
-    _allow_unknown ? "allowing unknown traversal" : "not allowing unknown traversal",
+    _allow_unknown ? "允许穿越未知区域" : "不允许穿越未知区域",
     _tolerance, toString(_motion_model).c_str(), _search_info.lattice_filepath.c_str());
 }
 
 void SmacPlannerLattice::activate()
 {
   RCLCPP_INFO(
-    _logger, "Activating plugin %s of type SmacPlannerLattice",
+    _logger, "激活插件 %s ，类型为 SmacPlannerLattice",
     _name.c_str());
   _raw_plan_publisher->on_activate();
   auto node = _node.lock();
@@ -220,7 +219,7 @@ void SmacPlannerLattice::activate()
 void SmacPlannerLattice::deactivate()
 {
   RCLCPP_INFO(
-    _logger, "Deactivating plugin %s of type SmacPlannerLattice",
+    _logger, "停用插件 %s ，类型为 SmacPlannerLattice",
     _name.c_str());
   _raw_plan_publisher->on_deactivate();
   _dyn_params_handler.reset();
@@ -229,7 +228,7 @@ void SmacPlannerLattice::deactivate()
 void SmacPlannerLattice::cleanup()
 {
   RCLCPP_INFO(
-    _logger, "Cleaning up plugin %s of type SmacPlannerLattice",
+    _logger, "清理插件 %s ，类型为 SmacPlannerLattice",
     _name.c_str());
   _a_star.reset();
   _smoother.reset();
@@ -286,20 +285,20 @@ nav_msgs::msg::Path SmacPlannerLattice::createPlan(
         path, num_iterations, _tolerance / static_cast<float>(_costmap->getResolution())))
     {
       if (num_iterations < _a_star->getMaxIterations()) {
-        error = std::string("no valid path found");
+        error = std::string("未找到有效路径");
       } else {
-        error = std::string("exceeded maximum iterations");
+        error = std::string("超过最大迭代次数");
       }
     }
   } catch (const std::runtime_error & e) {
-    error = "invalid use: ";
+    error = "使用无效： ";
     error += e.what();
   }
 
   if (!error.empty()) {
     RCLCPP_WARN(
       _logger,
-      "%s: failed to create plan, %s.",
+      "%s: 规划失败， %s.",
       _name.c_str(), error.c_str());
     return plan;
   }
@@ -316,7 +315,7 @@ nav_msgs::msg::Path SmacPlannerLattice::createPlan(
     {
       RCLCPP_DEBUG(
         _logger,
-        "Removed a path from the path due to replication. "
+        "由于重复，删除路径中的一段。"
         "Make sure your minimum control set does not contain duplicate values!");
       continue;
     }
@@ -422,8 +421,8 @@ SmacPlannerLattice::dynamicParametersCallback(std::vector<rclcpp::Parameter> par
         _max_iterations = parameter.as_int();
         if (_max_iterations <= 0) {
           RCLCPP_INFO(
-            _logger, "maximum iteration selected as <= 0, "
-            "disabling maximum iterations.");
+            _logger, "最大迭代次数 <= 0，"
+            "禁用最大迭代次数。");
           _max_iterations = std::numeric_limits<int>::max();
         }
       }
@@ -432,8 +431,8 @@ SmacPlannerLattice::dynamicParametersCallback(std::vector<rclcpp::Parameter> par
       _max_on_approach_iterations = parameter.as_int();
       if (_max_on_approach_iterations <= 0) {
         RCLCPP_INFO(
-          _logger, "On approach iteration selected as <= 0, "
-          "disabling tolerance and on approach iterations.");
+          _logger, "接近阶段迭代次数 <= 0，"
+          "禁用容差和接近阶段迭代。");
         _max_on_approach_iterations = std::numeric_limits<int>::max();
       }
     } else if (type == ParameterType::PARAMETER_STRING) {
@@ -466,7 +465,7 @@ SmacPlannerLattice::dynamicParametersCallback(std::vector<rclcpp::Parameter> par
     if (static_cast<int>(lookup_table_dim) % 2 == 0) {
       RCLCPP_INFO(
         _logger,
-        "Even sized heuristic lookup table size set %f, increasing size by 1 to make odd",
+        "启发式查找表尺寸为偶数（当前=%f），将增加 1 调整为奇数 %f, 增加 1 调整为奇数",
         lookup_table_dim);
       lookup_table_dim += 1.0;
     }

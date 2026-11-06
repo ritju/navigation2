@@ -152,11 +152,11 @@ void FastPathPlanner::configure(
 
   RCLCPP_INFO(
     logger_,
-    "[FastPath] configured: goal_occupied_tolerance=%.2f "
+    "[FastPath] 已配置：目标占用容差=%.2f "
     "goal_search_resolution=%.2f "
     "straight_check_length_ratio=%.2f straight_path_resolution=%.2f "
-    "stretch=%s rotate=%s corridor_intrusion_tol=%.3f "
-    "corner_sweep_scale=%.2f corner_snap_tol=%.2f corner_snap=%s planner_ids=%zu",
+    "拉伸=%s 旋转=%s 走廊侵入容差=%.3f "
+    "角点扫描比例=%.2f 角点吸附容差=%.2f 角点吸附=%s 规划器数量=%zu",
     _goal_occupied_tolerance, _goal_search_resolution,
     _straight_check_length_ratio, _straight_path_resolution,
     enable_line_stretch_ ? "true" : "false",
@@ -169,7 +169,7 @@ void FastPathPlanner::configure(
 
 void FastPathPlanner::cleanup()
 {
-  RCLCPP_INFO(logger_, "[FastPath] cleanup");
+  RCLCPP_DEBUG(logger_, "[FastPath] 清理");
   narrow_passages_sub_.reset();
   enable_backward_sub_.reset();
   debug_viz_.reset();
@@ -196,11 +196,11 @@ FastPlanResult FastPathPlanner::compute(
     result.snapped_goal.pose.orientation = yawToQuaternion(approach_yaw);
   }
 
-  RCLCPP_INFO(
+  RCLCPP_DEBUG(
     logger_,
-    "[FastPath] compute start=(%.3f, %.3f, yaw=%.3f) goal=(%.3f, %.3f, yaw=%.3f) "
-    "approach=%.3f rewrite_yaw=%s straight=%s reverse=%s stretch=%s rotate=%s "
-    "footprint_corridor=%s sweep=%s exempt=%s",
+    "[FastPath] 开始检查：起点=(%.3f, %.3f, 航向=%.3f) 目标=(%.3f, %.3f, 航向=%.3f) "
+    "起点-终点方向=%.3f 重写航向=%s 直线数=%s 倒车=%s 拉伸=%s 旋转=%s "
+    "足迹走廊=%s 角点扫描=%s 允许豁免=%s",
     start.pose.position.x, start.pose.position.y, tf2::getYaw(start.pose.orientation),
     goal.pose.position.x, goal.pose.position.y, tf2::getYaw(goal.pose.orientation),
     approach_yaw,
@@ -219,7 +219,7 @@ FastPlanResult FastPathPlanner::compute(
   }
 
   if (!costmap_) {
-    RCLCPP_ERROR(logger_, "[FastPath] not configured, fallback NeedAstar");
+    RCLCPP_ERROR(logger_, "[FastPath] 未配置，转入 A*");
     return result;
   }
 
@@ -238,8 +238,8 @@ FastPlanResult FastPathPlanner::compute(
       options.snap_tolerance : _goal_occupied_tolerance;
     RCLCPP_WARN(
       logger_,
-      "[FastPath] GoalUnreachable: original goal (%.3f, %.3f) occupied (254), "
-      "no free pose within tolerance=%.2f res=%.2f",
+      "[FastPath] 目标不可达：原目标 (%.3f, %.3f) 被致命障碍物占用（254），"
+      "在容差=%.2f、分辨率=%.2f 范围内未找到可用目标点",
       goal.pose.position.x, goal.pose.position.y,
       snap_r, _goal_search_resolution);
     return result;
@@ -256,18 +256,18 @@ FastPlanResult FastPathPlanner::compute(
       result.snapped_goal.pose.position.x - goal.pose.position.x,
       result.snapped_goal.pose.position.y - goal.pose.position.y) > 1e-4)
   {
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       logger_,
-      "[FastPath] using snapped_goal=(%.3f, %.3f) original=(%.3f, %.3f)",
+      "[FastPath] 使用调整后的目标=(%.3f, %.3f)，原目标=(%.3f, %.3f)",
       result.snapped_goal.pose.position.x, result.snapped_goal.pose.position.y,
       goal.pose.position.x, goal.pose.position.y);
   }
 
   if (!options.allow_straight) {
     result.reason = FastPlanReason::NeedAstar;
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       logger_,
-      "[FastPath] skip corridor, NeedAstar snapped_goal=(%.3f, %.3f)",
+      "[FastPath] 未启用直线检查，转 A*；调整目标=(%.3f, %.3f)",
       result.snapped_goal.pose.position.x, result.snapped_goal.pose.position.y);
     return result;
   }
@@ -286,9 +286,9 @@ FastPlanResult FastPathPlanner::compute(
     result.path = buildStraightPath(start, result.snapped_goal, heading);
     result.snapped_goal.pose.orientation = yawToQuaternion(line_yaw);
     result.reason = FastPlanReason::StraightOk;
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       logger_,
-      "[FastPath] StraightOk kind=%s reverse=%s poses=%zu goal=(%.3f, %.3f)",
+      "[FastPath] 直线路径成功：方式=%s 倒车=%s 路径点=%zu 目标=(%.3f, %.3f)",
       kind, prefer_reverse ? "true" : "false", result.path.poses.size(),
       result.snapped_goal.pose.position.x, result.snapped_goal.pose.position.y);
     if (debug_viz_) {
@@ -314,10 +314,10 @@ FastPlanResult FastPathPlanner::compute(
     return result;
   }
 
-  RCLCPP_INFO(
+  RCLCPP_DEBUG(
     logger_,
-    "[FastPath] %s blocked s=%.3f / %.3f dy=%.3f both_sides=%s "
-    "intrusion=%.3f clearance_ok=%s free=%.3f",
+    "[FastPath] %s 被占用：s=%.3f / %.3f dy=%.3f 两侧=%s "
+    "侵入量=%.3f 净空满足=%s 可通行长度=%.3f",
     use_fp ? "footprint_corridor" : "halfwidth_corridor",
     hit.s, hit.L, hit.dy, hit.both_sides ? "true" : "false",
     hit.intrusion, hit.clearance_ok ? "true" : "false", hit.clearance_len);
@@ -360,10 +360,10 @@ FastPlanResult FastPathPlanner::compute(
         original_goal.pose.position.y - start.pose.position.y,
         original_goal.pose.position.x - start.pose.position.x));
   }
-  RCLCPP_INFO(
+  RCLCPP_DEBUG(
     logger_,
-    "[FastPath] corridor failed, NeedAstar reason=%s snapped_goal=(%.3f, %.3f) "
-    "(snap only, stretch/rotate discarded) tried_stretch=%s tried_rotate=%s",
+    "[FastPath] 走廊检查失败，转 A*：原因=%s 调整目标=(%.3f, %.3f) "
+    "（仅保留目标吸附，放弃拉伸/旋转）尝试拉伸=%s 尝试旋转=%s",
     reasonToString(result.reason),
     result.snapped_goal.pose.position.x, result.snapped_goal.pose.position.y,
     can_stretch ? "true" : "false",
@@ -396,7 +396,7 @@ void FastPathPlanner::narrowPassagesCallback(
     latched_narrow_passage_ = false;
     RCLCPP_WARN(logger_, "[FastPath] 狭窄通道: 收到空的 /narrow_passages，Latch 清除");
   } else {
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       logger_,
       "[FastPath] 狭窄通道: 更新 /narrow_passages，多边形数量=%zu",
       narrow_polygons_.size());
@@ -455,14 +455,14 @@ void FastPathPlanner::updateNarrowPassageLatch(const geometry_msgs::msg::PoseSta
   if (!narrowPolygonsAvailable()) {
     latched_narrow_passage_ = false;
     if (prev_latched) {
-      RCLCPP_INFO(logger_, "[FastPath] 狭窄通道: 无有效多边形，Latch 由 true 置 false");
+      RCLCPP_DEBUG(logger_, "[FastPath] 狭窄通道: 无有效多边形，Latch 由 true 置 false");
     }
     return;
   }
   if (isPointInNarrowPassage(start.pose.position.x, start.pose.position.y)) {
     latched_narrow_passage_ = true;
     if (!prev_latched) {
-      RCLCPP_INFO(
+      RCLCPP_DEBUG(
         logger_,
         "[FastPath] 狭窄通道: base_link (%.2f, %.2f) 进入窄通道，Latch 置 true",
         start.pose.position.x, start.pose.position.y);
@@ -472,7 +472,7 @@ void FastPathPlanner::updateNarrowPassageLatch(const geometry_msgs::msg::PoseSta
   if (isFootprintFullyOutsideNarrowPassages(start)) {
     latched_narrow_passage_ = false;
     if (prev_latched) {
-      RCLCPP_INFO(logger_, "[FastPath] 狭窄通道: footprint 完全离开窄通道，Latch 由 true 置 false");
+      RCLCPP_DEBUG(logger_, "[FastPath] 狭窄通道: footprint 完全离开窄通道，Latch 由 true 置 false");
     }
   }
 }
@@ -488,7 +488,7 @@ bool FastPathPlanner::isNarrowActive(
   const bool active = latched_narrow_passage_ || goal_in;
   RCLCPP_DEBUG(
     logger_,
-    "[FastPath] narrow_active=%s latched=%s goal_in=%s goal=(%.2f, %.2f)",
+    "[FastPath] 窄通道激活=%s 锁存=%s 目标在通道内=%s 目标=(%.2f, %.2f)",
     active ? "true" : "false",
     latched_narrow_passage_ ? "true" : "false",
     goal_in ? "true" : "false",
@@ -924,9 +924,9 @@ FastPathPlanner::CorridorHit FastPathPlanner::scanHalfWidthBand(
 
       if (both || centerline) {
         cur.n_exempt = n_exempt;
-        RCLCPP_INFO(
+        RCLCPP_DEBUG(
           logger_,
-          "[FastPath] corridor hard block s=%.3f dy=%.3f both=%s centerline=%s",
+          "[FastPath] 走廊硬阻塞 s=%.3f dy=%.3f 两侧=%s 中心线=%s",
           sample_s, best_dy, both ? "true" : "false",
           centerline ? "true" : "false");
         return cur;
@@ -934,9 +934,9 @@ FastPathPlanner::CorridorHit FastPathPlanner::scanHalfWidthBand(
 
       if (!allow_exempt) {
         cur.n_exempt = n_exempt;
-        RCLCPP_INFO(
+        RCLCPP_DEBUG(
           logger_,
-          "[FastPath] corridor 254 (no exempt) s=%.3f dy=%.3f",
+          "[FastPath] 走廊存在 254（不允许豁免） s=%.3f dy=%.3f",
           sample_s, best_dy);
         return cur;
       }
@@ -945,10 +945,10 @@ FastPathPlanner::CorridorHit FastPathPlanner::scanHalfWidthBand(
       cur.clearance_ok = cur.clearance_len + 1e-9 >= width;
       if (!cur.clearance_ok) {
         cur.n_exempt = n_exempt;
-        RCLCPP_INFO(
+        RCLCPP_DEBUG(
           logger_,
-          "[FastPath] corridor clearance fail s=%.3f dy=%.3f intrusion=%.3f "
-          "free=%.3f width=%.3f (no rotate)",
+          "[FastPath] 走廊净空不足 s=%.3f dy=%.3f 侵入量=%.3f "
+          "可通行长度=%.3f 宽度=%.3f（无法旋转）",
           sample_s, best_dy, cur.intrusion, cur.clearance_len, width);
         return cur;
       }
@@ -957,8 +957,8 @@ FastPathPlanner::CorridorHit FastPathPlanner::scanHalfWidthBand(
         ++n_exempt;
         RCLCPP_DEBUG(
           logger_,
-          "[FastPath] corridor exempt s=%.3f dy=%.3f intrusion=%.3f<=%.3f "
-          "free=%.3f",
+          "[FastPath] 走廊障碍豁免 s=%.3f dy=%.3f 侵入量=%.3f<=%.3f "
+          "可通行长度=%.3f",
           sample_s, best_dy, cur.intrusion, corridor_intrusion_tol_,
           cur.clearance_len);
       } else if (!have_rotate || cur.intrusion > rotate_hit.intrusion) {
@@ -973,10 +973,10 @@ FastPathPlanner::CorridorHit FastPathPlanner::scanHalfWidthBand(
 
   if (have_rotate) {
     rotate_hit.n_exempt = n_exempt;
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       logger_,
-      "[FastPath] corridor rotate candidate s=%.3f dy=%.3f intrusion=%.3f "
-      "free=%.3f exempted=%d",
+      "[FastPath] 走廊旋转候选 s=%.3f dy=%.3f 侵入量=%.3f "
+      "可通行长度=%.3f exempted=%d",
       rotate_hit.s, rotate_hit.dy, rotate_hit.intrusion,
       rotate_hit.clearance_len, n_exempt);
     return rotate_hit;
@@ -984,9 +984,9 @@ FastPathPlanner::CorridorHit FastPathPlanner::scanHalfWidthBand(
 
   hit.n_exempt = n_exempt;
   if (log_accept && n_exempt > 0) {
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       logger_,
-      "[FastPath] corridor accepted with %d exempted same-side 254 slice(s) "
+      "[FastPath] 走廊检查通过，豁免同侧 254 切片数= %d 个同侧 254 切片被豁免 "
       "intrusion_tol=%.3f",
       n_exempt, corridor_intrusion_tol_);
   }
@@ -1036,9 +1036,9 @@ FastPathPlanner::CorridorHit FastPathPlanner::checkBandCorridor(
         hit.pose.pose.position.y = ay + uy * s_trig;
         hit.pose.pose.position.z = 0.0;
         hit.pose.pose.orientation = yawToQuaternion(yaw);
-        RCLCPP_INFO(
+        RCLCPP_DEBUG(
           logger_,
-          "[FastPath] corridor hard block centerline 254 s=%.3f / %.3f",
+          "[FastPath] 走廊硬阻塞 中心线 254 s=%.3f / %.3f",
           s_trig, hit.L);
         return hit;
       }
@@ -1056,7 +1056,7 @@ FastPathPlanner::CorridorHit FastPathPlanner::checkBandCorridor(
       }
       RCLCPP_DEBUG(
         logger_,
-        "[FastPath] centerline 253 s=%.3f / %.3f window=[%.3f, %.3f] front=%.3f",
+        "[FastPath] 中心线 253 s=%.3f / %.3f 窗口=[%.3f, %.3f] 前伸=%.3f",
         s_trig, hit.L, s0, s1, front);
       CorridorHit deep = scanHalfWidthBand(
         start, ax, ay, ux, uy, yaw, hit.L, s0, s1, allow_exempt, false);
@@ -1081,9 +1081,9 @@ FastPathPlanner::CorridorHit FastPathPlanner::checkBandCorridor(
     }
 
     if (n_exempt_all > 0) {
-      RCLCPP_INFO(
+      RCLCPP_DEBUG(
         logger_,
-        "[FastPath] corridor accepted with %d exempted same-side 254 slice(s) "
+        "[FastPath] 走廊检查通过，豁免同侧 254 切片数= %d 个同侧 254 切片被豁免 "
         "intrusion_tol=%.3f",
         n_exempt_all, corridor_intrusion_tol_);
     }
@@ -1093,7 +1093,7 @@ FastPathPlanner::CorridorHit FastPathPlanner::checkBandCorridor(
 
   RCLCPP_DEBUG(
     logger_,
-    "[FastPath] inscribed=%.3f < halfWidth=%.3f, full band [0, %.3f]",
+    "[FastPath] 内切半径=%.3f < 半宽=%.3f，完整扫描带 [0, %.3f]",
     inscribedRadius(), halfWidth(), s_limit);
   return scanHalfWidthBand(
     start, ax, ay, ux, uy, yaw, hit.L, 0.0, s_limit, allow_exempt);
@@ -1173,9 +1173,9 @@ bool FastPathPlanner::tryStretchGoal(
     s_for_stretch = hit.s - std::max(0.0, footprint_front_x_);
   }
   if (s_for_stretch <= hit.L - line_stretch_goal_window_) {
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       logger_,
-      "[LineStretch] skip: hit in mid-segment s=%.3f L=%.3f window=%.3f",
+      "[LineStretch] 跳过：障碍位于线段中部 s=%.3f L=%.3f 窗口=%.3f",
       hit.s, hit.L, line_stretch_goal_window_);
     return false;
   }
@@ -1193,9 +1193,9 @@ bool FastPathPlanner::tryStretchGoal(
     stretched.pose.position.x - original_goal.pose.position.x,
     stretched.pose.position.y - original_goal.pose.position.y);
   if (shift > line_stretch_max_) {
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       logger_,
-      "[LineStretch] skip: |G'-G|=%.3f > max=%.3f",
+      "[LineStretch] 跳过：目标偏移 |G'-G|=%.3f > max=%.3f",
       shift, line_stretch_max_);
     return false;
   }
@@ -1205,9 +1205,9 @@ bool FastPathPlanner::tryStretchGoal(
     }
   }
 
-  RCLCPP_INFO(
+  RCLCPP_DEBUG(
     logger_,
-    "[LineStretch] G (%.3f, %.3f) -> (%.3f, %.3f) shift=%.3f new_L=%.3f",
+    "[LineStretch] 目标调整：(%.3f, %.3f) -> (%.3f, %.3f)，偏移=%.3f，新长度=%.3f",
     goal.pose.position.x, goal.pose.position.y,
     stretched.pose.position.x, stretched.pose.position.y, shift, new_L);
   goal = stretched;
@@ -1223,10 +1223,10 @@ bool FastPathPlanner::tryRotateGoal(
   bool allow_exempt)
 {
   if (!hit.blocked || hit.both_sides || !hit.clearance_ok) {
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       logger_,
-      "[LineRotate] skip: blocked=%s both_sides=%s clearance_ok=%s "
-      "(rotate only when same-side and clearance >= width)",
+      "[LineRotate] 跳过：阻塞=%s 两侧=%s 净空满足=%s "
+      "(仅同侧障碍且净空达到宽度时旋转)",
       hit.blocked ? "true" : "false",
       hit.both_sides ? "true" : "false",
       hit.clearance_ok ? "true" : "false");
@@ -1236,9 +1236,9 @@ bool FastPathPlanner::tryRotateGoal(
   const geometry_msgs::msg::PoseStamped goal_on_entry = goal;
   const double res = costmap_->getResolution();
   if (std::fabs(hit.dy) <= 0.5 * res) {
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       logger_,
-      "[LineRotate] skip: centerline 254 dy=%.3f, rotate cannot clear",
+      "[LineRotate] 跳过：中心线 254，dy=%.3f，旋转无法清除",
       hit.dy);
     return false;
   }
@@ -1266,7 +1266,7 @@ bool FastPathPlanner::tryRotateGoal(
     const double vy = original_goal.pose.position.y - start.pose.position.y;
     const double proj = vx * ux + vy * uy;
     if (proj < 2.0 * res) {
-      RCLCPP_INFO(logger_, "[LineRotate] iter=%d proj behind start, abort", iter);
+      RCLCPP_DEBUG(logger_, "[LineRotate] 迭代=%d 投影点在起点后方，终止", iter);
       goal = goal_on_entry;
       return false;
     }
@@ -1278,9 +1278,9 @@ bool FastPathPlanner::tryRotateGoal(
       rotated.pose.position.x - original_goal.pose.position.x,
       rotated.pose.position.y - original_goal.pose.position.y);
     if (shift > line_rotate_goal_shift_tol_) {
-      RCLCPP_INFO(
+      RCLCPP_DEBUG(
         logger_,
-        "[LineRotate] iter=%d |G'-G|=%.3f > tol=%.3f abort",
+        "[LineRotate] 迭代=%d |G'-G|=%.3f > tol=%.3f 终止",
         iter, shift, line_rotate_goal_shift_tol_);
       goal = goal_on_entry;
       return false;
@@ -1292,9 +1292,9 @@ bool FastPathPlanner::tryRotateGoal(
 
     CorridorHit again = checkCorridor(
       start, rotated, use_footprint_corridor, allow_exempt);
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       logger_,
-      "[LineRotate] iter=%d d_alpha=%.4f s_arm=%.3f need=%.3f alpha=%.3f "
+      "[LineRotate] 迭代=%d 角度增量=%.4f 作用距离=%.3f 所需距离=%.3f 累计角度=%.3f "
       "shift=%.3f blocked=%s dy=%.3f",
       iter, d_alpha, s_arm, need, accumulated, shift,
       again.blocked ? "true" : "false", again.dy);
@@ -1309,10 +1309,10 @@ bool FastPathPlanner::tryRotateGoal(
       return true;
     }
     if (again.both_sides || !again.clearance_ok || (again.dy * side > 0.0)) {
-      RCLCPP_INFO(
+      RCLCPP_DEBUG(
         logger_,
-        "[LineRotate] opposite/both/no-clearance at iter=%d, abort "
-        "both=%s clearance_ok=%s dy=%.3f",
+        "[LineRotate] 第 %d 次迭代遇到反侧/双侧障碍或净空不足，终止 "
+        "两侧=%s 净空满足=%s dy=%.3f",
         iter, again.both_sides ? "true" : "false",
         again.clearance_ok ? "true" : "false", again.dy);
       goal = goal_on_entry;
@@ -1353,15 +1353,15 @@ bool FastPathPlanner::snapOccupiedGoal(
     tailWindowHitsLethal(start, goal, options))
   {
     origin_free = false;
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       logger_,
-      "[FastPath] goal (%.3f, %.3f) origin free but tail window 254, force snap mode=%s",
+      "[FastPath] 目标 (%.3f, %.3f) 原点空闲但尾部窗口存在 254，强制吸附模式=%s",
       goal.pose.position.x, goal.pose.position.y, snap_mode);
   }
   if (origin_free) {
     RCLCPP_DEBUG(
       logger_,
-      "[FastPath] goal (%.3f, %.3f) 254-clear snap_mode=%s, no snap",
+      "[FastPath] 目标 (%.3f, %.3f) 无 254 障碍，吸附模式=%s，无需吸附",
       goal.pose.position.x, goal.pose.position.y, snap_mode);
     return true;
   }
@@ -1384,10 +1384,9 @@ bool FastPathPlanner::snapOccupiedGoal(
       by = 0.0;
     }
   }
-  RCLCPP_INFO(
+  RCLCPP_DEBUG(
     logger_,
-    "[FastPath] goal (%.3f, %.3f) 254 occupied snap_mode=%s, ring search "
-    "tolerance=%.2f res=%.2f k=%.2f",
+    "[FastPath] 目标 (%.3f, %.3f) 被占用，开始吸附搜索：模式=%s 容差=%.2f 分辨率=%.2f 比例=%.2f",
     goal.pose.position.x, goal.pose.position.y, snap_mode, snap_r, res,
     options.use_corner_sweep ? corner_sweep_scale_ : 0.0);
 
@@ -1446,9 +1445,9 @@ bool FastPathPlanner::snapOccupiedGoal(
 
     if (found_in_ring) {
       goal = best_goal;
-      RCLCPP_INFO(
+      RCLCPP_DEBUG(
         logger_,
-        "[FastPath] snapped goal (%.3f, %.3f) -> (%.3f, %.3f) score=%.3f ring=%d mode=%s",
+        "[FastPath] 目标吸附 (%.3f, %.3f) -> (%.3f, %.3f) score=%.3f ring=%d 模式=%s",
         original.pose.position.x, original.pose.position.y,
         goal.pose.position.x, goal.pose.position.y, best_score, ring, snap_mode);
       if (debug_viz_) {

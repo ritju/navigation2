@@ -180,7 +180,7 @@ typename AnalyticExpansion<NodeT>::AnalyticExpansionNodes AnalyticExpansion<Node
       proposed_coordinates = {static_cast<float>(reals[0]), static_cast<float>(reals[1]), angle};
       next->setPose(proposed_coordinates);
       if (next->isNodeValid(_traverse_unknown, _collision_checker) && next != prev) {
-        // Save the node, and its previous coordinates in case we need to abort
+        // Save the node, and its previous coordinates in case we need to 终止
         possible_nodes.emplace_back(next, initial_node_coords, proposed_coordinates);
         prev = next;
       } else {

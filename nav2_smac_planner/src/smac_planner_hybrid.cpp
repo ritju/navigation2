@@ -68,9 +68,9 @@ void logHybridPathYaw(
   double goal_bin_yaw)
 {
   if (plan.poses.empty()) {
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       logger,
-      "[Hybrid] yaw %s empty model=%s smooth=%s",
+      "[Hybrid] 阶段=%s 结果为空，运动模型=%s 平滑=%s",
       stage, model, smoother_on ? "on" : "off");
     return;
   }
@@ -82,11 +82,11 @@ void logHybridPathYaw(
   const double xy_err = std::hypot(
     plan.poses.back().pose.position.x - goal.pose.position.x,
     plan.poses.back().pose.position.y - goal.pose.position.y);
-  RCLCPP_INFO(
+  RCLCPP_DEBUG(
     logger,
-    "[Hybrid] yaw %s start=%.3f path_start=%.3f goal=%.3f path_end=%.3f chord=%.3f "
-    "d_end_goal=%.3f d_chord_goal=%.3f d_end_chord=%.3f d_start=%.3f "
-    "xy_err=%.3f tol=%.3f goal_bin=%u bin_yaw=%.3f model=%s smooth=%s poses=%zu",
+    "[Hybrid] 阶段=%s 起点航向=%.3f 路径起始航向=%.3f 目标航向=%.3f 路径末端航向=%.3f 弦方向=%.3f "
+    "末端误差=%.3f 弦方向误差=%.3f 末端弦方向差=%.3f 起点误差=%.3f "
+    "位置误差=%.3f 容差=%.3f 目标角度栅格=%u 栅格航向=%.3f 模型=%s 平滑=%s 路径点=%zu",
     stage,
     start_yaw, path_start, goal_yaw, path_end, chord,
     wrapPi(path_end - goal_yaw),
@@ -374,7 +374,7 @@ SmacPlannerHybrid::SmacPlannerHybrid()
 SmacPlannerHybrid::~SmacPlannerHybrid()
 {
   RCLCPP_INFO(
-    _logger, "Destroying plugin %s of type SmacPlannerHybrid",
+    _logger, "销毁插件 %s ，类型为 SmacPlannerHybrid",
     _name.c_str());
 }
 
@@ -394,7 +394,7 @@ void SmacPlannerHybrid::configure(
   footprint_back_x_ = 0.0;
   footprint_front_x_ = 0.0;
 
-  RCLCPP_INFO(_logger, "Configuring %s of type SmacPlannerHybrid", name.c_str());
+  RCLCPP_INFO(_logger, "配置中 %s ，类型为 SmacPlannerHybrid", name.c_str());
 
   int angle_quantizations;
   double analytic_expansion_max_length_m;
@@ -505,22 +505,22 @@ void SmacPlannerHybrid::configure(
   if (_motion_model == MotionModel::UNKNOWN) {
     RCLCPP_WARN(
       _logger,
-      "Unable to get MotionModel search type. Given '%s', "
+      "无法识别运动模型搜索类型，当前值为 '%s', "
       "valid options are MOORE, VON_NEUMANN, DUBIN, REEDS_SHEPP, STATE_LATTICE.",
       _motion_model_for_search.c_str());
   }
 
   if (_max_on_approach_iterations <= 0) {
     RCLCPP_INFO(
-      _logger, "On approach iteration selected as <= 0, "
-      "disabling tolerance and on approach iterations.");
+      _logger, "接近阶段迭代次数 <= 0，"
+      "禁用容差和接近阶段迭代。");
     _max_on_approach_iterations = std::numeric_limits<int>::max();
   }
 
   if (_max_iterations <= 0) {
     RCLCPP_INFO(
-      _logger, "maximum iteration selected as <= 0, "
-      "disabling maximum iterations.");
+      _logger, "最大迭代次数 <= 0，"
+      "禁用最大迭代次数。");
     _max_iterations = std::numeric_limits<int>::max();
   }
 
@@ -541,7 +541,7 @@ void SmacPlannerHybrid::configure(
   if (static_cast<int>(_lookup_table_dim) % 2 == 0) {
     RCLCPP_INFO(
       _logger,
-      "Even sized heuristic lookup table size set %f, increasing size by 1 to make odd",
+      "启发式查找表尺寸为偶数（当前=%f），将增加 1 调整为奇数 %f, 增加 1 调整为奇数",
       _lookup_table_dim);
     _lookup_table_dim += 1.0;
   }
@@ -602,18 +602,17 @@ void SmacPlannerHybrid::configure(
   RCLCPP_INFO(_logger, "已订阅 /enable_backward，true 时强制 REEDS_SHEPP 倒车规划");
 
   RCLCPP_INFO(
-    _logger, "Configured plugin %s of type SmacPlannerHybrid with "
-    "maximum iterations %i, max on approach iterations %i, and %s. Tolerance %.2f."
-    "Using motion model: %s.",
+    _logger, "插件配置完成：%s，类型为 SmacPlannerHybrid；"
+    "最大迭代=%i，接近阶段最大迭代=%i，%s；容差=%.2f；运动模型=%s。",
     _name.c_str(), _max_iterations, _max_on_approach_iterations,
-    _allow_unknown ? "allowing unknown traversal" : "not allowing unknown traversal",
+    _allow_unknown ? "允许穿越未知区域" : "不允许穿越未知区域",
     _tolerance, toString(_motion_model).c_str());
 }
 
 void SmacPlannerHybrid::activate()
 {
   RCLCPP_INFO(
-    _logger, "Activating plugin %s of type SmacPlannerHybrid",
+    _logger, "激活插件 %s ，类型为 SmacPlannerHybrid",
     _name.c_str());
   _raw_plan_publisher->on_activate();
   _roi_connectivity_path_publisher->on_activate();
@@ -629,7 +628,7 @@ void SmacPlannerHybrid::activate()
 void SmacPlannerHybrid::deactivate()
 {
   RCLCPP_INFO(
-    _logger, "Deactivating plugin %s of type SmacPlannerHybrid",
+    _logger, "停用插件 %s ，类型为 SmacPlannerHybrid",
     _name.c_str());
   _raw_plan_publisher->on_deactivate();
   _roi_connectivity_path_publisher->on_deactivate();
@@ -642,7 +641,7 @@ void SmacPlannerHybrid::deactivate()
 void SmacPlannerHybrid::cleanup()
 {
   RCLCPP_INFO(
-    _logger, "Cleaning up plugin %s of type SmacPlannerHybrid",
+    _logger, "清理插件 %s ，类型为 SmacPlannerHybrid",
     _name.c_str());
   _a_star.reset();
   _smoother.reset();
@@ -881,9 +880,9 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   const geometry_msgs::msg::PoseStamped & goal)
 {
   const double pending_heading_tol = getHybridPendingGoalHeadingTolerance();
-  RCLCPP_INFO(
+  RCLCPP_DEBUG(
     _logger,
-    "[Hybrid] createPlan start=(%.3f, %.3f) goal=(%.3f, %.3f) heading_tol=%.3f",
+    "[Hybrid] 开始规划：起点=(%.3f, %.3f) 目标=(%.3f, %.3f) 航向容差=%.3f",
     start.pose.position.x, start.pose.position.y,
     goal.pose.position.x, goal.pose.position.y,
     pending_heading_tol);
@@ -967,8 +966,8 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
     start_pose2d.x, start_pose2d.y, start_pose2d.theta, _costmap_ros->getRobotFootprint());
   if (start_footprint_cost == nav2_costmap_2d::LETHAL_OBSTACLE)
   {
-    RCLCPP_WARN(_logger, "Start pose: (%f, %f) is occupied !", start.pose.position.x, start.pose.position.y);
-    throw std::runtime_error("Cannot generate a plan, start is occupied!");
+    RCLCPP_WARN(_logger, "起点位姿 (%f, %f) 被占用！", start.pose.position.x, start.pose.position.y);
+    throw std::runtime_error("无法生成规划，起点被占用！");
   }
 
   geometry_msgs::msg::Pose2D goal_pose2d;
@@ -981,7 +980,7 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
 
   unsigned int mx_s, my_s;
   if (!costmap->worldToMap(start.pose.position.x, start.pose.position.y, mx_s, my_s)) {
-    throw std::runtime_error("Start pose is out of costmap!");
+    throw std::runtime_error("起点位姿超出代价地图范围！");
   }
   double orientation_bin = tf2::getYaw(start.pose.orientation) / _angle_bin_size;
   while (orientation_bin < 0.0) {
@@ -997,7 +996,7 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   if (!costmap->worldToMap(
       goal.pose.position.x, goal.pose.position.y, mx_g, my_g))
   {
-    throw std::runtime_error("Goal pose is out of costmap!");
+    throw std::runtime_error("目标位姿超出代价地图范围！");
   }
   double goal_orientation_bin = tf2::getYaw(goal.pose.orientation) / _angle_bin_size;
   while (goal_orientation_bin < 0.0) {
@@ -1052,9 +1051,9 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   _a_star->setGoal(mx_g, my_g, goal_orientation_bin_id);
   _a_star->setGoalHeadingTolerance(pending_heading_tol);
   if (pending_heading_tol >= 0.0) {
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       _logger,
-      "[Hybrid] near heading gate on tol=%.3f rad (XY tol=%.3f m)",
+      "[Hybrid] 启用近距离目标航向约束：容差=%.3f rad，位置容差=%.3f m",
       pending_heading_tol, _tolerance);
   }
 
@@ -1067,32 +1066,33 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
         path, num_iterations, _tolerance / static_cast<float>(costmap->getResolution())))
     {
       if (num_iterations < _a_star->getMaxIterations()) {
-        error = std::string("no valid path found from (") + std::to_string(start_pose2d.x) + "," + std::to_string(start_pose2d.y) + ") to (" +
+        error = std::string("未找到有效路径 ，起点 (") + std::to_string(start_pose2d.x) + "," + std::to_string(start_pose2d.y) + ")，目标 (" +
                 std::to_string(goal_pose2d.x) + "," + std::to_string(goal_pose2d.y) + ")";
         if (pending_heading_tol >= 0.0) {
           error += " (XY+heading gate)";
         }
       } else {
-        error = std::string("exceeded maximum iterations from (") + std::to_string(start_pose2d.x) + "," + std::to_string(start_pose2d.y) + ") to (" +
+        error = std::string("超过最大迭代次数 ，起点 (") + std::to_string(start_pose2d.x) + "," + std::to_string(start_pose2d.y) + ")，目标 (" +
                 std::to_string(goal_pose2d.x) + "," + std::to_string(goal_pose2d.y) + ")";
       }
     }
   } catch (const std::runtime_error & e) {
-    error = "invalid use: ";
+    error = "使用无效： ";
     error += e.what();
   }
 
   if (!error.empty()) {
     static const std::string kStartLethalMsg =
-      "Starting point in lethal space! Cannot create feasible plan.";
-    if (error == ("invalid use: " + kStartLethalMsg)) {
+      "起点位于致命障碍物区域，无法生成可行规划。";
+    if (error == ("使用无效： " + kStartLethalMsg)) {
       throw std::runtime_error(kStartLethalMsg);
     }
 
     RCLCPP_WARN(
       _logger,
-      "%s: failed to create plan, %s.",
-      _name.c_str(), error.c_str());
+      "%s：规划失败：%s。起点=(%.3f, %.3f) 目标=(%.3f, %.3f) 运动模型=%s 迭代=%d",
+      _name.c_str(), error.c_str(), start_pose2d.x, start_pose2d.y,
+      goal_pose2d.x, goal_pose2d.y, toString(_motion_model).c_str(), num_iterations);
     return plan;
   }
 
@@ -1125,7 +1125,7 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
 
 #ifdef BENCHMARK_TESTING
   std::cout << "It took " << time_span.count() * 1000 <<
-    " milliseconds with " << num_iterations << " iterations." << std::endl;
+    " 毫秒，迭代次数为 " << num_iterations << " 次。" << std::endl;
 #endif
 
   // Smooth plan
@@ -1147,6 +1147,12 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   logHybridPathYaw(
     _logger, "trim", start, goal, plan, toString(_motion_model).c_str(),
     static_cast<bool>(_smoother), _tolerance, goal_orientation_bin_id, goal_bin_yaw);
+  const double total_sec = duration_cast<duration<double>>(steady_clock::now() - a).count();
+  RCLCPP_INFO_THROTTLE(
+    _logger, *_clock, 2000,
+    "[Hybrid] 规划完成：耗时=%.3fs 迭代=%d 路径点=%zu 模型=%s 平滑=%s 起点=(%.2f, %.2f) 目标=(%.2f, %.2f)",
+    total_sec, num_iterations, plan.poses.size(), toString(_motion_model).c_str(),
+    _smoother ? "是" : "否", start_pose2d.x, start_pose2d.y, goal_pose2d.x, goal_pose2d.y);
   return plan;
 }
 
@@ -1231,7 +1237,7 @@ void SmacPlannerHybrid::trimPathTail(
   if (keep < 0) {
     RCLCPP_WARN(
       _logger,
-      "%s: tail window (%.2fm) has no centerline-free pose (cost < 253, 255 skipped); "
+      "%s: 尾部窗口 (%.2fm) 没有中心线可通行位姿 (代价 < 253，跳过 255); "
       "returning empty plan.",
       _name.c_str(), window);
     plan.poses.clear();
@@ -1245,7 +1251,7 @@ void SmacPlannerHybrid::trimPathTail(
       plan.poses.begin() + keep + 1, plan.poses.end());
     RCLCPP_WARN(
       _logger,
-      "%s: Trimmed %zu tail pose(s); last free centerline index=%d / %d.",
+      "%s: 裁剪了 %zu 个尾部位姿；最后可通行中心线索引=%d / %d.",
       _name.c_str(), trimmed, keep, n - 1);
   }
 }
@@ -1353,8 +1359,8 @@ SmacPlannerHybrid::dynamicParametersCallback(std::vector<rclcpp::Parameter> para
         _max_iterations = parameter.as_int();
         if (_max_iterations <= 0) {
           RCLCPP_INFO(
-            _logger, "maximum iteration selected as <= 0, "
-            "disabling maximum iterations.");
+            _logger, "最大迭代次数 <= 0，"
+            "禁用最大迭代次数。");
           _max_iterations = std::numeric_limits<int>::max();
         }
       } else if (name == _name + ".close_range_max_iterations") {
@@ -1364,8 +1370,8 @@ SmacPlannerHybrid::dynamicParametersCallback(std::vector<rclcpp::Parameter> para
         _max_on_approach_iterations = parameter.as_int();
         if (_max_on_approach_iterations <= 0) {
           RCLCPP_INFO(
-            _logger, "On approach iteration selected as <= 0, "
-            "disabling tolerance and on approach iterations.");
+            _logger, "接近阶段迭代次数 <= 0，"
+            "禁用容差和接近阶段迭代。");
           _max_on_approach_iterations = std::numeric_limits<int>::max();
         }
       } else if (name == _name + ".angle_quantization_bins") {
@@ -1382,7 +1388,7 @@ SmacPlannerHybrid::dynamicParametersCallback(std::vector<rclcpp::Parameter> para
         if (_motion_model == MotionModel::UNKNOWN) {
           RCLCPP_WARN(
             _logger,
-            "Unable to get MotionModel search type. Given '%s', "
+            "无法识别运动模型搜索类型，当前值为 '%s', "
             "valid options are MOORE, VON_NEUMANN, DUBIN, REEDS_SHEPP.",
             _motion_model_for_search.c_str());
         }
@@ -1409,7 +1415,7 @@ SmacPlannerHybrid::dynamicParametersCallback(std::vector<rclcpp::Parameter> para
     if (static_cast<int>(_lookup_table_dim) % 2 == 0) {
       RCLCPP_INFO(
         _logger,
-        "Even sized heuristic lookup table size set %f, increasing size by 1 to make odd",
+        "启发式查找表尺寸为偶数（当前=%f），将增加 1 调整为奇数 %f, 增加 1 调整为奇数",
         _lookup_table_dim);
       _lookup_table_dim += 1.0;
     }

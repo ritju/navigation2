@@ -727,7 +727,7 @@ void PlanningDebugViz::publishStraightCandidate(
   }
   MarkerArray arr;
   std::ostringstream ss;
-  ss << "v" << via_index_ << " " << kind << " iter=" << iter;
+  ss << "v" << via_index_ << " " << kind << " 迭代=" << iter;
   arr.markers.push_back(poseText("straight_iter", markerId(0), goal, ss.str(), rgba(1.0f, 0.85f, 0.1f)));
   arr.markers.push_back(footprintStrip("straight_iter", markerId(1), start, rgba(1.0f, 0.7f, 0.1f, 0.7f)));
   arr.markers.push_back(footprintStrip("straight_iter", markerId(2), goal, rgba(1.0f, 0.7f, 0.1f, 0.7f)));
@@ -802,7 +802,7 @@ void PlanningDebugViz::publishHybridRaw(const nav_msgs::msg::Path & path)
   MarkerArray arr;
   arr.markers.push_back(strip);
   std::ostringstream ss;
-  ss << "H via=" << via_index_;
+  ss << "H 途经点=" << via_index_;
   if (via_count_ > 0) {
     ss << "/" << via_count_;
   }

@@ -99,7 +99,7 @@ void Node2D::initMotionModel(
   SearchInfo & search_info)
 {
   if (motion_model != MotionModel::TWOD) {
-    throw std::runtime_error("Invalid motion model for 2D node.");
+    throw std::runtime_error("二维节点的运动模型无效。");
   }
 
   int x_size = static_cast<int>(x_size_uint);
