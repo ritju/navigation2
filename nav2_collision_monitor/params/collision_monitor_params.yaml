@@ -5,6 +5,12 @@ collision_monitor:
     odom_frame_id: "odom"
     cmd_vel_in_topic: "cmd_vel_nav_"
     cmd_vel_out_topic: "cmd_vel_nav"
+    # Intercept TEB FrontSteerDriveCmd. TEB command_topic must match in_topic;
+    # chassis must subscribe to out_topic. Topics must differ.
+    use_front_steer_cmd: False
+    front_steer_cmd_in_topic: "/front_steer_cmd_raw"
+    front_steer_cmd_out_topic: "/front_steer_cmd"
+    front_steer_wheelbase: 0.854
     transform_tolerance: 0.5
     source_timeout: 5.0
     stop_pub_timeout: 2.0

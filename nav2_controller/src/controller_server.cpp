@@ -265,6 +265,21 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
     get_logger(),
     "Controller Server has %s controllers available.", controller_ids_concat_.c_str());
 
+  // A controller plugin does not receive an end-of-action callback. Own a
+  // stop-only publisher here so goal success/cancel/failure stop the native
+  // chassis immediately even when legacy Twist publication is disabled.
+  front_steer_stop_publishers_.clear();
+  for (const auto & id : controller_ids_) {
+    std::string mode;
+    const std::string prefix = id + ".front_steer_drive_interface.";
+    if (get_parameter(prefix + "mode", mode) && mode == "front_steer_cmd") {
+      std::string topic = "/front_steer_cmd";
+      get_parameter(prefix + "command_topic", topic);
+      front_steer_stop_publishers_[id] = create_publisher<capella_ros_msg::msg::FrontSteerDriveCmd>(
+        topic, rclcpp::SystemDefaultsQoS());
+    }
+  }
+
   odom_sub_ = std::make_unique<nav_2d_utils::OdomSubscriber>(node);
   vel_publisher_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 1);
   prune_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("controller_cut_path", 1);
@@ -322,6 +337,7 @@ ControllerServer::on_activate(const rclcpp_lifecycle::State & /*state*/)
     it->second->activate();
   }
   vel_publisher_->on_activate();
+  for (auto & entry : front_steer_stop_publishers_) {entry.second->on_activate();}
   action_server_->activate();
 
   auto node = shared_from_this();
@@ -349,6 +365,7 @@ ControllerServer::on_deactivate(const rclcpp_lifecycle::State & /*state*/)
 
   publishZeroVelocity();
   vel_publisher_->on_deactivate();
+  for (auto & entry : front_steer_stop_publishers_) {entry.second->on_deactivate();}
   dyn_params_handler_.reset();
 
   // destroy bond connection
@@ -380,6 +397,7 @@ ControllerServer::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   action_server_.reset();
   odom_sub_.reset();
   vel_publisher_.reset();
+  front_steer_stop_publishers_.clear();
   speed_limit_sub_.reset();
   teb_global_plan_sub_.reset();
   following_person_subscribe_.reset();
@@ -969,6 +987,20 @@ void ControllerServer::updateGlobalPath()
 
 void ControllerServer::publishVelocity(const geometry_msgs::msg::TwistStamped & velocity)
 {
+  // TEB still returns the actual command for Nav2 bookkeeping. Suppress the
+  // legacy output here, at its owner, including publishZeroVelocity().
+  // Before the first goal, a single configured controller is unambiguous.
+  const std::string controller_id = current_controller_.empty() && controller_ids_.size() == 1 ?
+    controller_ids_.front() : current_controller_;
+  if (!controller_id.empty()) {
+    const std::string prefix = controller_id + ".front_steer_drive_interface.";
+    std::string mode;
+    bool publish_twist = true;
+    if (get_parameter(prefix + "mode", mode) && mode == "front_steer_cmd" &&
+        get_parameter(prefix + "publish_twist", publish_twist) && !publish_twist) {
+      return;
+    }
+  }
   auto cmd_vel = std::make_unique<geometry_msgs::msg::Twist>(velocity.twist);
   if (vel_publisher_->is_activated() && vel_publisher_->get_subscription_count() > 0) {
     vel_publisher_->publish(std::move(cmd_vel));
@@ -979,6 +1011,13 @@ void ControllerServer::publishVelocity(const geometry_msgs::msg::TwistStamped & 
 
 void ControllerServer::publishZeroVelocity()
 {
+  const std::string id = current_controller_.empty() && controller_ids_.size() == 1 ?
+    controller_ids_.front() : current_controller_;
+  for (auto & entry : front_steer_stop_publishers_) {
+    if ((id.empty() || entry.first == id) && entry.second->is_activated()) {
+      entry.second->publish(capella_ros_msg::msg::FrontSteerDriveCmd());
+    }
+  }
   geometry_msgs::msg::TwistStamped velocity;
   velocity.twist.angular.x = 0;
   velocity.twist.angular.y = 0;

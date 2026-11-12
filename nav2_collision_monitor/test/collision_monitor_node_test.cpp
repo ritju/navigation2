@@ -31,6 +31,8 @@
 #include "sensor_msgs/point_cloud2_iterator.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/polygon_stamped.hpp"
+#include "nav_msgs/msg/path.hpp"
+#include "capella_ros_msg/msg/front_steer_drive_cmd.hpp"
 
 #include "tf2_ros/transform_broadcaster.h"
 
@@ -46,7 +48,11 @@ static const char SOURCE_FRAME_ID[]{"base_source"};
 static const char ODOM_FRAME_ID[]{"odom"};
 static const char CMD_VEL_IN_TOPIC[]{"cmd_vel_in"};
 static const char CMD_VEL_OUT_TOPIC[]{"cmd_vel_out"};
+static const char FRONT_STEER_CMD_IN_TOPIC[]{"front_steer_cmd_in"};
+static const char FRONT_STEER_CMD_OUT_TOPIC[]{"front_steer_cmd_out"};
+static const char LOCAL_PLAN_TOPIC[]{"local_plan"};
 static const char FOOTPRINT_TOPIC[]{"footprint"};
+static const double FRONT_STEER_WHEELBASE{0.854};
 static const char SCAN_NAME[]{"Scan"};
 static const char POINTCLOUD_NAME[]{"PointCloud"};
 static const char RANGE_NAME[]{"Range"};
@@ -142,14 +148,20 @@ public:
   void publishPointCloud(const double dist, const rclcpp::Time & stamp);
   void publishRange(const double dist, const rclcpp::Time & stamp);
   void publishCmdVel(const double x, const double y, const double tw);
+  void enableFrontSteerCmd();
+  void enableLocalPlanCollisionCheck();
+  void publishFrontSteerCmd(const float linear_x, const float steer_angle);
+  void publishLocalPlan(const rclcpp::Time & stamp, const double ahead_x);
   bool waitData(
     const double expected_dist,
     const std::chrono::nanoseconds & timeout,
     const rclcpp::Time & stamp);
   bool waitCmdVel(const std::chrono::nanoseconds & timeout);
+  bool waitFrontSteerCmd(const std::chrono::nanoseconds & timeout);
 
 protected:
   void cmdVelOutCallback(geometry_msgs::msg::Twist::SharedPtr msg);
+  void frontSteerCmdOutCallback(capella_ros_msg::msg::FrontSteerDriveCmd::SharedPtr msg);
 
   // CollisionMonitor node
   std::shared_ptr<CollisionMonitorWrapper> cm_;
@@ -167,6 +179,12 @@ protected:
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_out_sub_;
 
   geometry_msgs::msg::Twist::SharedPtr cmd_vel_out_;
+
+  rclcpp::Publisher<capella_ros_msg::msg::FrontSteerDriveCmd>::SharedPtr front_steer_cmd_in_pub_;
+  rclcpp::Subscription<capella_ros_msg::msg::FrontSteerDriveCmd>::SharedPtr front_steer_cmd_out_sub_;
+  capella_ros_msg::msg::FrontSteerDriveCmd::SharedPtr front_steer_cmd_out_;
+
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr local_plan_pub_;
 };  // Tester
 
 Tester::Tester()
@@ -188,6 +206,14 @@ Tester::Tester()
   cmd_vel_out_sub_ = cm_->create_subscription<geometry_msgs::msg::Twist>(
     CMD_VEL_OUT_TOPIC, rclcpp::SystemDefaultsQoS(),
     std::bind(&Tester::cmdVelOutCallback, this, std::placeholders::_1));
+
+  front_steer_cmd_in_pub_ = cm_->create_publisher<capella_ros_msg::msg::FrontSteerDriveCmd>(
+    FRONT_STEER_CMD_IN_TOPIC, rclcpp::SystemDefaultsQoS());
+  front_steer_cmd_out_sub_ = cm_->create_subscription<capella_ros_msg::msg::FrontSteerDriveCmd>(
+    FRONT_STEER_CMD_OUT_TOPIC, rclcpp::SystemDefaultsQoS(),
+    std::bind(&Tester::frontSteerCmdOutCallback, this, std::placeholders::_1));
+  local_plan_pub_ = cm_->create_publisher<nav_msgs::msg::Path>(
+    LOCAL_PLAN_TOPIC, rclcpp::QoS(1).best_effort());
 }
 
 Tester::~Tester()
@@ -200,6 +226,9 @@ Tester::~Tester()
 
   cmd_vel_in_pub_.reset();
   cmd_vel_out_sub_.reset();
+  front_steer_cmd_in_pub_.reset();
+  front_steer_cmd_out_sub_.reset();
+  local_plan_pub_.reset();
 
   cm_.reset();
 }
@@ -542,6 +571,84 @@ bool Tester::waitCmdVel(const std::chrono::nanoseconds & timeout)
 void Tester::cmdVelOutCallback(geometry_msgs::msg::Twist::SharedPtr msg)
 {
   cmd_vel_out_ = msg;
+}
+
+void Tester::frontSteerCmdOutCallback(capella_ros_msg::msg::FrontSteerDriveCmd::SharedPtr msg)
+{
+  front_steer_cmd_out_ = msg;
+}
+
+void Tester::enableFrontSteerCmd()
+{
+  cm_->declare_parameter("use_front_steer_cmd", rclcpp::ParameterValue(true));
+  cm_->set_parameter(rclcpp::Parameter("use_front_steer_cmd", true));
+  cm_->declare_parameter(
+    "front_steer_cmd_in_topic", rclcpp::ParameterValue(FRONT_STEER_CMD_IN_TOPIC));
+  cm_->set_parameter(
+    rclcpp::Parameter("front_steer_cmd_in_topic", FRONT_STEER_CMD_IN_TOPIC));
+  cm_->declare_parameter(
+    "front_steer_cmd_out_topic", rclcpp::ParameterValue(FRONT_STEER_CMD_OUT_TOPIC));
+  cm_->set_parameter(
+    rclcpp::Parameter("front_steer_cmd_out_topic", FRONT_STEER_CMD_OUT_TOPIC));
+  cm_->declare_parameter("front_steer_wheelbase", rclcpp::ParameterValue(FRONT_STEER_WHEELBASE));
+  cm_->set_parameter(rclcpp::Parameter("front_steer_wheelbase", FRONT_STEER_WHEELBASE));
+}
+
+void Tester::enableLocalPlanCollisionCheck()
+{
+  cm_->declare_parameter("use_local_plan_collision_check", rclcpp::ParameterValue(true));
+  cm_->set_parameter(rclcpp::Parameter("use_local_plan_collision_check", true));
+  cm_->declare_parameter("use_velocity_approach_prediction", rclcpp::ParameterValue(false));
+  cm_->set_parameter(rclcpp::Parameter("use_velocity_approach_prediction", false));
+  cm_->declare_parameter("local_plan_topic", rclcpp::ParameterValue(LOCAL_PLAN_TOPIC));
+  cm_->set_parameter(rclcpp::Parameter("local_plan_topic", LOCAL_PLAN_TOPIC));
+  cm_->declare_parameter("local_plan_footprint_topic", rclcpp::ParameterValue(FOOTPRINT_TOPIC));
+  cm_->set_parameter(rclcpp::Parameter("local_plan_footprint_topic", FOOTPRINT_TOPIC));
+  cm_->declare_parameter("local_plan_collision_max_points", rclcpp::ParameterValue(10));
+  cm_->set_parameter(rclcpp::Parameter("local_plan_collision_max_points", 10));
+  cm_->declare_parameter("local_plan_lookahead_distance", rclcpp::ParameterValue(5.0));
+  cm_->set_parameter(rclcpp::Parameter("local_plan_lookahead_distance", 5.0));
+  cm_->declare_parameter("local_plan_sample_spacing_ratio", rclcpp::ParameterValue(0.5));
+  cm_->set_parameter(rclcpp::Parameter("local_plan_sample_spacing_ratio", 0.5));
+  cm_->declare_parameter("local_plan_validity_timeout", rclcpp::ParameterValue(5.0));
+  cm_->set_parameter(rclcpp::Parameter("local_plan_validity_timeout", 5.0));
+}
+
+void Tester::publishFrontSteerCmd(const float linear_x, const float steer_angle)
+{
+  front_steer_cmd_out_ = nullptr;
+  cmd_vel_out_ = nullptr;
+  auto msg = std::make_unique<capella_ros_msg::msg::FrontSteerDriveCmd>();
+  msg->linear_x = linear_x;
+  msg->front_steer_angle = steer_angle;
+  front_steer_cmd_in_pub_->publish(std::move(msg));
+}
+
+void Tester::publishLocalPlan(const rclcpp::Time & stamp, const double ahead_x)
+{
+  nav_msgs::msg::Path path;
+  path.header.frame_id = BASE_FRAME_ID;
+  path.header.stamp = stamp;
+  geometry_msgs::msg::PoseStamped pose;
+  pose.header = path.header;
+  pose.pose.orientation.w = 1.0;
+  path.poses.push_back(pose);
+  pose.pose.position.x = ahead_x;
+  path.poses.push_back(pose);
+  local_plan_pub_->publish(path);
+}
+
+bool Tester::waitFrontSteerCmd(const std::chrono::nanoseconds & timeout)
+{
+  rclcpp::Time start_time = cm_->now();
+  while (rclcpp::ok() && cm_->now() - start_time <= rclcpp::Duration(timeout)) {
+    if (front_steer_cmd_out_) {
+      return true;
+    }
+    rclcpp::spin_some(cm_->get_node_base_interface());
+    std::this_thread::sleep_for(10ms);
+  }
+  return false;
 }
 
 TEST_F(Tester, testProcessStopSlowdown)
@@ -903,6 +1010,68 @@ TEST_F(Tester, testPolygonsNotSet)
 
   // Check that Collision Monitor node can not be configured for this parameters set
   cm_->cant_configure();
+}
+
+TEST_F(Tester, testFrontSteerCmdPassThroughAndStop)
+{
+  rclcpp::Time curr_time = cm_->now();
+  setCommonParameters();
+  enableFrontSteerCmd();
+  addPolygon("Stop", POLYGON, 1.0, "stop");
+  addSource(SCAN_NAME, SCAN);
+  setVectors({"Stop"}, {SCAN_NAME});
+  cm_->start();
+  sendTransforms(curr_time);
+
+  const float v = 0.4f;
+  const float delta = 0.2f;
+  const double expected_omega = static_cast<double>(v) * std::tan(static_cast<double>(delta)) /
+    FRONT_STEER_WHEELBASE;
+
+  publishScan(3.0, curr_time);
+  ASSERT_TRUE(waitData(3.0, 500ms, curr_time));
+  publishFrontSteerCmd(v, delta);
+  ASSERT_TRUE(waitFrontSteerCmd(500ms));
+  ASSERT_NEAR(front_steer_cmd_out_->linear_x, v, EPSILON);
+  ASSERT_NEAR(front_steer_cmd_out_->front_steer_angle, delta, EPSILON);
+  ASSERT_TRUE(waitCmdVel(500ms));
+  ASSERT_NEAR(cmd_vel_out_->linear.x, v, EPSILON);
+  ASSERT_NEAR(cmd_vel_out_->angular.z, expected_omega, 1.0e-4);
+
+  publishScan(0.5, curr_time);
+  ASSERT_TRUE(waitData(0.5, 500ms, curr_time));
+  publishFrontSteerCmd(v, delta);
+  ASSERT_TRUE(waitFrontSteerCmd(500ms));
+  ASSERT_NEAR(front_steer_cmd_out_->linear_x, 0.0, EPSILON);
+  ASSERT_NEAR(front_steer_cmd_out_->front_steer_angle, 0.0, EPSILON);
+
+  cm_->stop();
+}
+
+TEST_F(Tester, testFrontSteerCmdLocalPlanCollisionStop)
+{
+  rclcpp::Time curr_time = cm_->now();
+  setCommonParameters();
+  enableFrontSteerCmd();
+  enableLocalPlanCollisionCheck();
+  addSource(SCAN_NAME, SCAN);
+  setVectors({}, {SCAN_NAME});
+  cm_->start();
+  sendTransforms(curr_time);
+
+  publishFootprint(1.0, curr_time);
+  publishLocalPlan(curr_time, 1.0);
+  std::this_thread::sleep_for(50ms);
+  rclcpp::spin_some(cm_->get_node_base_interface());
+
+  publishScan(0.5, curr_time);
+  ASSERT_TRUE(waitData(0.5, 500ms, curr_time));
+  publishFrontSteerCmd(0.4f, 0.1f);
+  ASSERT_TRUE(waitFrontSteerCmd(500ms));
+  ASSERT_NEAR(front_steer_cmd_out_->linear_x, 0.0, EPSILON);
+  ASSERT_NEAR(front_steer_cmd_out_->front_steer_angle, 0.0, EPSILON);
+
+  cm_->stop();
 }
 
 TEST_F(Tester, testSourcesNotSet)

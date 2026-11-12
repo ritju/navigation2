@@ -24,6 +24,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "nav_msgs/msg/path.hpp"
+#include "capella_ros_msg/msg/front_steer_drive_cmd.hpp"
 
 #include "tf2/time.h"
 #include "tf2_ros/buffer.h"
@@ -101,20 +102,36 @@ protected:
    */
   void cmdVelInCallback(geometry_msgs::msg::Twist::ConstSharedPtr msg);
   /**
+   * @brief Callback for input FrontSteerDriveCmd (rear-axle v + steer angle)
+   * @param msg Input front-steer command
+   */
+  void frontSteerCmdInCallback(capella_ros_msg::msg::FrontSteerDriveCmd::ConstSharedPtr msg);
+  /**
+   * @brief Convert front-steer command to rear-axle Twist used by process()
+   */
+  Velocity frontSteerCmdToVelocity(const capella_ros_msg::msg::FrontSteerDriveCmd& cmd) const;
+  /**
    * @brief Publishes output cmd_vel. If robot was stopped more than stop_pub_timeout_ seconds,
    * quit to publish 0-velocity.
    * @param robot_action Robot action to publish
    */
   void publishVelocity(const Action& robot_action);
+  /**
+   * @brief Publishes FrontSteerDriveCmd: pass-through, scaled linear_x, or zero on STOP
+   */
+  void publishFrontSteerCmd(const Action& robot_action);
 
   /**
    * @brief Supporting routine obtaining all ROS-parameters
    * @param cmd_vel_in_topic Output name of cmd_vel_in topic
    * @param cmd_vel_out_topic Output name of cmd_vel_out topic
+   * @param front_steer_cmd_in_topic Output name of FrontSteerDriveCmd input topic
+   * @param front_steer_cmd_out_topic Output name of FrontSteerDriveCmd output topic
    * is required.
    * @return True if all parameters were obtained or false in failure case
    */
-  bool getParameters(std::string& cmd_vel_in_topic, std::string& cmd_vel_out_topic);
+  bool getParameters(std::string& cmd_vel_in_topic, std::string& cmd_vel_out_topic,
+                     std::string& front_steer_cmd_in_topic, std::string& front_steer_cmd_out_topic);
   /**
    * @brief Supporting routine creating and configuring all polygons
    * @param base_frame_id Robot base frame ID
@@ -223,6 +240,20 @@ protected:
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_in_sub_;
   /// @brief Output cmd_vel publisher
   rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_out_pub_;
+
+  /// @brief Optional FrontSteerDriveCmd input (TEB / controller native command)
+  rclcpp::Subscription<capella_ros_msg::msg::FrontSteerDriveCmd>::SharedPtr front_steer_cmd_in_sub_;
+  /// @brief Optional FrontSteerDriveCmd output to chassis
+  rclcpp_lifecycle::LifecyclePublisher<capella_ros_msg::msg::FrontSteerDriveCmd>::SharedPtr
+      front_steer_cmd_out_pub_;
+  /// @brief Enable native front-steer command intercept
+  bool use_front_steer_cmd_{ false };
+  /// @brief Wheelbase used to map steer angle to yaw rate (m)
+  double front_steer_wheelbase_{ 0.854 };
+  /// @brief Latest accepted front-steer command (for pass-through / slowdown)
+  capella_ros_msg::msg::FrontSteerDriveCmd last_front_steer_cmd_;
+  /// @brief Whether last_front_steer_cmd_ is valid
+  bool have_front_steer_cmd_{ false };
 
   /// @brief Optional subscriber for local plan footprint collision checks
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr local_plan_sub_;

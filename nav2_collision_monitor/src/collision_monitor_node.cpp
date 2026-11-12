@@ -130,9 +130,11 @@ nav2_util::CallbackReturn CollisionMonitor::on_configure(const rclcpp_lifecycle:
 
   std::string cmd_vel_in_topic;
   std::string cmd_vel_out_topic;
+  std::string front_steer_cmd_in_topic;
+  std::string front_steer_cmd_out_topic;
 
   // Obtaining ROS parameters
-  if (!getParameters(cmd_vel_in_topic, cmd_vel_out_topic))
+  if (!getParameters(cmd_vel_in_topic, cmd_vel_out_topic, front_steer_cmd_in_topic, front_steer_cmd_out_topic))
   {
     return nav2_util::CallbackReturn::FAILURE;
   }
@@ -140,6 +142,31 @@ nav2_util::CallbackReturn CollisionMonitor::on_configure(const rclcpp_lifecycle:
   cmd_vel_in_sub_ = this->create_subscription<geometry_msgs::msg::Twist>(
       cmd_vel_in_topic, 1, std::bind(&CollisionMonitor::cmdVelInCallback, this, std::placeholders::_1));
   cmd_vel_out_pub_ = this->create_publisher<geometry_msgs::msg::Twist>(cmd_vel_out_topic, 1);
+
+  if (use_front_steer_cmd_)
+  {
+    if (front_steer_cmd_in_topic.empty() || front_steer_cmd_out_topic.empty())
+    {
+      RCLCPP_ERROR(get_logger(),
+                   "use_front_steer_cmd is true but front_steer_cmd_in/out topic is empty");
+      return nav2_util::CallbackReturn::FAILURE;
+    }
+    if (front_steer_cmd_in_topic == front_steer_cmd_out_topic)
+    {
+      RCLCPP_ERROR(get_logger(),
+                   "front_steer_cmd_in_topic and front_steer_cmd_out_topic must differ so the "
+                   "monitor can intercept TEB output. Chassis should subscribe to the out topic.");
+      return nav2_util::CallbackReturn::FAILURE;
+    }
+    front_steer_cmd_in_sub_ = this->create_subscription<capella_ros_msg::msg::FrontSteerDriveCmd>(
+        front_steer_cmd_in_topic, rclcpp::SystemDefaultsQoS(),
+        std::bind(&CollisionMonitor::frontSteerCmdInCallback, this, std::placeholders::_1));
+    front_steer_cmd_out_pub_ = this->create_publisher<capella_ros_msg::msg::FrontSteerDriveCmd>(
+        front_steer_cmd_out_topic, rclcpp::SystemDefaultsQoS());
+    RCLCPP_INFO(get_logger(), "Front-steer command intercept: %s -> %s (wheelbase=%.3f m)",
+                front_steer_cmd_in_topic.c_str(), front_steer_cmd_out_topic.c_str(),
+                front_steer_wheelbase_);
+  }
 
   if (use_local_plan_collision_check_)
   {
@@ -161,6 +188,10 @@ nav2_util::CallbackReturn CollisionMonitor::on_activate(const rclcpp_lifecycle::
 
   // Activating lifecycle publisher
   cmd_vel_out_pub_->on_activate();
+  if (front_steer_cmd_out_pub_)
+  {
+    front_steer_cmd_out_pub_->on_activate();
+  }
 
   // Activating polygons
   for (std::shared_ptr<Polygon> polygon : polygons_)
@@ -199,6 +230,10 @@ nav2_util::CallbackReturn CollisionMonitor::on_deactivate(const rclcpp_lifecycle
 
   // Deactivating lifecycle publishers
   cmd_vel_out_pub_->on_deactivate();
+  if (front_steer_cmd_out_pub_)
+  {
+    front_steer_cmd_out_pub_->on_deactivate();
+  }
 
   // Destroying bond connection
   destroyBond();
@@ -212,6 +247,10 @@ nav2_util::CallbackReturn CollisionMonitor::on_cleanup(const rclcpp_lifecycle::S
 
   cmd_vel_in_sub_.reset();
   cmd_vel_out_pub_.reset();
+  front_steer_cmd_in_sub_.reset();
+  front_steer_cmd_out_pub_.reset();
+  have_front_steer_cmd_ = false;
+  last_front_steer_cmd_ = capella_ros_msg::msg::FrontSteerDriveCmd();
   local_plan_sub_.reset();
   local_plan_footprint_sub_.reset();
 
@@ -243,6 +282,39 @@ nav2_util::CallbackReturn CollisionMonitor::on_shutdown(const rclcpp_lifecycle::
 void CollisionMonitor::cmdVelInCallback(geometry_msgs::msg::Twist::ConstSharedPtr msg)
 {
   process({ msg->linear.x, msg->linear.y, msg->angular.z });
+}
+
+void CollisionMonitor::frontSteerCmdInCallback(
+    capella_ros_msg::msg::FrontSteerDriveCmd::ConstSharedPtr msg)
+{
+  if (!msg)
+  {
+    return;
+  }
+  last_front_steer_cmd_ = *msg;
+  have_front_steer_cmd_ = true;
+  process(frontSteerCmdToVelocity(*msg));
+}
+
+Velocity CollisionMonitor::frontSteerCmdToVelocity(
+    const capella_ros_msg::msg::FrontSteerDriveCmd& cmd) const
+{
+  const double v = static_cast<double>(cmd.linear_x);
+  const double delta = static_cast<double>(cmd.front_steer_angle);
+  if (!std::isfinite(v) || !std::isfinite(delta))
+  {
+    return { 0.0, 0.0, 0.0 };
+  }
+  double omega = 0.0;
+  if (front_steer_wheelbase_ > 1.0e-6 && std::abs(std::cos(delta)) > 1.0e-6)
+  {
+    omega = v * std::tan(delta) / front_steer_wheelbase_;
+  }
+  if (!std::isfinite(omega))
+  {
+    omega = 0.0;
+  }
+  return { v, 0.0, omega };
 }
 
 void CollisionMonitor::localPlanCallback(nav_msgs::msg::Path::ConstSharedPtr msg)
@@ -291,9 +363,41 @@ void CollisionMonitor::publishVelocity(const Action& robot_action)
                        "[CollisionMonitor] publishVelocity: publishing cmd_vel: %f, %f", cmd_vel_out_msg->linear.x,
                        cmd_vel_out_msg->angular.z);
   cmd_vel_out_pub_->publish(std::move(cmd_vel_out_msg));
+  publishFrontSteerCmd(robot_action);
 }
 
-bool CollisionMonitor::getParameters(std::string& cmd_vel_in_topic, std::string& cmd_vel_out_topic)
+void CollisionMonitor::publishFrontSteerCmd(const Action& robot_action)
+{
+  if (!front_steer_cmd_out_pub_ || !front_steer_cmd_out_pub_->is_activated() || !have_front_steer_cmd_)
+  {
+    return;
+  }
+
+  auto out = std::make_unique<capella_ros_msg::msg::FrontSteerDriveCmd>();
+  if (robot_action.action_type == STOP || robot_action.req_vel.isZero())
+  {
+    out->linear_x = 0.0f;
+    out->front_steer_angle = 0.0f;
+  }
+  else if (robot_action.action_type == DO_NOTHING)
+  {
+    *out = last_front_steer_cmd_;
+  }
+  else
+  {
+    out->linear_x = static_cast<float>(robot_action.req_vel.x);
+    out->front_steer_angle = last_front_steer_cmd_.front_steer_angle;
+  }
+
+  RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+                       "[CollisionMonitor] publishFrontSteerCmd: linear_x=%.3f steer=%.3f",
+                       out->linear_x, out->front_steer_angle);
+  front_steer_cmd_out_pub_->publish(std::move(out));
+}
+
+bool CollisionMonitor::getParameters(std::string& cmd_vel_in_topic, std::string& cmd_vel_out_topic,
+                                     std::string& front_steer_cmd_in_topic,
+                                     std::string& front_steer_cmd_out_topic)
 {
   std::string base_frame_id, odom_frame_id;
   tf2::Duration transform_tolerance;
@@ -305,6 +409,22 @@ bool CollisionMonitor::getParameters(std::string& cmd_vel_in_topic, std::string&
   cmd_vel_in_topic = get_parameter("cmd_vel_in_topic").as_string();
   nav2_util::declare_parameter_if_not_declared(node, "cmd_vel_out_topic", rclcpp::ParameterValue("cmd_vel"));
   cmd_vel_out_topic = get_parameter("cmd_vel_out_topic").as_string();
+
+  nav2_util::declare_parameter_if_not_declared(node, "use_front_steer_cmd", rclcpp::ParameterValue(false));
+  use_front_steer_cmd_ = get_parameter("use_front_steer_cmd").as_bool();
+  nav2_util::declare_parameter_if_not_declared(node, "front_steer_cmd_in_topic",
+                                               rclcpp::ParameterValue(std::string("/front_steer_cmd_raw")));
+  front_steer_cmd_in_topic = get_parameter("front_steer_cmd_in_topic").as_string();
+  nav2_util::declare_parameter_if_not_declared(node, "front_steer_cmd_out_topic",
+                                               rclcpp::ParameterValue(std::string("/front_steer_cmd")));
+  front_steer_cmd_out_topic = get_parameter("front_steer_cmd_out_topic").as_string();
+  nav2_util::declare_parameter_if_not_declared(node, "front_steer_wheelbase", rclcpp::ParameterValue(0.854));
+  front_steer_wheelbase_ = get_parameter("front_steer_wheelbase").as_double();
+  if (use_front_steer_cmd_ && !(front_steer_wheelbase_ > 1.0e-6) && std::isfinite(front_steer_wheelbase_))
+  {
+    RCLCPP_WARN(get_logger(),
+                "front_steer_wheelbase is invalid; yaw rate for APPROACH prediction will be 0");
+  }
 
   nav2_util::declare_parameter_if_not_declared(node, "base_frame_id", rclcpp::ParameterValue("base_footprint"));
   base_frame_id = get_parameter("base_frame_id").as_string();

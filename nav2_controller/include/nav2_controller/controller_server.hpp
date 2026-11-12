@@ -38,6 +38,7 @@
 #include "pluginlib/class_list_macros.hpp"
 #include "capella_ros_msg/msg/single_detector.hpp"
 #include "capella_ros_msg/msg/detect_result.hpp"
+#include "capella_ros_msg/msg/front_steer_drive_cmd.hpp"
 #include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "nav2_costmap_2d/array_parser.hpp"
@@ -238,6 +239,8 @@ protected:
   // Publishers and subscribers
   std::unique_ptr<nav_2d_utils::OdomSubscriber> odom_sub_;
   rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::Twist>::SharedPtr vel_publisher_;
+  std::unordered_map<std::string, rclcpp_lifecycle::LifecyclePublisher<
+    capella_ros_msg::msg::FrontSteerDriveCmd>::SharedPtr> front_steer_stop_publishers_;
   rclcpp::Subscription<nav2_msgs::msg::SpeedLimit>::SharedPtr speed_limit_sub_;
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr teb_global_plan_sub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr prune_path_pub_;

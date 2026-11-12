@@ -16,6 +16,7 @@ find_package(nav2_common REQUIRED)
 find_package(nav2_util REQUIRED)
 find_package(nav2_costmap_2d REQUIRED)
 find_package(nav2_ignore_polygon_manager REQUIRED)
+find_package(capella_ros_msg REQUIRED)
 
 ### Header ###
 
@@ -39,6 +40,7 @@ set(dependencies
   nav2_util
   nav2_costmap_2d
   nav2_ignore_polygon_manager
+  capella_ros_msg
 )
 
 set(executable_name collision_monitor)
