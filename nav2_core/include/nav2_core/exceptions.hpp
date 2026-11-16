@@ -51,6 +51,14 @@ public:
   using Ptr = std::shared_ptr<PlannerException>;
 };
 
+// A completed occupied-goal wait is handled separately from transient planning failures.
+class OccupiedGoalTimeout : public PlannerException
+{
+public:
+  explicit OccupiedGoalTimeout(const std::string & description)
+  : PlannerException(description) {}
+};
+
 }  // namespace nav2_core
 
 #endif  // NAV2_CORE__EXCEPTIONS_HPP_

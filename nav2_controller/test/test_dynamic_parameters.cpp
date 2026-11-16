@@ -17,6 +17,8 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <future>
+#include <thread>
 
 #include "gtest/gtest.h"
 #include "nav2_util/lifecycle_node.hpp"
@@ -44,9 +46,31 @@ public:
   rcl_interfaces::msg::SetParametersResult
   dynamicParamsShim(std::vector<rclcpp::Parameter> parameters)
   {
+    return dynamicParametersCallback(parameters);
+  }
+
+  rcl_interfaces::msg::SetParametersResult setDebugWhileControlRuns(bool enabled)
+  {
+    std::promise<void> entered;
+    std::promise<void> release;
+    auto entered_future = entered.get_future();
+    auto release_future = release.get_future();
+    std::thread control([&]() {
+      std::lock_guard<std::mutex> lock(dynamic_params_lock_);
+      entered.set_value();
+      release_future.wait();
+    });
+    entered_future.wait();
     rcl_interfaces::msg::SetParametersResult result;
-    result.successful = true;
-    dynamicParametersCallback(parameters);
+    try {
+      result = set_parameter(rclcpp::Parameter("debug_mode", enabled));
+    } catch (...) {
+      release.set_value();
+      control.join();
+      throw;
+    }
+    release.set_value();
+    control.join();
     return result;
   }
 };
@@ -58,6 +82,17 @@ public:
   ~RclCppFixture() {rclcpp::shutdown();}
 };
 RclCppFixture g_rclcppfixture;
+
+TEST(WPTest, debugModeCanToggleDuringControl)
+{
+  auto controller = std::make_shared<ControllerShim>();
+  controller->setDynamicCallback();
+  EXPECT_FALSE(controller->get_parameter("debug_mode").as_bool());
+  ASSERT_TRUE(controller->setDebugWhileControlRuns(true).successful);
+  EXPECT_TRUE(controller->get_parameter("debug_mode").as_bool());
+  ASSERT_TRUE(controller->setDebugWhileControlRuns(false).successful);
+  EXPECT_FALSE(controller->get_parameter("debug_mode").as_bool());
+}
 
 TEST(WPTest, test_dynamic_parameters)
 {
