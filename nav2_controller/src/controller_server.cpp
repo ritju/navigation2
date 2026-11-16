@@ -102,6 +102,7 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
   RCLCPP_INFO(get_logger(), "Creating controller server");
 
   declare_parameter("controller_frequency", 20.0);
+  declare_parameter("debug_mode", false);
 
   declare_parameter("progress_checker_plugin", default_progress_checker_id_);
   declare_parameter("goal_checker_plugins", default_goal_checker_ids_);
@@ -556,6 +557,12 @@ void ControllerServer::computeControl()
         keep_following = true;
       }
     }
+  } catch (const nav2_core::OccupiedGoalTimeout & e) {
+    RCLCPP_WARN(get_logger(), "终点占用等待超时，停车并按成功结束当前路径: %s", e.what());
+    publishZeroVelocity();
+    clearTebGlobalPlanCache();
+    action_server_->succeeded_current(std::make_shared<Action::Result>());
+    return;
   } catch (nav2_core::PlannerException & e) {
     RCLCPP_ERROR(this->get_logger(), e.what());
     publishZeroVelocity();
@@ -857,6 +864,9 @@ void ControllerServer::computeAndPublishVelocity()
       nav_2d_utils::twist2Dto3D(twist),
       goal_checkers_[current_goal_checker_].get());
     last_valid_cmd_time_ = now();
+  } catch (const nav2_core::OccupiedGoalTimeout &) {
+    // Handle the completed wait immediately instead of using the transient-failure grace period.
+    throw;
   } catch (nav2_core::PlannerException & e) {
     if (failure_tolerance_ > 0 || failure_tolerance_ == -1.0) {
       RCLCPP_WARN(this->get_logger(), e.what());
@@ -1093,6 +1103,12 @@ ControllerServer::dynamicParametersCallback(std::vector<rclcpp::Parameter> param
 
     // If we are trying to change the parameter of a plugin we can just skip it at this point
     // as they handle parameter changes themselves and don't need to lock the mutex
+    // Logging is shared with TEB through its atomic debug flag. It may be
+    // toggled during FollowPath without taking the control-loop parameter lock.
+    if (name == "debug_mode" && type == ParameterType::PARAMETER_BOOL) {
+      continue;
+    }
+
     if (name.find('.') != std::string::npos) {
       continue;
     }
