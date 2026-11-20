@@ -68,6 +68,10 @@ public:
   void initializeFilter(
     const std::string & filter_info_topic);
 
+  void updateBounds(
+    double robot_x, double robot_y, double robot_yaw,
+    double * min_x, double * min_y, double * max_x, double * max_y) override;
+
   /**
    * @brief Process the keepout layer at the current pose / bounds / grid
    */
@@ -100,6 +104,8 @@ private:
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr mask_sub_;
 
   std::unique_ptr<Costmap2D> mask_costmap_;
+  nav_msgs::msg::OccupancyGrid::SharedPtr last_mask_msg_;
+  bool mask_update_pending_{false};
 
   std::string mask_frame_;  // Frame where mask located in
   std::string global_frame_;  // Frame of currnet layer (master_grid)

@@ -130,6 +130,18 @@ void KeepoutFilter::maskCallback(
     throw std::runtime_error{"Failed to lock node"};
   }
 
+  // Ignore timestamp-only republishes. A changed mask also requires clearing
+  // its old footprint from the combined costmap, not just applying new cells.
+  if (last_mask_msg_ && mask_costmap_ &&
+    last_mask_msg_->header.frame_id == msg->header.frame_id &&
+    last_mask_msg_->info.resolution == msg->info.resolution &&
+    last_mask_msg_->info.width == msg->info.width &&
+    last_mask_msg_->info.height == msg->info.height &&
+    last_mask_msg_->info.origin == msg->info.origin && last_mask_msg_->data == msg->data)
+  {
+    return;
+  }
+
   if (!mask_costmap_) {
     RCLCPP_INFO(
       logger_,
@@ -145,6 +157,29 @@ void KeepoutFilter::maskCallback(
   // Making a new mask_costmap_
   mask_costmap_ = std::make_unique<Costmap2D>(*msg);
   mask_frame_ = msg->header.frame_id;
+  last_mask_msg_ = msg;
+  mask_update_pending_ = true;
+}
+
+void KeepoutFilter::updateBounds(
+  double robot_x, double robot_y, double robot_yaw,
+  double * min_x, double * min_y, double * max_x, double * max_y)
+{
+  std::lock_guard<CostmapFilter::mutex_t> guard(*getMutex());
+  CostmapFilter::updateBounds(robot_x, robot_y, robot_yaw, min_x, min_y, max_x, max_y);
+  if (!enabled_ || !mask_update_pending_) {
+    return;
+  }
+  // Rebuild the entire visible map once after a content/geometry change. This
+  // handles both newly occupied distant cells and removal of old mask cells,
+  // independently of the bounds requested by obstacle/inflation layers.
+  const auto * grid = layered_costmap_->getCostmap();
+  *min_x = std::min(*min_x, grid->getOriginX());
+  *min_y = std::min(*min_y, grid->getOriginY());
+  *max_x = std::max(*max_x,
+    grid->getOriginX() + grid->getSizeInCellsX() * grid->getResolution());
+  *max_y = std::max(*max_y,
+    grid->getOriginY() + grid->getSizeInCellsY() * grid->getResolution());
 }
 
 void KeepoutFilter::process(
@@ -221,6 +256,7 @@ void KeepoutFilter::process(
     // Calculation of (1) corner bounds
     if (mg_min_x >= max_i || mg_min_y >= max_j) {
       // There is no overlapping. Do nothing.
+      mask_update_pending_ = false;
       return;
     }
     mg_min_x = std::max(min_i, mg_min_x);
@@ -236,6 +272,7 @@ void KeepoutFilter::process(
     // Calculation of (2) corner bounds
     if (mg_max_x <= min_i || mg_max_y <= min_j) {
       // There is no overlapping. Do nothing.
+      mask_update_pending_ = false;
       return;
     }
     mg_max_x = std::min(max_i, mg_max_x);
@@ -289,6 +326,7 @@ void KeepoutFilter::process(
       }
     }
   }
+  mask_update_pending_ = false;
 }
 
 void KeepoutFilter::resetFilter()
@@ -297,6 +335,7 @@ void KeepoutFilter::resetFilter()
 
   filter_info_sub_.reset();
   mask_sub_.reset();
+  last_mask_msg_.reset();
 }
 
 bool KeepoutFilter::isActive()

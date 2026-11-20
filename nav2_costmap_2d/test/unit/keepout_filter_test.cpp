@@ -465,6 +465,79 @@ TEST_F(TestNode, testDifferentFrames)
   reset();
 }
 
+TEST(KeepoutUpdateBounds, changedMaskRefreshesDistantRectanglesAndClearsOldCells)
+{
+  auto node = std::make_shared<nav2_util::LifecycleNode>("keepout_bounds_test");
+  auto tf_buffer = std::make_shared<tf2_ros::Buffer>(node->get_clock());
+  nav2_costmap_2d::LayeredCostmap layers("map", false, false);
+  layers.resizeMap(140, 60, 0.1, 0.0, -5.0);
+  node->declare_parameter(std::string(FILTER_NAME) + ".transform_tolerance", 0.5);
+  node->declare_parameter(std::string(FILTER_NAME) + ".filter_info_topic", INFO_TOPIC);
+  nav2_costmap_2d::KeepoutFilter filter;
+  filter.initialize(&layers, FILTER_NAME, tf_buffer.get(), node, nullptr);
+  filter.initializeFilter(INFO_TOPIC);
+  nav_msgs::msg::OccupancyGrid mask;
+  mask.header.frame_id = "map";
+  mask.info.resolution = 0.1;
+  mask.info.width = 140;
+  mask.info.height = 60;
+  mask.info.origin.position.y = -5.0;
+  mask.info.origin.orientation.w = 1.0;
+  mask.data.assign(140 * 60, 0);
+  for (int y = 0; y < 60; ++y) {
+    const double wy = -5.0 + (y + 0.5) * 0.1;
+    for (int x = 50; x < 120; ++x) {
+      if ((wy >= -1.0 && wy <= 0.0) || (wy >= -4.0 && wy <= -3.0)) {
+        mask.data[y * 140 + x] = 100;
+      }
+    }
+  }
+  auto info = std::make_shared<InfoPublisher>(0.0, 1.0);
+  auto publisher = std::make_shared<MaskPublisher>(mask);
+  auto spin_for = [&](std::chrono::milliseconds duration) {
+    const auto until = std::chrono::steady_clock::now() + duration;
+    while (std::chrono::steady_clock::now() < until) {
+      rclcpp::spin_some(node->get_node_base_interface());
+      std::this_thread::sleep_for(10ms);
+    }
+  };
+  spin_for(500ms);
+  ASSERT_TRUE(filter.isActive());
+  double min_x = 5.0, min_y = -1.0, max_x = 6.0, max_y = 0.0;
+  filter.updateBounds(0.0, 0.0, 0.0, &min_x, &min_y, &max_x, &max_y);
+  EXPECT_DOUBLE_EQ(min_x, 0.0);
+  EXPECT_DOUBLE_EQ(min_y, -5.0);
+  EXPECT_DOUBLE_EQ(max_x, 14.0);
+  EXPECT_DOUBLE_EQ(max_y, 1.0);
+  auto * grid = layers.getCostmap();
+  grid->resetMap(0, 0, 140, 60);
+  geometry_msgs::msg::Pose2D pose;
+  filter.process(*grid, 0, 0, 140, 60, pose);
+  size_t lethal = 0;
+  for (unsigned int i = 0; i < 140 * 60; ++i) {
+    if (grid->getCharMap()[i] == nav2_costmap_2d::LETHAL_OBSTACLE) {++lethal;}
+  }
+  EXPECT_EQ(lethal, 1400u);
+  // Timestamp-only republishes must not rebuild the global map repeatedly.
+  mask.header.stamp = node->now();
+  publisher = std::make_shared<MaskPublisher>(mask);
+  spin_for(200ms);
+  min_x = 5.0; min_y = -1.0; max_x = 6.0; max_y = 0.0;
+  filter.updateBounds(0.0, 0.0, 0.0, &min_x, &min_y, &max_x, &max_y);
+  EXPECT_DOUBLE_EQ(min_x, 5.0);
+  EXPECT_DOUBLE_EQ(max_x, 6.0);
+  // A removed mask must also dirty the old area so the layered rebuild clears it.
+  std::fill(mask.data.begin(), mask.data.end(), 0);
+  publisher = std::make_shared<MaskPublisher>(mask);
+  spin_for(200ms);
+  filter.updateBounds(0.0, 0.0, 0.0, &min_x, &min_y, &max_x, &max_y);
+  EXPECT_DOUBLE_EQ(min_x, 0.0);
+  EXPECT_DOUBLE_EQ(max_x, 14.0);
+  grid->resetMap(0, 0, 140, 60);
+  filter.process(*grid, 0, 0, 140, 60, pose);
+  EXPECT_NE(grid->getCost(55, 45), nav2_costmap_2d::LETHAL_OBSTACLE);
+}
+
 int main(int argc, char ** argv)
 {
   // Initialize the system
