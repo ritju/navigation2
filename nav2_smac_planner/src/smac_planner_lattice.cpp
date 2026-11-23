@@ -160,7 +160,7 @@ void SmacPlannerLattice::configure(
   if (static_cast<int>(lookup_table_dim) % 2 == 0) {
     RCLCPP_INFO(
       _logger,
-      "启发式查找表尺寸为偶数（当前=%f），将增加 1 调整为奇数 %f, 增加 1 调整为奇数",
+      "启发式查找表尺寸为偶数（当前=%f），将增加 1 调整为奇数",
       lookup_table_dim);
     lookup_table_dim += 1.0;
   }
@@ -465,7 +465,7 @@ SmacPlannerLattice::dynamicParametersCallback(std::vector<rclcpp::Parameter> par
     if (static_cast<int>(lookup_table_dim) % 2 == 0) {
       RCLCPP_INFO(
         _logger,
-        "启发式查找表尺寸为偶数（当前=%f），将增加 1 调整为奇数 %f, 增加 1 调整为奇数",
+        "启发式查找表尺寸为偶数（当前=%f），将增加 1 调整为奇数",
         lookup_table_dim);
       lookup_table_dim += 1.0;
     }
